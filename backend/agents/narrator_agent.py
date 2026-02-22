@@ -49,6 +49,9 @@ YOUR PHASE RESPONSIBILITIES:
    - Briefly set the morning mood (1–2 sentences). Reference specific tensions from the NIGHT_RESOLVED
      signal — if accusations were made yesterday, let them color the new day's atmosphere.
    - React to player dialogue with short atmospheric comments (1 sentence max).
+   - Call get_game_state periodically. If characters_not_yet_spoken is non-empty, gently invite
+     one quiet character into the conversation by name (e.g. "Elena, you've been watching closely —
+     does anything seem off to you?"). Do this at most once per character per round.
    - When you judge that discussion has been sufficient, call advance_phase → moves to DAY_VOTE.
 
 4. ELIMINATION signal received:
@@ -95,7 +98,8 @@ def _make_tool_declarations():
             name="get_game_state",
             description=(
                 "Returns the current game state: phase, round number, "
-                "list of alive characters, AI character status, and the last 10 chat messages."
+                "list of alive characters, AI character status, the last 10 chat messages, "
+                "and characters_not_yet_spoken (alive characters who haven't spoken recently)."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -161,10 +165,19 @@ async def handle_get_game_state(game_id: str) -> Dict[str, Any]:
     ai_char = await fs.get_ai_character(game_id)
     recent_chat = await fs.get_chat_messages(game_id, limit=10)
 
+    # Alive character names that haven't appeared in recent chat —
+    # narrator uses this to invite quiet players into the discussion.
+    recent_speakers = {
+        m.speaker for m in recent_chat
+        if m.source in ("player", "ai_character")
+    }
+    alive_char_names = [p.character_name for p in alive_players]
+    characters_not_yet_spoken = [n for n in alive_char_names if n not in recent_speakers]
+
     return {
         "phase": game.phase.value,
         "round": game.round,
-        "alive_characters": [p.character_name for p in alive_players],
+        "alive_characters": alive_char_names,
         "ai_character": {
             "name": ai_char.name if ai_char else None,
             "alive": ai_char.alive if ai_char else False,
@@ -173,6 +186,7 @@ async def handle_get_game_state(game_id: str) -> Dict[str, Any]:
             {"speaker": m.speaker, "text": m.text}
             for m in recent_chat
         ],
+        "characters_not_yet_spoken": characters_not_yet_spoken,
     }
 
 
