@@ -522,9 +522,12 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
         tally_result = await game_master.tally_votes(game_id)
 
         if tally_result["result"] == "no_votes":
-            logger.warning(f"[{game_id}] No votes cast — skipping to NIGHT")
+            logger.warning(f"[{game_id}] No votes cast — advancing to ELIMINATION then narrator will proceed to NIGHT")
             next_phase = await game_master.advance_phase(game_id)
             await manager.broadcast_phase_change(game_id, next_phase)
+            # Tell narrator to narrate the deadlock and call advance_phase → NIGHT
+            # (handle_advance_phase will fire trigger_night_selection when it reaches NIGHT)
+            await narrator_manager.send_phase_event(game_id, "no_elimination", {})
             return
 
         eliminated = tally_result["eliminated"]
@@ -741,6 +744,10 @@ async def _on_hunter_revenge(
 
     next_phase = await game_master.advance_phase(game_id)
     await manager.broadcast_phase_change(game_id, next_phase)
+    # ELIMINATION → NIGHT: fire traitor night selection for the new round
+    if next_phase == Phase.NIGHT:
+        from agents.traitor_agent import trigger_night_selection
+        asyncio.create_task(trigger_night_selection(game_id))
 
 
 async def _delayed_narrator_stop(game_id: str, delay: int = 30) -> None:

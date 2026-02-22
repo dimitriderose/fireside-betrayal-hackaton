@@ -8,6 +8,7 @@ Routes:
   POST /api/games/{game_id}/start    — Host starts game (triggers role assignment)
   GET  /api/games/{game_id}/events   — Event log (visible only, or all post-game)
 """
+import asyncio
 import uuid
 import logging
 from typing import Optional
@@ -23,6 +24,7 @@ from services.firestore_service import get_firestore_service
 from agents.role_assigner import role_assigner
 from agents.game_master import game_master
 from agents.narrator_agent import narrator_manager, build_phase_prompt
+from agents.traitor_agent import trigger_night_selection
 from routers.ws_router import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -121,6 +123,8 @@ async def start_game(
     await fs.set_status(game_id, GameStatus.IN_PROGRESS.value)
     # Persist phase=NIGHT / round=1 to Firestore before broadcasting
     await game_master.advance_phase(game_id)
+    # Fire traitor night selection for Round 1 in the background
+    asyncio.create_task(trigger_night_selection(game_id))
 
     # Broadcast phase_change → NIGHT and send private role cards via WebSocket
     await ws_manager.broadcast_game_start(game_id, assignment["assignments"])
