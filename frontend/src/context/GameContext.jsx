@@ -12,7 +12,10 @@ const initialState = {
   round: 0,
   difficulty: 'normal',
   players: [],          // [{ id, characterName, alive, connected, ready }]
-  votes: {},            // { characterName: count }
+  aiCharacter: null,    // { name: string, alive: boolean } | null
+  votes: {},            // { characterName: count } — vote tally from backend
+  voteMap: {},          // { characterName: votedFor | null } — who voted for whom
+  myVote: null,         // character name this player voted for (null = not voted yet)
   storyLog: [],         // [{ id, speaker, text, source, phase, round, timestamp }]
   winner: null,         // 'villagers' | 'shapeshifter'
   reveals: [],          // [{ characterName, playerName, role }]
@@ -28,8 +31,9 @@ function gameReducer(state, action) {
     case 'SET_PLAYER':
       return {
         ...state,
-        playerId: action.playerId,
-        playerName: action.playerName,
+        playerId: action.playerId ?? state.playerId,
+        playerName: action.playerName ?? state.playerName,
+        characterName: action.characterName ?? state.characterName,
         isHost: action.isHost ?? state.isHost,
       }
     case 'SET_GAME':
@@ -41,10 +45,14 @@ function gameReducer(state, action) {
     case 'SET_ROLE':
       return {
         ...state,
-        characterName: action.characterName,
-        role: action.role,
+        characterName: action.characterName ?? state.characterName,
+        role: action.role ?? state.role,
         abilities: action.abilities ?? [],
       }
+    case 'SET_AI_CHARACTER':
+      return { ...state, aiCharacter: action.aiCharacter }
+    case 'SET_MY_VOTE':
+      return { ...state, myVote: action.vote }
     case 'UPDATE_PLAYERS':
       return { ...state, players: action.players }
     case 'ADD_PLAYER': {
@@ -60,21 +68,38 @@ function gameReducer(state, action) {
         ].slice(-200), // keep last 200 messages
       }
     case 'VOTE_UPDATE':
-      return { ...state, votes: action.votes }
+      return {
+        ...state,
+        votes: action.tally ?? state.votes,
+        voteMap: action.voteMap ?? state.voteMap,
+      }
     case 'ELIMINATION': {
       const isLocalPlayerEliminated = state.characterName === action.character
+      const isAIEliminated = state.aiCharacter?.name === action.character
       return {
         ...state,
         players: state.players.map(p =>
           p.characterName === action.character ? { ...p, alive: false } : p
         ),
         isEliminated: state.isEliminated || isLocalPlayerEliminated,
+        aiCharacter: isAIEliminated
+          ? { ...state.aiCharacter, alive: false }
+          : state.aiCharacter,
       }
     }
     case 'NIGHT_ACTION_SUBMITTED':
       return { ...state, nightActionSubmitted: true }
     case 'PHASE_CHANGE':
-      return { ...state, phase: action.phase, round: action.round ?? state.round, nightActionSubmitted: false }
+      return {
+        ...state,
+        phase: action.phase,
+        round: action.round ?? state.round,
+        nightActionSubmitted: false,
+        // Reset per-round vote state on every phase transition
+        votes: {},
+        voteMap: {},
+        myVote: null,
+      }
     case 'GAME_OVER':
       return {
         ...state,
