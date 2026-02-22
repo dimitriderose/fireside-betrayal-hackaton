@@ -1,0 +1,158 @@
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Literal
+from enum import Enum
+from datetime import datetime, timezone
+import uuid
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC datetime (replaces deprecated datetime.utcnow)."""
+    return datetime.now(timezone.utc)
+
+
+class Role(str, Enum):
+    VILLAGER = "villager"
+    SEER = "seer"
+    HEALER = "healer"
+    HUNTER = "hunter"
+    DRUNK = "drunk"
+    SHAPESHIFTER = "shapeshifter"
+
+
+class Phase(str, Enum):
+    SETUP = "setup"
+    NIGHT = "night"
+    DAY_DISCUSSION = "day_discussion"
+    DAY_VOTE = "day_vote"
+    ELIMINATION = "elimination"
+    GAME_OVER = "game_over"
+
+
+class Difficulty(str, Enum):
+    EASY = "easy"
+    NORMAL = "normal"
+    HARD = "hard"
+
+
+class GameStatus(str, Enum):
+    LOBBY = "lobby"         # waiting for players to join and ready up
+    IN_PROGRESS = "in_progress"
+    FINISHED = "finished"
+
+
+# Role distribution by player count (human players only; AI adds 1 shapeshifter)
+ROLE_DISTRIBUTION: Dict[int, List[str]] = {
+    3: ["villager", "seer", "shapeshifter"],
+    4: ["villager", "villager", "seer", "shapeshifter"],
+    5: ["villager", "villager", "seer", "healer", "shapeshifter"],
+    6: ["villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
+    7: ["villager", "villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
+    8: ["villager", "villager", "villager", "seer", "healer", "hunter", "drunk", "shapeshifter"],
+}
+
+
+class PlayerState(BaseModel):
+    id: str
+    name: str
+    character_name: str = ""
+    character_intro: str = ""
+    role: Optional[Role] = None
+    alive: bool = True
+    connected: bool = False
+    ready: bool = False
+    voted_for: Optional[str] = None
+    night_action: Optional[str] = None
+    session_handle: Optional[str] = None  # WebSocket session handle for reconnection
+    joined_at: datetime = Field(default_factory=_utcnow)
+
+    def to_public(self) -> Dict[str, Any]:
+        """Safe representation — omits role (hidden during game)."""
+        return {
+            "id": self.id,
+            "character_name": self.character_name,
+            "alive": self.alive,
+            "connected": self.connected,
+            "ready": self.ready,
+        }
+
+
+class AICharacter(BaseModel):
+    name: str
+    intro: str
+    role: Role = Role.SHAPESHIFTER
+    alive: bool = True
+    backstory: str = ""
+    suspicion_level: float = 0.5  # 0.0 = invisible, 1.0 = obvious
+    voted_for: Optional[str] = None  # AI's vote during DAY_VOTE phase
+
+
+class GameSession(BaseModel):
+    handle: Optional[str] = None
+    started_at: Optional[datetime] = None
+    reconnect_count: int = 0
+
+
+class GameState(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8].upper())
+    status: GameStatus = GameStatus.LOBBY
+    phase: Phase = Phase.SETUP
+    round: int = 0
+    difficulty: Difficulty = Difficulty.NORMAL
+    host_player_id: str
+    character_cast: List[str] = []
+    ai_character: Optional[AICharacter] = None
+    story_context: str = ""  # Running narrative context for the Narrator Agent
+    session: GameSession = Field(default_factory=GameSession)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class GameEvent(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: str
+    round: int
+    phase: Phase
+    actor: Optional[str] = None
+    target: Optional[str] = None
+    data: Dict[str, Any] = {}
+    narration: Optional[str] = None
+    visible_in_game: bool = True
+    timestamp: datetime = Field(default_factory=_utcnow)
+
+
+class ChatMessage(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    speaker: str           # character name (never real player name)
+    speaker_player_id: Optional[str] = None  # None for narrator
+    text: str
+    source: str = "player"  # narrator | player | quick_reaction | system
+    phase: Phase
+    round: int
+    timestamp: datetime = Field(default_factory=_utcnow)
+
+
+# ── WebSocket message shapes ──────────────────────────────────────────────────
+
+class WSMessage(BaseModel):
+    type: str
+    data: Dict[str, Any] = {}
+
+
+# ── HTTP request/response models ──────────────────────────────────────────────
+
+class CreateGameRequest(BaseModel):
+    difficulty: Difficulty = Difficulty.NORMAL
+    host_name: str = "Host"
+
+
+class CreateGameResponse(BaseModel):
+    game_id: str
+    host_player_id: str
+
+
+class JoinGameRequest(BaseModel):
+    player_name: str
+
+
+class JoinGameResponse(BaseModel):
+    player_id: str
+    game_id: str
