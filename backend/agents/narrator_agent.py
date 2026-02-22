@@ -46,7 +46,8 @@ YOUR PHASE RESPONSIBILITIES:
    - Then call advance_phase → moves to DAY_DISCUSSION.
 
 3. DAY_DISCUSSION phase:
-   - Briefly set the morning mood (1–2 sentences).
+   - Briefly set the morning mood (1–2 sentences). Reference specific tensions from the NIGHT_RESOLVED
+     signal — if accusations were made yesterday, let them color the new day's atmosphere.
    - React to player dialogue with short atmospheric comments (1 sentence max).
    - When you judge that discussion has been sufficient, call advance_phase → moves to DAY_VOTE.
 
@@ -571,11 +572,38 @@ class NarratorManager:
         event_type: str,
         data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Send a structured game event prompt to the narrator session."""
+        """
+        Send a structured game event prompt to the narrator session.
+        For dawn (night_resolved) and deadlock (no_elimination) events, the last
+        day's player discussion is fetched from Firestore and injected into the
+        prompt so the narrator can reference lingering suspicions and accusations.
+        """
         session = self._sessions.get(game_id)
         if not session:
             return
-        prompt = build_phase_prompt(event_type, data or {})
+
+        payload = dict(data or {})
+
+        # Dawn and deadlock prompts benefit most from discussion context —
+        # the narrator should acknowledge what was said the day before.
+        if event_type in ("night_resolved", "no_elimination"):
+            try:
+                fs = get_firestore_service()
+                recent = await fs.get_chat_messages(game_id, limit=10)
+                player_lines = [
+                    f'{m.speaker}: "{m.text}"'
+                    for m in recent
+                    if m.source in ("player", "ai_character")
+                ]
+                if player_lines:
+                    payload["last_discussion"] = player_lines[-8:]  # cap at 8 lines
+            except Exception:
+                logger.warning(
+                    "[%s] Could not fetch discussion context for %s",
+                    game_id, event_type, exc_info=True,
+                )
+
+        prompt = build_phase_prompt(event_type, payload)
         await session.send(prompt)
         logger.debug("[%s] Narrator event queued: %s", game_id, event_type)
 
@@ -607,20 +635,33 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
         killed = data.get("eliminated") or data.get("killed")
         protected = data.get("protected")
         hunter_triggered = data.get("hunter_triggered", False)
+        last_discussion = data.get("last_discussion", [])
+
+        # Build a context block from the previous day's accusations so the
+        # narrator can reference unresolved tensions in the new dawn.
+        context_block = ""
+        if last_discussion:
+            quoted = "\n".join(f"  {line}" for line in last_discussion)
+            context_block = (
+                f"\nWhat the village said yesterday:\n{quoted}\n"
+                "Weave these suspicions and unresolved accusations into your dawn "
+                "narration — let yesterday's words hang like woodsmoke in the morning air.\n"
+            )
+
         if killed:
             hunter_note = (
                 f" Worse still, {killed} was the Hunter — they dragged another victim down with them."
                 if hunter_triggered else ""
             )
             return (
-                f"[NIGHT RESOLVED] {killed} was found dead at dawn.{hunter_note} "
+                f"[NIGHT RESOLVED] {killed} was found dead at dawn.{hunter_note}{context_block} "
                 "Narrate this grim discovery (2–3 sentences). "
                 "Then call advance_phase to begin the day."
             )
         else:
             note = f" The Healer secretly protected {protected}." if protected else ""
             return (
-                f"[NIGHT RESOLVED] No one was killed tonight.{note} "
+                f"[NIGHT RESOLVED] No one was killed tonight.{note}{context_block} "
                 "Narrate the eerie, unsettling dawn where everyone survived. "
                 "Then call advance_phase to begin the day."
             )
@@ -629,17 +670,32 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
         character = data.get("character", "Unknown")
         was_traitor = data.get("was_traitor", False)
         role = data.get("role", "villager")
+        tally = data.get("tally", {})
+
+        # Describe how decisive the vote was — adds dramatic colour
+        vote_desc = ""
+        if tally:
+            top = max(tally.values(), default=0)
+            total = sum(tally.values())
+            if total > 0:
+                second = sorted(tally.values(), reverse=True)[1] if len(tally) > 1 else 0
+                if top == total:
+                    vote_desc = f" The vote was unanimous ({total}–0)."
+                else:
+                    margin = "narrow" if top - second <= 1 else "clear"
+                    vote_desc = f" The vote: {top} against {second} — a {margin} majority."
+
         if was_traitor:
             return (
                 f"[ELIMINATION — SHAPESHIFTER UNMASKED] "
-                f"The village votes to eliminate {character}, who IS the Shapeshifter! "
+                f"The village votes to eliminate {character}, who IS the Shapeshifter!{vote_desc} "
                 "Narrate the dramatic unmasking in 2–3 sentences — the terror turning to relief. "
                 "Then call advance_phase to start a new night."
             )
         else:
             return (
                 f"[ELIMINATION — INNOCENT VICTIM] "
-                f"The village votes to eliminate {character} (role: {role}), who was innocent. "
+                f"The village votes to eliminate {character} (role: {role}), who was innocent.{vote_desc} "
                 "Narrate this tragic mistake in 2–3 sentences — the growing dread. "
                 "Then call advance_phase to start a new night."
             )
@@ -661,9 +717,30 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             )
 
     if event_type == "no_elimination":
+        tally = data.get("tally", {})
+        last_discussion = data.get("last_discussion", [])
+
+        # Describe how close the deadlocked vote was
+        vote_desc = ""
+        if tally:
+            top = max(tally.values(), default=0)
+            total = sum(tally.values())
+            if total > 0:
+                second = sorted(tally.values(), reverse=True)[1] if len(tally) > 1 else 0
+                vote_desc = f" The vote split {top} against {second} — no majority reached."
+
+        context_block = ""
+        if last_discussion:
+            quoted = "\n".join(f"  {line}" for line in last_discussion)
+            context_block = (
+                f"\nArguments that went unresolved:\n{quoted}\n"
+                "Reference the specific accusations that deadlocked the vote — "
+                "the village is paralysed by its own distrust.\n"
+            )
         return (
-            "[NO ELIMINATION — DEADLOCK] The villagers argued but could not reach a majority. "
-            "No one was cast out today. Narrate the rising paranoia and suspicion (1–2 sentences), "
+            f"[NO ELIMINATION — DEADLOCK] The villagers argued but could not reach a majority."
+            f"{vote_desc} No one was cast out today.\n{context_block}"
+            "Narrate the rising paranoia and suspicion (1–2 sentences), "
             "then call advance_phase to begin the night."
         )
 

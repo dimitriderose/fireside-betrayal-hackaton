@@ -540,7 +540,9 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             await manager.broadcast_phase_change(game_id, next_phase)
             # Tell narrator to narrate the deadlock and call advance_phase → NIGHT
             # (handle_advance_phase will fire trigger_night_selection when it reaches NIGHT)
-            await narrator_manager.send_phase_event(game_id, "no_elimination", {})
+            await narrator_manager.send_phase_event(game_id, "no_elimination", {
+                "tally": tally_result.get("tally", {}),
+            })
             return
 
         eliminated = tally_result["eliminated"]
@@ -568,6 +570,7 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             "character": eliminated,
             "was_traitor": elim_result["was_traitor"],
             "role": elim_result["role"],
+            "tally": tally_result.get("tally", {}),
         })
     finally:
         _resolving_votes.discard(game_id)
