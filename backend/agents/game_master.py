@@ -1,0 +1,462 @@
+"""
+Game Master Agent — Pure deterministic Python, no LLM.
+
+Responsibilities:
+- Phase transitions (Night → Day Discussion → Day Vote → Elimination → Night)
+- Night action resolution (Seer, Healer, Shapeshifter, Drunk)
+- Vote tallying and tie-breaking
+- Win condition checks
+- Hunter revenge trigger
+
+All game rules are implemented here. Nothing is hallucinated.
+"""
+import random
+import logging
+import uuid
+from typing import Optional, Dict, Any, List, Set
+
+from models.game import Phase, Role, GameStatus, GameEvent, ROLE_DISTRIBUTION
+from services.firestore_service import get_firestore_service
+
+logger = logging.getLogger(__name__)
+
+
+class GameMaster:
+    """
+    Deterministic game logic engine.
+    All methods read/write Firestore via FirestoreService.
+    """
+
+    # ── Phase transitions ──────────────────────────────────────────────────────
+
+    PHASE_CYCLE = [
+        Phase.NIGHT,
+        Phase.DAY_DISCUSSION,
+        Phase.DAY_VOTE,
+        Phase.ELIMINATION,
+    ]
+
+    async def advance_phase(self, game_id: str) -> Phase:
+        """
+        Advance the game to the next phase in the cycle.
+        Night → Day Discussion → Day Vote → Elimination → Night (loops).
+        Increments round counter on each Night phase entry.
+        Returns the new phase.
+        """
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        if not game:
+            raise ValueError(f"Game {game_id} not found")
+
+        current = game.phase
+        if current == Phase.SETUP:
+            next_phase = Phase.NIGHT
+            new_round = 1
+        else:
+            try:
+                idx = self.PHASE_CYCLE.index(current)
+            except ValueError:
+                raise ValueError(f"Cannot advance from phase {current}")
+            next_idx = (idx + 1) % len(self.PHASE_CYCLE)
+            next_phase = self.PHASE_CYCLE[next_idx]
+            new_round = game.round + 1 if next_phase == Phase.NIGHT else game.round
+
+        await fs.set_phase(game_id, next_phase, new_round if next_phase == Phase.NIGHT else None)
+        display_round = new_round if next_phase == Phase.NIGHT else game.round
+        logger.info(f"[{game_id}] Phase: {current} → {next_phase} (round {display_round})")
+        return next_phase
+
+    # ── Night action resolution ────────────────────────────────────────────────
+
+    async def resolve_night(self, game_id: str) -> Dict[str, Any]:
+        """
+        Process all night actions in priority order:
+          1. Shapeshifter selects a kill target
+          2. Healer protects a target (may cancel the kill)
+          3. Seer investigates a target (Drunk gets wrong result)
+
+        Returns a result dict:
+        {
+            "killed": Optional[str],      # character_name, None if protected
+            "protected": Optional[str],   # character_name healer saved
+            "seer_result": Optional[dict] # {character: str, is_shapeshifter: bool}
+            "hunter_triggered": bool,     # True if killed player is a Hunter
+        }
+        All hidden events are logged to Firestore with visible_in_game=False.
+        """
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        if not game:
+            raise ValueError(f"Game {game_id} not found")
+        players = await fs.get_alive_players(game_id)
+        night_actions = await fs.get_night_actions(game_id)
+        ai_char = await fs.get_ai_character(game_id)
+
+        # Build role→player_id lookup for alive players
+        role_map: Dict[str, str] = {}  # role_value → player_id
+        id_to_player = {p.id: p for p in players}
+        char_to_player = {p.character_name: p for p in players}
+
+        for p in players:
+            if p.role:
+                role_map[p.role.value] = p.id
+
+        result: Dict[str, Any] = {
+            "killed": None,
+            "protected": None,
+            "seer_result": None,
+            "hunter_triggered": False,
+        }
+
+        # ── Step 1: Shapeshifter kill target (set by TraitorAgent or default) ──
+        shapeshifter_target: Optional[str] = None
+        if ai_char and ai_char.alive:
+            # TraitorAgent sets the target via a game event of type "night_target"
+            events = await fs.get_events(game_id, round=game.round)
+            for ev in events:
+                if ev.type == "night_target" and ev.actor == ai_char.name:
+                    # Validate target is still alive
+                    if ev.target in char_to_player:
+                        shapeshifter_target = ev.target
+                    break
+            if not shapeshifter_target:
+                if players:
+                    # Default: kill a random alive player (fallback)
+                    shapeshifter_target = random.choice(players).character_name
+                    logger.warning(f"[{game_id}] Shapeshifter had no target set — random: {shapeshifter_target}")
+                else:
+                    logger.warning(f"[{game_id}] Shapeshifter had no target and no alive players — skipping kill")
+
+        # ── Step 2: Healer protection ─────────────────────────────────────────
+        healer_id = role_map.get(Role.HEALER.value)
+        protected_target: Optional[str] = None
+        if healer_id and healer_id in night_actions:
+            protected_target = night_actions[healer_id]
+            result["protected"] = protected_target
+
+        # ── Step 3: Apply kill (unless healer blocked it) ─────────────────────
+        if shapeshifter_target:
+            if shapeshifter_target == protected_target:
+                logger.info(f"[{game_id}] Kill on {shapeshifter_target} blocked by Healer")
+            else:
+                result["killed"] = shapeshifter_target
+                victim = char_to_player.get(shapeshifter_target)
+                if victim:
+                    await fs.eliminate_by_character(game_id, shapeshifter_target)
+                    if victim.role == Role.HUNTER:
+                        result["hunter_triggered"] = True
+                        logger.info(f"[{game_id}] Hunter {shapeshifter_target} was killed — revenge triggered")
+
+        # ── Step 4: Seer investigation ────────────────────────────────────────
+        seer_id = role_map.get(Role.SEER.value)
+        drunk_id = role_map.get(Role.DRUNK.value)
+
+        # Determine who is the investigating player
+        # (Drunk believes they are the Seer and submits an investigation)
+        investigating_id: Optional[str] = None
+        investigation_target: Optional[str] = None
+
+        if seer_id and seer_id in night_actions:
+            investigating_id = seer_id
+            investigation_target = night_actions[seer_id]
+        elif drunk_id and drunk_id in night_actions:
+            # Drunk submitted an investigation — treat them as the "seer" for this
+            investigating_id = drunk_id
+            investigation_target = night_actions[drunk_id]
+
+        if investigating_id and investigation_target:
+            target_player = char_to_player.get(investigation_target)
+            is_ai_character = ai_char and ai_char.name == investigation_target
+
+            if is_ai_character:
+                true_result = True
+            elif target_player:
+                true_result = target_player.role == Role.SHAPESHIFTER
+            else:
+                true_result = False
+
+            # Drunk gets the wrong answer
+            if investigating_id == drunk_id:
+                reported_result = not true_result
+                logger.info(f"[{game_id}] Drunk investigated {investigation_target} — given WRONG result")
+            else:
+                reported_result = true_result
+
+            result["seer_result"] = {
+                "character": investigation_target,
+                "is_shapeshifter": reported_result,
+                "investigating_player_id": investigating_id,
+            }
+
+        # ── Log all actions as hidden events ──────────────────────────────────
+
+        if shapeshifter_target:
+            await fs.log_event(game_id, GameEvent(
+                id=str(uuid.uuid4()),
+                type="night_kill_attempt",
+                round=game.round,
+                phase=Phase.NIGHT,
+                actor=ai_char.name if ai_char else "shapeshifter",
+                target=shapeshifter_target,
+                data={"blocked": result["killed"] is None},
+                visible_in_game=False,
+            ))
+
+        if protected_target:
+            await fs.log_event(game_id, GameEvent(
+                id=str(uuid.uuid4()),
+                type="night_heal",
+                round=game.round,
+                phase=Phase.NIGHT,
+                actor=id_to_player[healer_id].character_name if healer_id in id_to_player else "healer",
+                target=protected_target,
+                visible_in_game=False,
+            ))
+
+        if result.get("seer_result"):
+            sr = result["seer_result"]
+            await fs.log_event(game_id, GameEvent(
+                id=str(uuid.uuid4()),
+                type="night_investigation",
+                round=game.round,
+                phase=Phase.NIGHT,
+                actor=id_to_player[sr["investigating_player_id"]].character_name
+                      if sr["investigating_player_id"] in id_to_player else "seer",
+                target=sr["character"],
+                data={
+                    "result": sr["is_shapeshifter"],
+                    "is_drunk": investigating_id == drunk_id,
+                },
+                visible_in_game=False,
+            ))
+
+        # Clear night actions for next round
+        await fs.clear_night_actions(game_id)
+
+        return result
+
+    # ── Vote tallying ──────────────────────────────────────────────────────────
+
+    async def tally_votes(self, game_id: str) -> Dict[str, Any]:
+        """
+        Count all votes including the AI character's vote.
+        Tie-breaking: random selection among tied characters.
+
+        Returns:
+        {
+            "result": "eliminated" | "tie" | "no_votes",
+            "eliminated": Optional[str],  # character_name
+            "tally": Dict[str, int],
+            "tied": List[str],           # populated on tie
+        }
+        """
+        fs = get_firestore_service()
+
+        tally = await fs.get_vote_tally(game_id)
+
+        # Include AI character's vote
+        ai_char = await fs.get_ai_character(game_id)
+        if ai_char and ai_char.alive and ai_char.voted_for:
+            tally[ai_char.voted_for] = tally.get(ai_char.voted_for, 0) + 1
+            # Clear AI vote so it doesn't persist into the next round
+            await fs.update_game(game_id, {"ai_character.voted_for": None})
+
+        if not tally:
+            return {"result": "no_votes", "eliminated": None, "tally": {}, "tied": []}
+
+        max_votes = max(tally.values())
+        leaders = [char for char, count in tally.items() if count == max_votes]
+
+        if len(leaders) == 1:
+            eliminated = leaders[0]
+            logger.info(f"[{game_id}] Vote result: {eliminated} eliminated with {max_votes} votes")
+            return {
+                "result": "eliminated",
+                "eliminated": eliminated,
+                "tally": tally,
+                "tied": [],
+            }
+        else:
+            # Tie: random tiebreak (log this so post-game reveal shows it)
+            eliminated = random.choice(leaders)
+            logger.info(f"[{game_id}] Vote tie between {leaders} — random pick: {eliminated}")
+            return {
+                "result": "tie",
+                "eliminated": eliminated,
+                "tally": tally,
+                "tied": leaders,
+            }
+
+    # ── Elimination ────────────────────────────────────────────────────────────
+
+    async def eliminate_character(self, game_id: str, character_name: str) -> Dict[str, Any]:
+        """
+        Eliminate the character from the game.
+
+        Returns:
+        {
+            "was_traitor": bool,
+            "role": str,
+            "needs_hunter_revenge": bool,
+            "hunter_character": Optional[str],
+        }
+        """
+        fs = get_firestore_service()
+        players = await fs.get_all_players(game_id)
+        ai_char = await fs.get_ai_character(game_id)
+
+        was_traitor = bool(ai_char and ai_char.name == character_name)
+        eliminated_role = None
+        needs_hunter_revenge = False
+        hunter_character = None
+        found = False
+
+        if was_traitor:
+            found = True
+            await fs.update_game(game_id, {"ai_character.alive": False})
+            eliminated_role = "shapeshifter"
+        else:
+            for p in players:
+                if p.character_name == character_name:
+                    found = True
+                    eliminated_role = p.role.value if p.role else "villager"
+                    if p.role == Role.HUNTER:
+                        needs_hunter_revenge = True
+                        hunter_character = character_name
+                    break
+            if found:
+                await fs.eliminate_by_character(game_id, character_name)
+            else:
+                logger.warning(f"[{game_id}] eliminate_character: '{character_name}' not found — skipping")
+
+        if found:
+            await fs.clear_votes(game_id)
+
+            game = await fs.get_game(game_id)
+            await fs.log_event(game_id, GameEvent(
+                id=str(uuid.uuid4()),
+                type="elimination",
+                round=game.round if game else 0,
+                phase=Phase.ELIMINATION,
+                target=character_name,
+                data={
+                    "was_traitor": was_traitor,
+                    "role": eliminated_role,
+                    "by_vote": True,
+                },
+                visible_in_game=True,
+            ))
+
+            logger.info(f"[{game_id}] Eliminated {character_name} (role={eliminated_role}, traitor={was_traitor})")
+
+        return {
+            "was_traitor": was_traitor,
+            "role": eliminated_role,
+            "needs_hunter_revenge": needs_hunter_revenge,
+            "hunter_character": hunter_character,
+        }
+
+    # ── Win condition check ───────────────────────────────────────────────────
+
+    async def check_win_condition(self, game_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Check if the game is over.
+
+        Villagers win: AI character is eliminated.
+        Shapeshifter wins: alive non-AI players ≤ 1
+          (AI can manipulate the vote when they outnumber villagers)
+
+        Returns None if game continues, or:
+        {
+            "winner": "villagers" | "shapeshifter",
+            "reason": str,
+        }
+        """
+        fs = get_firestore_service()
+        ai_char = await fs.get_ai_character(game_id)
+
+        if not ai_char or not ai_char.alive:
+            return {
+                "winner": "villagers",
+                "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
+            }
+
+        alive_players = await fs.get_alive_players(game_id)
+        # Count human players (exclude any flagged as AI — all our players are human)
+        human_alive = len(alive_players)
+
+        if human_alive <= 1:
+            return {
+                "winner": "shapeshifter",
+                "reason": (
+                    "The Shapeshifter has eliminated enough villagers to seize Thornwood. "
+                    "The village falls into darkness."
+                ),
+            }
+
+        return None  # Game continues
+
+    # ── Role assignment (delegated to this module as a prep utility) ──────────
+
+    async def prepare_game(
+        self, game_id: str, player_ids: List[str], difficulty: str = "normal"
+    ) -> Dict[str, Any]:
+        """
+        Validate player count and confirm role distribution for this game.
+        Actual role assignment + character name assignment is done by
+        the role-assignment feature (feature/role-assignment).
+
+        Returns the planned role distribution dict.
+        Raises ValueError if player count is unsupported.
+        """
+        n = len(player_ids)
+        if n not in ROLE_DISTRIBUTION:
+            raise ValueError(
+                f"Unsupported player count: {n}. Supported: {sorted(ROLE_DISTRIBUTION.keys())}"
+            )
+
+        distribution = ROLE_DISTRIBUTION[n]
+        role_counts: Dict[str, int] = {}
+        for role in distribution:
+            role_counts[role] = role_counts.get(role, 0) + 1
+
+        logger.info(f"[{game_id}] Prepared {n}-player game: {role_counts} (difficulty={difficulty})")
+        return {
+            "player_count": n,
+            "roles": distribution,
+            "role_counts": role_counts,
+            "difficulty": difficulty,
+        }
+
+    # ── Hunter revenge ─────────────────────────────────────────────────────────
+
+    async def execute_hunter_revenge(
+        self, game_id: str, hunter_character: str, target_character: str
+    ) -> Dict[str, Any]:
+        """
+        Execute the Hunter's death ability: eliminate their chosen target.
+        Called after the Hunter is eliminated (day vote or night kill).
+        """
+        result = await self.eliminate_character(game_id, target_character)
+        logger.info(
+            f"[{game_id}] Hunter {hunter_character} revenge kill: {target_character}"
+        )
+
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        await fs.log_event(game_id, GameEvent(
+            id=str(uuid.uuid4()),
+            type="hunter_revenge",
+            round=game.round if game else 0,
+            phase=game.phase if game else Phase.ELIMINATION,
+            actor=hunter_character,
+            target=target_character,
+            data={"was_traitor": result["was_traitor"]},
+            visible_in_game=True,
+        ))
+
+        return result
+
+
+# Module-level singleton
+game_master = GameMaster()
