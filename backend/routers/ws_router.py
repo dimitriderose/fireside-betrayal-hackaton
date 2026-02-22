@@ -845,8 +845,10 @@ async def _on_spectator_clue(
     """
     Eliminated player submits a 1-word clue during DAY_DISCUSSION.
     The narrator receives it and weaves it atmospherically into the narration.
-    Each spectator may submit exactly one clue per game (tracked in-memory).
+    Each spectator may submit exactly one clue per round (tracked in-memory by round).
     """
+    import re as _re
+
     # Only during DAY_DISCUSSION
     game = await fs.get_game(game_id)
     if not game or game.phase != Phase.DAY_DISCUSSION:
@@ -867,40 +869,52 @@ async def _on_spectator_clue(
         })
         return
 
-    # One clue per spectator per game
-    clue_key = f"{game_id}:{player_id}"
+    # One clue per spectator per round (keyed by round so new rounds allow a new clue)
+    clue_key = f"{game_id}:{player_id}:{game.round}"
     if clue_key in _spectator_clues_sent:
         await manager.send_to(game_id, player_id, {
             "type": "error",
-            "message": "You have already submitted your clue",
+            "message": "You have already submitted your clue this round",
             "code": "CLUE_ALREADY_SENT",
         })
         return
 
-    # Validate: exactly one word, no spaces
-    word = str(data.get("word", "")).strip().lower()
-    if not word or " " in word or len(word) > 30:
+    # Validate: alphabetic word only (blocks Unicode spaces and prompt injection)
+    word = str(data.get("word", "")).strip()
+    if not word or not _re.fullmatch(r"[a-zA-Z\-']{1,30}", word):
         await manager.send_to(game_id, player_id, {
             "type": "error",
-            "message": "Clue must be a single word (max 30 characters)",
+            "message": "Clue must be a single word (letters, hyphens, apostrophes only; max 30 chars)",
             "code": "INVALID_CLUE",
+        })
+        return
+
+    word = word.lower()
+    character_name = player.character_name or "an unknown spirit"
+
+    # Attempt narrator delivery first — only lock the key if it succeeds
+    try:
+        await narrator_manager.send_phase_event(game_id, "spectator_clue", {
+            "from": character_name,
+            "word": word,
+        })
+    except Exception:
+        logger.exception("[%s] Failed to deliver spectator clue to narrator", game_id)
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Could not deliver clue — please try again",
+            "code": "NARRATOR_ERROR",
         })
         return
 
     _spectator_clues_sent.add(clue_key)
 
-    character_name = player.character_name or player_id
-    await narrator_manager.send_phase_event(game_id, "spectator_clue", {
-        "from": character_name,
-        "word": word,
-    })
-
-    # Confirm to the sender
+    # Confirm to the sender (clue is now committed)
     await manager.send_to(game_id, player_id, {
         "type": "clue_accepted",
         "word": word,
     })
-    logger.info("[%s] Spectator clue from %s: '%s'", game_id, character_name, word)
+    logger.info("[%s] Spectator clue from %s (round %d): '%s'", game_id, character_name, game.round, word)
 
 
 def _build_timeline(events: list) -> list:

@@ -155,8 +155,8 @@ export function useWebSocket(gameId, playerId) {
       }
 
       case 'clue_accepted':
-        // msg: { type, word } — server confirms the spectator clue was received
-        // No state change needed; SpectatorCluePanel tracks sent state locally
+        // msg: { type, word } — server confirms clue was delivered to narrator
+        dispatch({ type: 'CLUE_SENT' })
         break
 
       case 'error':

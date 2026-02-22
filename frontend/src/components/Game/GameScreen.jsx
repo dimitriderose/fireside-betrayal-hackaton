@@ -362,19 +362,21 @@ function HunterRevengePanel({ candidates, onRevenge }) {
 }
 
 
-function SpectatorCluePanel({ onSubmitClue }) {
+// clueSent is driven by context (set on clue_accepted from server) so it:
+// - persists across phase transitions within a round
+// - resets on PHASE_CHANGE so a new round's day_discussion allows a new clue
+function SpectatorCluePanel({ onSubmitClue, clueSent }) {
   const [word, setWord] = useState('')
-  const [sent, setSent] = useState(false)
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    const trimmed = word.trim().split(/\s+/)[0] // first word only
+    const trimmed = word.trim()
     if (!trimmed) return
     onSubmitClue(trimmed)
-    setSent(true)
+    // Do NOT set success here — wait for clue_accepted from server via context
   }
 
-  if (sent) {
+  if (clueSent) {
     return (
       <div className="container" style={{ paddingTop: 12 }}>
         <div
@@ -400,7 +402,7 @@ function SpectatorCluePanel({ onSubmitClue }) {
             className="input"
             placeholder="One word…"
             value={word}
-            onChange={e => setWord(e.target.value.replace(/\s/g, ''))}
+            onChange={e => setWord(e.target.value.replace(/[^a-zA-Z\-']/g, ''))}
             maxLength={30}
             style={{ flex: 1 }}
             autoFocus
@@ -645,7 +647,7 @@ export default function GameScreen() {
   const {
     playerId, playerName, phase, characterName, round, isHost,
     players, aiCharacter, storyLog, role, isEliminated,
-    nightActionSubmitted, hunterRevengeNeeded,
+    nightActionSubmitted, hunterRevengeNeeded, clueSent,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
@@ -901,7 +903,7 @@ export default function GameScreen() {
 
         {/* Eliminated spectator — clue panel during discussion, plain notice otherwise */}
         {isEliminated && !hunterRevengeNeeded && phase === 'day_discussion' && (
-          <SpectatorCluePanel onSubmitClue={handleSpectatorClue} />
+          <SpectatorCluePanel onSubmitClue={handleSpectatorClue} clueSent={clueSent} />
         )}
         {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'day_vote' && phase !== 'day_discussion' && (
           <div className="container" style={{ paddingTop: 12 }}>
