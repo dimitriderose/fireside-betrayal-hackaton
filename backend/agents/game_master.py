@@ -111,8 +111,9 @@ class GameMaster:
         # ── Step 1: Shapeshifter kill target (set by TraitorAgent or default) ──
         shapeshifter_target: Optional[str] = None
         if ai_char and ai_char.alive:
-            # TraitorAgent sets the target via a game event of type "night_target"
-            events = await fs.get_events(game_id, round=game.round)
+            # TraitorAgent sets the target via a game event of type "night_target".
+            # visible_only=False is explicit: night_target events are hidden (visible_in_game=False).
+            events = await fs.get_events(game_id, round=game.round, visible_only=False)
             for ev in events:
                 if ev.type == "night_target" and ev.actor == ai_char.name:
                     # Validate target is still alive

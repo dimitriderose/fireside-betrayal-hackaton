@@ -135,22 +135,35 @@ def _build_system(ai_char, diff_key: str, game_state: str) -> str:
     )
 
 
+# Module-level Gemini client cache — created once on first use.
+_genai_client: Optional[Any] = None
+_genai_import_failed: bool = False
+
+
 async def _call_gemini(prompt: str, system: str, temperature: float = 0.7) -> str:
     """Async text generation via Gemini 2.5 Flash (not Live API)."""
+    global _genai_client, _genai_import_failed
+
+    if _genai_import_failed:
+        return "I stand by what I said."
+
+    if _genai_client is None:
+        try:
+            from google import genai
+        except ImportError:
+            _genai_import_failed = True
+            logger.warning("google-genai not installed — traitor agent disabled")
+            return "I stand by what I said."
+
+        if not settings.gemini_api_key:
+            logger.warning("GEMINI_API_KEY not set — traitor agent disabled")
+            return "I stand by what I said."
+
+        _genai_client = genai.Client(api_key=settings.gemini_api_key)
+
     try:
-        from google import genai
         from google.genai import types
-    except ImportError:
-        logger.warning("google-genai not installed — traitor agent disabled")
-        return "I stand by what I said."
-
-    if not settings.gemini_api_key:
-        logger.warning("GEMINI_API_KEY not set — traitor agent disabled")
-        return "I stand by what I said."
-
-    client = genai.Client(api_key=settings.gemini_api_key)
-    try:
-        response = await client.aio.models.generate_content(
+        response = await _genai_client.aio.models.generate_content(
             model=settings.traitor_model,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -162,7 +175,7 @@ async def _call_gemini(prompt: str, system: str, temperature: float = 0.7) -> st
         text = response.text
         return text.strip() if text else "I stand by what I said."
     except Exception as exc:
-        logger.error("Traitor Gemini call failed: %s", exc)
+        logger.error("[traitor] Gemini call failed: %s", exc)
         return "I stand by what I said."
 
 
@@ -277,7 +290,7 @@ class TraitorAgent:
         game = ctx["game"]
         alive_players = ctx["alive_players"]
 
-        if len(alive_players) < 2:
+        if len(alive_players) < 1:
             return None
 
         diff_key = game.difficulty.value

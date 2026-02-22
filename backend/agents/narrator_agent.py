@@ -605,6 +605,13 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
                 "Reveal how the Shapeshifter deceived the village to the end."
             )
 
+    if event_type == "no_elimination":
+        return (
+            "[NO ELIMINATION — DEADLOCK] The villagers argued but could not reach a majority. "
+            "No one was cast out today. Narrate the rising paranoia and suspicion (1–2 sentences), "
+            "then call advance_phase to begin the night."
+        )
+
     if event_type == "hunter_revenge":
         hunter = data.get("hunter", "the Hunter")
         target = data.get("target", "someone")
