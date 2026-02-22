@@ -12,12 +12,13 @@ Connection flow:
   6. On disconnect: mark disconnected, broadcast "player_left"
 
 Client → server message types handled here:
-  ping          — keep-alive heartbeat → responds with "pong"
-  ready         — player ready in lobby
-  message       — free-form chat (stored; Narrator picks it up in P0-5)
-  vote          — vote for a character (day_vote phase only)
-  night_action  — Seer / Healer / Drunk action (night phase only)
-  hunter_revenge — Hunter's revenge kill (after Hunter elimination)
+  ping            — keep-alive heartbeat → responds with "pong"
+  ready           — player ready in lobby
+  message         — free-form chat (stored; Narrator picks it up in P0-5)
+  vote            — vote for a character (day_vote phase only)
+  night_action    — Seer / Healer / Drunk action (night phase only)
+  hunter_revenge  — Hunter's revenge kill (after Hunter elimination)
+  spectator_clue  — eliminated player submits a 1-word clue (day_discussion only, once per game)
 
 Phase auto-advance (vote phase only):
   When all alive human players have submitted their vote,
@@ -43,6 +44,11 @@ from agents.narrator_agent import narrator_manager
 # Safe without a Lock because asyncio is single-threaded: no await between
 # the membership test and the add(), so no interleaving is possible.
 _resolving_votes: Set[str] = set()
+
+# Tracks which (game_id, player_id) pairs have already submitted a spectator clue.
+# Prevents double-submission without touching Firestore — resets on server restart
+# (acceptable for hackathon: if the server restarts mid-game, the clue limit resets).
+_spectator_clues_sent: Set[str] = set()
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +379,9 @@ async def _handle_message(
 
     elif msg_type == "quick_reaction":
         await _on_quick_reaction(game_id, player_id, data, fs)
+
+    elif msg_type == "spectator_clue":
+        await _on_spectator_clue(game_id, player_id, data, fs)
 
     else:
         await manager.send_to(game_id, player_id, {
@@ -828,6 +837,70 @@ async def _on_quick_reaction(
 
     # Forward to narrator so it can react narratively
     await narrator_manager.forward_player_message(game_id, speaker, text, game.phase.value)
+
+
+async def _on_spectator_clue(
+    game_id: str, player_id: str, data: Dict, fs
+) -> None:
+    """
+    Eliminated player submits a 1-word clue during DAY_DISCUSSION.
+    The narrator receives it and weaves it atmospherically into the narration.
+    Each spectator may submit exactly one clue per game (tracked in-memory).
+    """
+    # Only during DAY_DISCUSSION
+    game = await fs.get_game(game_id)
+    if not game or game.phase != Phase.DAY_DISCUSSION:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Clues can only be submitted during the discussion phase",
+            "code": "WRONG_PHASE",
+        })
+        return
+
+    # Only for eliminated players
+    player = await fs.get_player(game_id, player_id)
+    if not player or player.alive:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Only eliminated players can submit clues",
+            "code": "PLAYER_NOT_SPECTATOR",
+        })
+        return
+
+    # One clue per spectator per game
+    clue_key = f"{game_id}:{player_id}"
+    if clue_key in _spectator_clues_sent:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "You have already submitted your clue",
+            "code": "CLUE_ALREADY_SENT",
+        })
+        return
+
+    # Validate: exactly one word, no spaces
+    word = str(data.get("word", "")).strip().lower()
+    if not word or " " in word or len(word) > 30:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Clue must be a single word (max 30 characters)",
+            "code": "INVALID_CLUE",
+        })
+        return
+
+    _spectator_clues_sent.add(clue_key)
+
+    character_name = player.character_name or player_id
+    await narrator_manager.send_phase_event(game_id, "spectator_clue", {
+        "from": character_name,
+        "word": word,
+    })
+
+    # Confirm to the sender
+    await manager.send_to(game_id, player_id, {
+        "type": "clue_accepted",
+        "word": word,
+    })
+    logger.info("[%s] Spectator clue from %s: '%s'", game_id, character_name, word)
 
 
 def _build_timeline(events: list) -> list:

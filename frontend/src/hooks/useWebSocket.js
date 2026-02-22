@@ -154,6 +154,11 @@ export function useWebSocket(gameId, playerId) {
         break
       }
 
+      case 'clue_accepted':
+        // msg: { type, word } — server confirms the spectator clue was received
+        // No state change needed; SpectatorCluePanel tracks sent state locally
+        break
+
       case 'error':
         // msg: { type, message, code }
         dispatch({ type: 'SET_ERROR', error: msg.message })
