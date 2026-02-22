@@ -114,12 +114,12 @@ export function useWebSocket(gameId, playerId) {
         break
 
       case 'game_over':
-        // msg: { type, winner, reason, characterReveals: [{ characterName, playerName, role }] }
+        // msg: { type, winner, reason, characterReveals: [...], timeline: [...] }
         dispatch({
           type: 'GAME_OVER',
           winner: msg.winner,
           reveals: msg.characterReveals ?? [],
-          strategyLog: [],
+          strategyLog: msg.timeline ?? [],
         })
         break
 

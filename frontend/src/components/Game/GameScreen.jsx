@@ -391,6 +391,83 @@ function ChatBar({ chatText, onChange, onSubmit }) {
 }
 
 
+function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction }) {
+  const [picker, setPicker] = useState(null) // 'suspect' | 'trust' | null
+  const targets = aliveCharacters.filter(c => c !== myCharacterName)
+
+  if (picker) {
+    return (
+      <div className="container" style={{ paddingTop: 0, paddingBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            {picker === 'suspect' ? '🔍 I suspect…' : '🤝 I trust…'}
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ padding: '2px 8px', fontSize: '0.75rem' }}
+            onClick={() => setPicker(null)}
+          >
+            ✕
+          </button>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {targets.length === 0
+            ? <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>No other players alive.</span>
+            : targets.map(name => (
+              <button
+                key={name}
+                className="btn btn-ghost btn-sm"
+                style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+                onClick={() => { onReaction(picker, name); setPicker(null) }}
+              >
+                {name.split(' ').slice(0, 2).join(' ')}
+              </button>
+            ))
+          }
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="container" style={{ paddingTop: 0, paddingBottom: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ fontSize: '0.75rem', padding: '6px 10px', opacity: targets.length === 0 ? 0.4 : 1 }}
+          onClick={() => targets.length > 0 && setPicker('suspect')}
+          disabled={targets.length === 0}
+        >
+          🔍 Suspect…
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ fontSize: '0.75rem', padding: '6px 10px', opacity: targets.length === 0 ? 0.4 : 1 }}
+          onClick={() => targets.length > 0 && setPicker('trust')}
+          disabled={targets.length === 0}
+        >
+          🤝 Trust…
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+          onClick={() => onReaction('agree', '')}
+        >
+          👍 Agree
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+          onClick={() => onReaction('information', '')}
+        >
+          💡 Info
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
 function RoleCard({ roleInfo, characterName, role }) {
   const [expanded, setExpanded] = useState(false)
 
@@ -584,6 +661,10 @@ export default function GameScreen() {
     setChatText('')
   }
 
+  const handleQuickReaction = (reaction, target) => {
+    sendMessage('quick_reaction', { reaction, target })
+  }
+
   const handleNightAction = (target) => {
     const info = ROLE_INFO[role]
     if (!info?.action) return
@@ -774,13 +855,21 @@ export default function GameScreen() {
           />
         )}
 
-        {/* Chat bar */}
+        {/* Chat bar + quick reactions */}
         {showChat && (
-          <ChatBar
-            chatText={chatText}
-            onChange={setChatText}
-            onSubmit={handleChat}
-          />
+          <>
+            <ChatBar
+              chatText={chatText}
+              onChange={setChatText}
+              onSubmit={handleChat}
+            />
+            <QuickReactionBar
+              key={round}
+              aliveCharacters={aliveCharacters}
+              myCharacterName={characterName}
+              onReaction={handleQuickReaction}
+            />
+          </>
         )}
       </div>
 

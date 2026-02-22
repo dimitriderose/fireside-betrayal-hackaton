@@ -10,10 +10,123 @@ const ROLE_ICONS = {
   shapeshifter: '🐺',
 }
 
+// Timeline event type → { icon, label(actor, target, data) }
+// night_target is intentionally omitted — night_kill_attempt already covers the same action
+const EVENT_RENDERERS = {
+  night_kill_attempt: (e) => ({
+    icon: e.data?.blocked ? '🛡️' : '🗡️',
+    text: e.data?.blocked
+      ? `${e.actor ?? 'Unknown'} attacked ${e.target ?? 'Unknown'} — but the Healer intervened.`
+      : `${e.actor ?? 'Unknown'} eliminated ${e.target ?? 'Unknown'}.`,
+    hidden: true,
+  }),
+  night_heal: (e) => ({
+    icon: '💚',
+    text: `${e.actor ?? 'Unknown'} protected ${e.target ?? 'Unknown'} through the night.`,
+    hidden: true,
+  }),
+  night_investigation: (e) => ({
+    icon: e.data?.is_drunk ? '🍺' : '🔮',
+    text: e.data?.is_drunk
+      ? `${e.actor ?? 'Unknown'} investigated ${e.target ?? 'Unknown'} (received wrong result — they are Drunk).`
+      : `${e.actor ?? 'Unknown'} investigated ${e.target ?? 'Unknown'}: ${e.data?.result ? 'IS the Shapeshifter' : 'is NOT the Shapeshifter'}.`,
+    hidden: true,
+  }),
+  elimination: (e) => ({
+    icon: '⚰️',
+    text: e.data?.was_traitor
+      ? `${e.target ?? 'Unknown'} was eliminated — the Shapeshifter unmasked!`
+      : `${e.target ?? 'Unknown'} was eliminated (${e.data?.role ?? 'villager'}).`,
+    hidden: false,
+  }),
+  hunter_revenge: (e) => ({
+    icon: '🏹',
+    text: `${e.actor ?? 'Unknown'} took ${e.target ?? 'Unknown'} with them as their dying act.`,
+    hidden: false,
+  }),
+}
+
+function TimelineRound({ roundEntry }) {
+  const { round, events } = roundEntry
+  if (!events?.length) return null
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div
+        style={{
+          fontSize: '0.6875rem',
+          color: 'var(--text-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.12em',
+          marginBottom: 10,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}
+      >
+        <span
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-full)',
+            padding: '2px 10px',
+          }}
+        >
+          Round {round}
+        </span>
+        <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {events.map((ev, i) => {
+          const renderer = EVENT_RENDERERS[ev.type]
+          if (!renderer) return null
+          const rendered = renderer(ev)
+          return (
+            <div
+              key={ev.id ?? `${ev.type}-${ev.actor}-${ev.target}-${i}`}
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'flex-start',
+                padding: '8px 10px',
+                background: rendered.hidden ? 'rgba(255,107,53,0.05)' : 'var(--bg-card)',
+                border: `1px solid ${rendered.hidden ? 'var(--border-accent)' : 'var(--border)'}`,
+                borderRadius: 'var(--radius-md)',
+                opacity: 0.92,
+              }}
+              className="fade-in"
+            >
+              <span style={{ fontSize: '1rem', flexShrink: 0 }}>{rendered.icon}</span>
+              <div>
+                <p style={{ fontSize: '0.8125rem', lineHeight: 1.5, margin: 0, color: 'var(--text)' }}>
+                  {rendered.text}
+                </p>
+                {rendered.hidden && (
+                  <span
+                    style={{
+                      fontSize: '0.6875rem',
+                      color: 'var(--accent)',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.08em',
+                    }}
+                  >
+                    Hidden during game
+                  </span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function GameOver() {
   const navigate = useNavigate()
   const { state, dispatch } = useGame()
-  const { winner, reveals, characterName: myCharacterName } = state
+  const { winner, reveals, strategyLog, characterName: myCharacterName } = state
 
   // Guard against direct URL navigation or page refresh (no game state in context)
   if (!winner) return <Navigate to="/" replace />
@@ -58,7 +171,7 @@ export default function GameOver() {
         </p>
       </div>
 
-      <div className="container" style={{ paddingBottom: 32 }}>
+      <div className="container" style={{ paddingBottom: 40 }}>
 
         {/* Character Reveals */}
         {reveals.length > 0 && (
@@ -104,7 +217,7 @@ export default function GameOver() {
                           className={`badge ${isTraitor ? 'badge-danger' : 'badge-muted'}`}
                           style={{ fontSize: '0.625rem' }}
                         >
-                          {r.role?.charAt(0).toUpperCase() + r.role?.slice(1)}
+                          {r.role ? r.role.charAt(0).toUpperCase() + r.role.slice(1) : '?'}
                         </span>
                         {isMe && (
                           <div
@@ -122,10 +235,33 @@ export default function GameOver() {
           </div>
         )}
 
-        {/* No reveals yet (game may have ended before WS message) */}
+        {/* No reveals yet */}
         {reveals.length === 0 && (
           <div style={{ textAlign: 'center', paddingTop: 16, paddingBottom: 24 }}>
             <p style={{ color: 'var(--text-dim)' }}>The village's secrets remain…</p>
+          </div>
+        )}
+
+        {/* Post-game reveal timeline */}
+        {strategyLog.length > 0 && (
+          <div style={{ marginBottom: 32 }}>
+            <h3
+              style={{
+                marginBottom: 6,
+                fontSize: '0.8125rem',
+                color: 'var(--text-muted)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+              }}
+            >
+              What Really Happened
+            </h3>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: 16 }}>
+              Every hidden action — now revealed.
+            </p>
+            {strategyLog.map((roundEntry) => (
+              <TimelineRound key={roundEntry.round} roundEntry={roundEntry} />
+            ))}
           </div>
         )}
 
