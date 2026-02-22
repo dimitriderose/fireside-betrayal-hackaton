@@ -15,7 +15,7 @@ from typing import Dict, Optional, Any, Set
 
 from config import settings
 from services.firestore_service import get_firestore_service
-from models.game import Phase, Role
+from models.game import Phase, Role, ChatMessage
 from utils.audio import pcm_to_base64
 
 logger = logging.getLogger(__name__)
@@ -49,9 +49,10 @@ YOUR PHASE RESPONSIBILITIES:
    - Briefly set the morning mood (1–2 sentences). Reference specific tensions from the NIGHT_RESOLVED
      signal — if accusations were made yesterday, let them color the new day's atmosphere.
    - React to player dialogue with short atmospheric comments (1 sentence max).
-   - Call get_game_state periodically. If characters_not_yet_spoken is non-empty, gently invite
-     one quiet character into the conversation by name (e.g. "Elena, you've been watching closely —
-     does anything seem off to you?"). Do this at most once per character per round.
+   - After every 2–3 player messages (or after a pause in conversation), call get_game_state.
+     If characters_not_yet_spoken is non-empty, gently invite one quiet character into the
+     conversation by name (e.g. "Elena, you've been watching closely — does anything seem off
+     to you?"). Do this at most once per character per round.
    - When you judge that discussion has been sufficient, call advance_phase → moves to DAY_VOTE.
 
 4. ELIMINATION signal received:
@@ -165,14 +166,23 @@ async def handle_get_game_state(game_id: str) -> Dict[str, Any]:
     ai_char = await fs.get_ai_character(game_id)
     recent_chat = await fs.get_chat_messages(game_id, limit=10)
 
-    # Alive character names that haven't appeared in recent chat —
-    # narrator uses this to invite quiet players into the discussion.
-    recent_speakers = {
-        m.speaker for m in recent_chat
-        if m.source in ("player", "ai_character")
-    }
     alive_char_names = [p.character_name for p in alive_players]
-    characters_not_yet_spoken = [n for n in alive_char_names if n not in recent_speakers]
+
+    # characters_not_yet_spoken: only meaningful during DAY_DISCUSSION.
+    # Scoped to the current round so prior-round speakers don't appear as "already spoken".
+    # Includes AI character (when alive) so it can also be invited.
+    characters_not_yet_spoken: list = []
+    if game.phase == Phase.DAY_DISCUSSION:
+        recent_speakers = {
+            m.speaker for m in recent_chat
+            if m.source in ("player", "ai_character")
+            and m.round == game.round
+            and m.phase == Phase.DAY_DISCUSSION
+        }
+        candidate_names = list(alive_char_names)
+        if ai_char and ai_char.alive:
+            candidate_names.append(ai_char.name)
+        characters_not_yet_spoken = [n for n in candidate_names if n not in recent_speakers]
 
     return {
         "phase": game.phase.value,
@@ -269,6 +279,24 @@ async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, 
     from routers.ws_router import manager as ws_manager
 
     result = await traitor_agent.generate_dialog(game_id, context)
+    # Persist to Firestore so handle_get_game_state can see AI dialog in recent_speakers.
+    # This is needed for characters_not_yet_spoken to correctly exclude the AI character
+    # after it has spoken (otherwise it would always appear as silent).
+    try:
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        if game:
+            ai_msg = ChatMessage(
+                speaker=result["character_name"],
+                text=result["dialog"],
+                source="ai_character",
+                phase=game.phase,
+                round=game.round,
+            )
+            await fs.add_chat_message(game_id, ai_msg)
+    except Exception:
+        logger.warning("[%s] inject_traitor_dialog: failed to persist AI dialog", game_id, exc_info=True)
+
     # Broadcast text transcript so text-only clients see the AI character's line
     await ws_manager.broadcast_transcript(
         game_id,
