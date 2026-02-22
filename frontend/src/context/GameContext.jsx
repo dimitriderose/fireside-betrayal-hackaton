@@ -56,7 +56,10 @@ function gameReducer(state, action) {
     case 'UPDATE_PLAYERS':
       return { ...state, players: action.players }
     case 'ADD_PLAYER': {
-      const existing = state.players.filter(p => p.id !== action.player.id)
+      // Deduplicate by both id and characterName to prevent ghost entries from player_joined
+      const existing = state.players.filter(
+        p => p.id !== action.player.id && p.characterName !== action.player.characterName
+      )
       return { ...state, players: [...existing, action.player] }
     }
     case 'ADD_MESSAGE':
@@ -67,12 +70,18 @@ function gameReducer(state, action) {
           { ...action.message, id: action.message.id ?? `${Date.now()}-${Math.random()}` },
         ].slice(-200), // keep last 200 messages
       }
-    case 'VOTE_UPDATE':
+    case 'VOTE_UPDATE': {
+      // Ignore stale vote_updates that arrive after the phase has already changed
+      if (state.phase !== 'day_vote') return state
+      // Restore myVote from voteMap after reconnect (connected message doesn't carry voted_for)
+      const restoredVote = action.voteMap?.[state.characterName] ?? state.myVote
       return {
         ...state,
         votes: action.tally ?? state.votes,
         voteMap: action.voteMap ?? state.voteMap,
+        myVote: restoredVote,
       }
+    }
     case 'ELIMINATION': {
       const isLocalPlayerEliminated = state.characterName === action.character
       const isAIEliminated = state.aiCharacter?.name === action.character
