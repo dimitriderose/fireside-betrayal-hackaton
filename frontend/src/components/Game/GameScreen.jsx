@@ -362,6 +362,66 @@ function HunterRevengePanel({ candidates, onRevenge }) {
 }
 
 
+// clueSent is driven by context (set on clue_accepted from server) so it:
+// - persists across phase transitions within a round
+// - resets on PHASE_CHANGE so a new round's day_discussion allows a new clue
+function SpectatorCluePanel({ onSubmitClue, clueSent }) {
+  const [word, setWord] = useState('')
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    const trimmed = word.trim()
+    if (!trimmed) return
+    onSubmitClue(trimmed)
+    // Do NOT set success here — wait for clue_accepted from server via context
+  }
+
+  if (clueSent) {
+    return (
+      <div className="container" style={{ paddingTop: 12 }}>
+        <div
+          className="card"
+          style={{ textAlign: 'center', borderColor: 'var(--border-accent)', padding: '12px 16px' }}
+        >
+          <p style={{ fontSize: '0.8125rem', color: 'var(--accent)', margin: 0 }}>
+            ✦ Your whisper has been carried on the wind…
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="container" style={{ paddingTop: 12 }}>
+      <div className="card" style={{ borderColor: 'var(--border-accent)' }}>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 8 }}>
+          🕯 You are a spectator. Leave one word as a clue for the living.
+        </div>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="input"
+            placeholder="One word…"
+            value={word}
+            onChange={e => setWord(e.target.value.replace(/[^a-zA-Z\-']/g, ''))}
+            maxLength={30}
+            style={{ flex: 1 }}
+            autoFocus
+          />
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!word.trim()}
+            style={{ padding: '12px 16px', flexShrink: 0 }}
+          >
+            Whisper
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+
 function ChatBar({ chatText, onChange, onSubmit }) {
   return (
     <div
@@ -587,7 +647,7 @@ export default function GameScreen() {
   const {
     playerId, playerName, phase, characterName, round, isHost,
     players, aiCharacter, storyLog, role, isEliminated,
-    nightActionSubmitted, hunterRevengeNeeded,
+    nightActionSubmitted, hunterRevengeNeeded, clueSent,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
@@ -675,6 +735,10 @@ export default function GameScreen() {
   const handleHunterRevenge = (target) => {
     sendMessage('hunter_revenge', { target })
     dispatch({ type: 'HUNTER_REVENGE_DONE' })
+  }
+
+  const handleSpectatorClue = (word) => {
+    sendMessage('spectator_clue', { word })
   }
 
   const handleStartGame = async () => {
@@ -837,8 +901,11 @@ export default function GameScreen() {
           </div>
         )}
 
-        {/* Eliminated spectator notice — suppressed when Hunter revenge is pending */}
-        {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'day_vote' && (
+        {/* Eliminated spectator — clue panel during discussion, plain notice otherwise */}
+        {isEliminated && !hunterRevengeNeeded && phase === 'day_discussion' && (
+          <SpectatorCluePanel onSubmitClue={handleSpectatorClue} clueSent={clueSent} />
+        )}
+        {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'day_vote' && phase !== 'day_discussion' && (
           <div className="container" style={{ paddingTop: 12 }}>
             <p style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: '0.875rem' }}>
               🕯 You watch from beyond…

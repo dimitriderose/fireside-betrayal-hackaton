@@ -24,6 +24,7 @@ const initialState = {
   isEliminated: false,   // true when the local player's character has been eliminated
   nightActionSubmitted: false, // true after seer/healer submits night action
   hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
+  clueSent: false,             // true after eliminated player submits spectator clue this round
   error: null,
 }
 
@@ -109,6 +110,8 @@ function gameReducer(state, action) {
       return { ...state, hunterRevengeNeeded: false }
     case 'NIGHT_ACTION_SUBMITTED':
       return { ...state, nightActionSubmitted: true }
+    case 'CLUE_SENT':
+      return { ...state, clueSent: true }
     case 'PHASE_CHANGE':
       return {
         ...state,
@@ -116,6 +119,7 @@ function gameReducer(state, action) {
         round: action.round ?? state.round,
         nightActionSubmitted: false,
         hunterRevengeNeeded: false,
+        clueSent: false,  // reset each phase so new day_discussion in a new round allows a new clue
         // Reset per-round vote state on every phase transition
         votes: {},
         voteMap: {},

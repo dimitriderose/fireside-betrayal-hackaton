@@ -154,6 +154,11 @@ export function useWebSocket(gameId, playerId) {
         break
       }
 
+      case 'clue_accepted':
+        // msg: { type, word } — server confirms clue was delivered to narrator
+        dispatch({ type: 'CLUE_SENT' })
+        break
+
       case 'error':
         // msg: { type, message, code }
         dispatch({ type: 'SET_ERROR', error: msg.message })

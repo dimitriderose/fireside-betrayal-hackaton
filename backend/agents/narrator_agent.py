@@ -85,6 +85,12 @@ TOOLS:
   during DAY_DISCUSSION. Call this when the AI character is addressed directly by name, or when
   the AI character should naturally contribute to the conversation. The AI character's name is
   visible in get_game_state. Voice the returned dialog as if it were the character speaking.
+
+SPECTATOR CLUES:
+- A SPECTATOR_CLUE signal may arrive during DAY_DISCUSSION from a player who was eliminated.
+  It contains a single word whispered from the beyond. Deliver it in a brief, eerie 1-sentence
+  narration (e.g. "A cold wind stirs — the spirit of {name} seems to whisper… '{word}'…").
+  Do not interpret or explain the clue; let it hang in the air mysteriously.
 """
 
 
@@ -792,6 +798,16 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
         return (
             f"[HUNTER REVENGE] The fallen {hunter} drags {target} down with them "
             "as their last act. Narrate this dramatic death in 1–2 sentences."
+        )
+
+    if event_type == "spectator_clue":
+        from_char = data.get("from", "a fallen villager")
+        word = data.get("word", "…")
+        return (
+            f"[SPECTATOR CLUE] The spirit of the fallen {from_char} stirs and whispers "
+            f"one word: '{word}'. Deliver this in a single eerie sentence — "
+            f"e.g. 'A cold wind stirs... the spirit of {from_char} seems to whisper \"{word}\"...' "
+            "Do not explain or interpret the clue. Let it hang in the air."
         )
 
     # Generic fallback
