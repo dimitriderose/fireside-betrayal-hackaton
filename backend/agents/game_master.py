@@ -289,9 +289,15 @@ class GameMaster:
 
     # ── Elimination ────────────────────────────────────────────────────────────
 
-    async def eliminate_character(self, game_id: str, character_name: str) -> Dict[str, Any]:
+    async def eliminate_character(
+        self, game_id: str, character_name: str, by_vote: bool = True
+    ) -> Dict[str, Any]:
         """
         Eliminate the character from the game.
+
+        Args:
+            by_vote: True when eliminated by day vote, False for night kills and
+                     hunter revenge (recorded in the event log).
 
         Returns:
         {
@@ -342,7 +348,7 @@ class GameMaster:
                 data={
                     "was_traitor": was_traitor,
                     "role": eliminated_role,
-                    "by_vote": True,
+                    "by_vote": by_vote,
                 },
                 visible_in_game=True,
             ))
@@ -437,7 +443,7 @@ class GameMaster:
         Execute the Hunter's death ability: eliminate their chosen target.
         Called after the Hunter is eliminated (day vote or night kill).
         """
-        result = await self.eliminate_character(game_id, target_character)
+        result = await self.eliminate_character(game_id, target_character, by_vote=False)
         logger.info(
             f"[{game_id}] Hunter {hunter_character} revenge kill: {target_character}"
         )

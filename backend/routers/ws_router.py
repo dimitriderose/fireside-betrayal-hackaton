@@ -27,6 +27,7 @@ Phase auto-advance (vote phase only):
 Night auto-advance is deferred to the Narrator Agent (P0-5)
 to keep the coordinator role in one place.
 """
+import asyncio
 import json
 import logging
 from typing import Dict, Optional, Any, Set
@@ -35,6 +36,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from models.game import Phase, Role, GameStatus, ChatMessage
 from services.firestore_service import get_firestore_service
+from agents.narrator_agent import narrator_manager
 
 # Games whose vote tally is currently being resolved.
 # Guards against double-advance when two players vote simultaneously.
@@ -421,6 +423,12 @@ async def _on_chat(
         round_num=game.round if game else None,
     )
 
+    # Forward chat to narrator during DAY_DISCUSSION so it can react
+    if game:
+        await narrator_manager.forward_player_message(
+            game_id, speaker, text, game.phase.value
+        )
+
 
 async def _on_vote(
     game_id: str, player_id: str, data: Dict, fs
@@ -536,8 +544,15 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             await _end_game(game_id, win["winner"], win["reason"], fs)
             return
 
+        # Advance to ELIMINATION phase — narrator will narrate then call advance_phase
         next_phase = await game_master.advance_phase(game_id)
         await manager.broadcast_phase_change(game_id, next_phase)
+
+        await narrator_manager.send_phase_event(game_id, "elimination", {
+            "character": eliminated,
+            "was_traitor": elim_result["was_traitor"],
+            "role": elim_result["role"],
+        })
     finally:
         _resolving_votes.discard(game_id)
 
@@ -605,11 +620,82 @@ async def _on_night_action(
         "target": target,
     })
 
+    # Check if all role-players have now submitted — if so, resolve night
+    all_players_fresh = await fs.get_all_players(game_id)
+    night_role_players = [
+        p for p in all_players_fresh
+        if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK}
+    ]
+    all_acted = all(p.night_action for p in night_role_players)
+    if all_acted:
+        await _resolve_night_and_notify_narrator(game_id, fs)
+
+
+async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
+    """
+    Resolve all night actions, broadcast the results, then hand off to the
+    Narrator Agent which will narrate the outcome and call advance_phase.
+    """
+    from agents.game_master import game_master
+
+    night_result = await game_master.resolve_night(game_id)
+    killed = night_result.get("killed")
+
+    if killed:
+        # eliminate_character logs the event and returns metadata.
+        # resolve_night already called fs.eliminate_by_character() so the DB update
+        # is idempotent; by_vote=False ensures the event log is correct.
+        elim_result = await game_master.eliminate_character(game_id, killed, by_vote=False)
+
+        await manager.broadcast_elimination(
+            game_id,
+            character_name=killed,
+            was_traitor=elim_result["was_traitor"],
+            role=elim_result["role"],
+            needs_hunter_revenge=night_result.get("hunter_triggered", False),
+        )
+
+        win = await game_master.check_win_condition(game_id)
+        if win:
+            await _end_game(game_id, win["winner"], win["reason"], fs)
+            return
+
+    # Deliver seer/drunk investigation result privately
+    seer_result = night_result.get("seer_result")
+    if seer_result:
+        investigating_player_id = seer_result.get("investigating_player_id")
+        if investigating_player_id:
+            is_shapeshifter = seer_result["is_shapeshifter"]
+            target_char = seer_result["character"]
+            result_text = (
+                f"{target_char} IS the Shapeshifter!"
+                if is_shapeshifter
+                else f"{target_char} is NOT the Shapeshifter."
+            )
+            await manager.send_to(game_id, investigating_player_id, {
+                "type": "seer_result",
+                "character": target_char,
+                "isShapeshifter": is_shapeshifter,
+                "text": result_text,
+            })
+
+    # Tell narrator what happened — it will narrate then call advance_phase
+    await narrator_manager.send_phase_event(game_id, "night_resolved", {
+        "eliminated": killed,
+        "protected": night_result.get("protected"),
+        "hunter_triggered": night_result.get("hunter_triggered", False),
+    })
+
 
 async def _on_hunter_revenge(
     game_id: str, player_id: str, data: Dict, fs
 ) -> None:
     from agents.game_master import game_master
+
+    # Reject if game is already finished (e.g. duplicate message during epilogue)
+    game = await fs.get_game(game_id)
+    if not game or game.status != GameStatus.IN_PROGRESS:
+        return
 
     player = await fs.get_player(game_id, player_id)
     # Hunter must be eliminated (alive=False) and hold the HUNTER role
@@ -643,6 +729,11 @@ async def _on_hunter_revenge(
         "targetWasTraitor": result["was_traitor"],
     })
 
+    await narrator_manager.send_phase_event(game_id, "hunter_revenge", {
+        "hunter": player.character_name,
+        "target": target,
+    })
+
     win = await game_master.check_win_condition(game_id)
     if win:
         await _end_game(game_id, win["winner"], win["reason"], fs)
@@ -650,6 +741,12 @@ async def _on_hunter_revenge(
 
     next_phase = await game_master.advance_phase(game_id)
     await manager.broadcast_phase_change(game_id, next_phase)
+
+
+async def _delayed_narrator_stop(game_id: str, delay: int = 30) -> None:
+    """Fire-and-forget: give the narrator time to deliver its epilogue, then stop."""
+    await asyncio.sleep(delay)
+    await narrator_manager.stop_game(game_id)
 
 
 async def _end_game(
@@ -683,3 +780,10 @@ async def _end_game(
         character_reveals=reveals,
     )
     logger.info(f"[{game_id}] Game over — winner: {winner}")
+
+    await narrator_manager.send_phase_event(game_id, "game_over", {
+        "winner": winner,
+        "reason": reason,
+    })
+    # Schedule narrator teardown after 30s epilogue window — non-blocking
+    asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))

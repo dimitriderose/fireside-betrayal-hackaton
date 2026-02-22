@@ -21,6 +21,8 @@ from models.game import (
 )
 from services.firestore_service import get_firestore_service
 from agents.role_assigner import role_assigner
+from agents.game_master import game_master
+from agents.narrator_agent import narrator_manager, build_phase_prompt
 from routers.ws_router import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -117,9 +119,20 @@ async def start_game(
         raise HTTPException(status_code=400, detail=str(exc))
 
     await fs.set_status(game_id, GameStatus.IN_PROGRESS.value)
+    # Persist phase=NIGHT / round=1 to Firestore before broadcasting
+    await game_master.advance_phase(game_id)
 
     # Broadcast phase_change → NIGHT and send private role cards via WebSocket
     await ws_manager.broadcast_game_start(game_id, assignment["assignments"])
+
+    # Start narrator session and kick off Round 1 opening narration
+    await narrator_manager.start_game(
+        game_id,
+        initial_prompt=build_phase_prompt(
+            "game_started",
+            {"character_cast": assignment["character_cast"]},
+        ),
+    )
 
     logger.info(
         f"Game {game_id} started with {len(assignment['assignments'])} players. "
