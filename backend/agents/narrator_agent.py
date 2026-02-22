@@ -538,13 +538,14 @@ class NarratorManager:
                 player_lines = [
                     f'{m.speaker}: "{m.text}"'
                     for m in recent
-                    if getattr(m, "source", "") in ("player", "ai_character")
+                    if m.source in ("player", "ai_character")
                 ]
                 if player_lines:
                     payload["last_discussion"] = player_lines[-8:]  # cap at 8 lines
             except Exception:
                 logger.warning(
-                    "[%s] Could not fetch discussion context for %s", game_id, event_type
+                    "[%s] Could not fetch discussion context for %s",
+                    game_id, event_type, exc_info=True,
                 )
 
         prompt = build_phase_prompt(event_type, payload)
@@ -589,7 +590,7 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             context_block = (
                 f"\nWhat the village said yesterday:\n{quoted}\n"
                 "Weave these suspicions and unresolved accusations into your dawn "
-                "narration — let yesterday's words hang like woodsmoke in the morning air."
+                "narration — let yesterday's words hang like woodsmoke in the morning air.\n"
             )
 
         if killed:
@@ -661,18 +662,29 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             )
 
     if event_type == "no_elimination":
+        tally = data.get("tally", {})
         last_discussion = data.get("last_discussion", [])
+
+        # Describe how close the deadlocked vote was
+        vote_desc = ""
+        if tally:
+            top = max(tally.values(), default=0)
+            total = sum(tally.values())
+            if total > 0:
+                second = sorted(tally.values(), reverse=True)[1] if len(tally) > 1 else 0
+                vote_desc = f" The vote split {top} against {second} — no majority reached."
+
         context_block = ""
         if last_discussion:
             quoted = "\n".join(f"  {line}" for line in last_discussion)
             context_block = (
                 f"\nArguments that went unresolved:\n{quoted}\n"
                 "Reference the specific accusations that deadlocked the vote — "
-                "the village is paralysed by its own distrust."
+                "the village is paralysed by its own distrust.\n"
             )
         return (
-            f"[NO ELIMINATION — DEADLOCK] The villagers argued but could not reach a majority. "
-            f"No one was cast out today.{context_block} "
+            f"[NO ELIMINATION — DEADLOCK] The villagers argued but could not reach a majority."
+            f"{vote_desc} No one was cast out today.\n{context_block}"
             "Narrate the rising paranoia and suspicion (1–2 sentences), "
             "then call advance_phase to begin the night."
         )
