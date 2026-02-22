@@ -91,6 +91,19 @@ SPECTATOR CLUES:
   It contains a single word whispered from the beyond. Deliver it in a brief, eerie 1-sentence
   narration (e.g. "A cold wind stirs — the spirit of {name} seems to whisper… '{word}'…").
   Do not interpret or explain the clue; let it hang in the air mysteriously.
+
+VOTE CONTEXT GENERATION:
+- When players are about to vote, call generate_vote_context to retrieve publicly observable
+  events. Use this data to generate a neutral 1-sentence behavioral summary for each alive
+  character that vote cards can display.
+- The tool returns ONLY publicly visible events — night action details are excluded.
+- Your behavioral summaries MUST be based solely on what happened publicly: accusations made,
+  votes cast, statements given, alibis offered.
+- NEVER include: who the Shapeshifter actually is, night action outcomes not yet revealed,
+  your own suspicions, or language that steers players toward or away from a specific character.
+- Summaries should be factual observations, not interpretations.
+  Good: "Claimed to be at the inn during the night. Voted against Garin in Round 1."
+  Bad: "Seemed nervous when questioned — possibly hiding something."
 """
 
 
@@ -153,7 +166,21 @@ def _make_tool_declarations():
             ),
         )
 
-        return [get_state, advance, inject_traitor]
+        vote_context = types.FunctionDeclaration(
+            name="generate_vote_context",
+            description=(
+                "Retrieve publicly observable game events to generate neutral vote card "
+                "summaries. Returns ONLY public events (accusations, votes, eliminations) — "
+                "night action details are excluded. Use this before generating vote card "
+                "behavioral summaries to ensure narrator neutrality."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={},
+            ),
+        )
+
+        return [get_state, advance, inject_traitor, vote_context]
     except ImportError:
         logger.warning("google-genai not installed — tool declarations unavailable")
         return []
@@ -315,6 +342,39 @@ async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, 
         game_id, result["character_name"], result["dialog"],
     )
     return result
+
+
+async def handle_generate_vote_context(game_id: str) -> Dict[str, Any]:
+    """
+    Return public game events and alive character names for vote card generation.
+
+    Critically firewalled: uses ONLY visible_in_game=True events so the narrator
+    cannot access private night-action details (seer results, healer targets,
+    shapeshifter target) when generating behavioral vote summaries.
+    """
+    fs = get_firestore_service()
+
+    # Public events only — night actions are logged with visible_in_game=False
+    public_events = await fs.get_events(game_id, visible_only=True)
+
+    # Strip any private fields that should never reach the narrator
+    sanitized_events = []
+    for event in public_events:
+        e = event.model_dump()
+        e.pop("traitor_reasoning", None)
+        e.pop("ai_strategy", None)
+        # Convert non-serialisable types for the model
+        e["timestamp"] = e["timestamp"].isoformat() if e.get("timestamp") else None
+        e["phase"] = e["phase"].value if hasattr(e.get("phase"), "value") else str(e.get("phase", ""))
+        sanitized_events.append(e)
+
+    alive_players = await fs.get_alive_players(game_id)
+    alive_characters = [p.character_name for p in alive_players]
+
+    return {
+        "public_events": sanitized_events,
+        "alive_characters": alive_characters,
+    }
 
 
 # ── Narrator Session ──────────────────────────────────────────────────────────
@@ -559,6 +619,8 @@ class NarratorSession:
                         self.game_id,
                         (fc.args or {}).get("context", ""),
                     )
+                elif fc.name == "generate_vote_context":
+                    result = await handle_generate_vote_context(self.game_id)
                 else:
                     result = {"error": f"Unknown tool: {fc.name}"}
                     logger.warning(
