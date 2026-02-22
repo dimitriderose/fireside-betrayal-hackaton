@@ -11,7 +11,7 @@ Phase responsibilities:
 """
 import asyncio
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Set
 
 from config import settings
 from services.firestore_service import get_firestore_service
@@ -19,6 +19,10 @@ from models.game import Phase, Role
 from utils.audio import pcm_to_base64
 
 logger = logging.getLogger(__name__)
+
+# Guards against concurrent advance_phase tool calls for the same game.
+# asyncio is single-threaded so a plain set is safe without a Lock.
+_advancing_phase: Set[str] = set()
 
 
 # ── System prompt ──────────────────────────────────────────────────────────────
@@ -38,7 +42,7 @@ YOUR PHASE RESPONSIBILITIES:
    - Call get_game_state to confirm who is present.
 
 2. NIGHT_RESOLVED signal received:
-   - Narrate the dawn: describe who was found dead or that everyone survived (2–3 sentences).
+   - Narrate the dawn: describe who was found dead (or multiple, if Hunter revenge also occurred) or that everyone survived (2–3 sentences).
    - Then call advance_phase → moves to DAY_DISCUSSION.
 
 3. DAY_DISCUSSION phase:
@@ -51,7 +55,13 @@ YOUR PHASE RESPONSIBILITIES:
    - Reveal whether they were innocent or the Shapeshifter.
    - Then call advance_phase → moves to NIGHT (a new round begins).
 
-5. GAME_OVER signal received:
+5. Advancing to NIGHT:
+   - Always call get_game_state after advancing to NIGHT to see who is alive.
+   - Check the night_role_players_count from the advance_phase response.
+   - If night_role_players_count is 0, no one has night actions — narrate a brief night scene and call advance_phase again immediately to start the day.
+   - Otherwise, narrate the night scene and wait for the NIGHT_RESOLVED signal.
+
+6. GAME_OVER signal received:
    - Deliver a 3–4 sentence epilogue revealing the full story.
    - Do not call advance_phase after game over.
 
@@ -95,7 +105,8 @@ def _make_tool_declarations():
                 "From NIGHT: moves to DAY_DISCUSSION. "
                 "From DAY_DISCUSSION: moves to DAY_VOTE. "
                 "From ELIMINATION: moves to NIGHT (new round). "
-                "Do NOT call during DAY_VOTE — those transitions are automatic."
+                "Do NOT call during DAY_VOTE — those transitions are automatic. "
+                "Returns night_role_players_count when advancing to NIGHT."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -105,6 +116,7 @@ def _make_tool_declarations():
 
         return [get_state, advance]
     except ImportError:
+        logger.warning("google-genai not installed — tool declarations unavailable")
         return []
 
 
@@ -139,60 +151,63 @@ async def handle_get_game_state(game_id: str) -> Dict[str, Any]:
 async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
     """
     Advance the game from NIGHT, DAY_DISCUSSION, or ELIMINATION.
-    If advancing to NIGHT with no role-players alive, auto-resolves night immediately.
+    Guarded against concurrent calls for the same game.
     """
-    from agents.game_master import game_master
-    from routers.ws_router import manager as ws_manager
+    if game_id in _advancing_phase:
+        return {"error": "Phase transition already in progress for this game"}
 
-    fs = get_firestore_service()
-    game = await fs.get_game(game_id)
-    if not game:
-        return {"error": "Game not found"}
+    _advancing_phase.add(game_id)
+    try:
+        from agents.game_master import game_master
+        from routers.ws_router import manager as ws_manager
 
-    narrator_phases = {Phase.NIGHT, Phase.DAY_DISCUSSION, Phase.ELIMINATION}
-    if game.phase not in narrator_phases:
-        return {
-            "error": (
-                f"advance_phase is available during NIGHT, DAY_DISCUSSION, or ELIMINATION. "
-                f"Current phase: {game.phase.value}"
-            )
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        if not game:
+            return {"error": "Game not found"}
+
+        narrator_phases = {Phase.NIGHT, Phase.DAY_DISCUSSION, Phase.ELIMINATION}
+        if game.phase not in narrator_phases:
+            return {
+                "error": (
+                    f"advance_phase is available during NIGHT, DAY_DISCUSSION, or ELIMINATION. "
+                    f"Current phase: {game.phase.value}"
+                )
+            }
+
+        next_phase = await game_master.advance_phase(game_id)
+        await ws_manager.broadcast_phase_change(game_id, next_phase)
+        logger.info(
+            "[%s] Narrator advanced: %s → %s", game_id, game.phase.value, next_phase.value
+        )
+
+        result: Dict[str, Any] = {
+            "result": "advanced",
+            "new_phase": next_phase.value,
         }
 
-    next_phase = await game_master.advance_phase(game_id)
-    await ws_manager.broadcast_phase_change(game_id, next_phase)
-    logger.info(
-        "[%s] Narrator advanced: %s → %s", game_id, game.phase.value, next_phase.value
-    )
+        # When entering NIGHT, inform narrator about role-players so it can skip
+        # waiting if no night actions will be submitted
+        if next_phase == Phase.NIGHT:
+            game_after = await fs.get_game(game_id)
+            result["round"] = game_after.round if game_after else game.round
 
-    result: Dict[str, Any] = {
-        "result": "advanced",
-        "new_phase": next_phase.value,
-    }
+            all_players = await fs.get_all_players(game_id)
+            night_role_count = sum(
+                1 for p in all_players
+                if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK}
+            )
+            result["night_role_players_count"] = night_role_count
+            if night_role_count == 0:
+                result["note"] = (
+                    "No SEER/HEALER/DRUNK players are alive. "
+                    "No night actions will be submitted. "
+                    "Narrate a brief night scene, then call advance_phase again immediately."
+                )
 
-    # When entering a new NIGHT, check if anyone has night actions
-    if next_phase == Phase.NIGHT:
-        all_players = await fs.get_all_players(game_id)
-        night_role_players = [
-            p for p in all_players
-            if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK}
-        ]
-        if not night_role_players:
-            # No role-players alive — auto-resolve night without waiting
-            night_result = await game_master.resolve_night(game_id)
-            result["auto_resolved_night"] = True
-            result["night_killed"] = night_result.get("killed")
-
-            if night_result.get("killed"):
-                win = await game_master.check_win_condition(game_id)
-                if win:
-                    from routers.ws_router import _end_game
-                    await _end_game(game_id, win["winner"], win["reason"], fs)
-                    return {**result, "game_over": True, "winner": win["winner"]}
-
-        game_after = await fs.get_game(game_id)
-        result["round"] = game_after.round if game_after else game.round
-
-    return result
+        return result
+    finally:
+        _advancing_phase.discard(game_id)
 
 
 # ── Narrator Session ──────────────────────────────────────────────────────────
@@ -217,7 +232,19 @@ class NarratorSession:
         )
 
     async def stop(self) -> None:
+        """
+        Stop the session gracefully:
+        1. Signal the sender loop to stop accepting new prompts.
+        2. Wait up to 10s for queued prompts to be sent.
+        3. Cancel the background task.
+        """
         self._running = False
+        try:
+            await asyncio.wait_for(self._queue.join(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[%s] Narrator queue not fully drained on stop", self.game_id
+            )
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -284,14 +311,18 @@ class NarratorSession:
                         [sender, receiver],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
+                    # Cancel sibling and wait for it to clean up
                     for t in pending:
                         t.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    # Re-raise any exception from the completed task
                     for t in done:
                         if not t.cancelled() and t.exception():
                             raise t.exception()
                 except asyncio.CancelledError:
                     sender.cancel()
                     receiver.cancel()
+                    await asyncio.gather(sender, receiver, return_exceptions=True)
                     raise
 
         except asyncio.CancelledError:
@@ -314,6 +345,7 @@ class NarratorSession:
                 logger.debug("[%s] Narrator ← %.80s…", self.game_id, text)
             except Exception as exc:
                 logger.warning("[%s] Narrator send error: %s", self.game_id, exc)
+                self._queue.task_done()
 
     async def _receiver(self, session) -> None:
         """Handle audio chunks, text transcripts, and tool calls from the model."""
@@ -425,7 +457,7 @@ class NarratorManager:
         session = self._sessions.get(game_id)
         if not session:
             return
-        prompt = _build_phase_prompt(event_type, data or {})
+        prompt = build_phase_prompt(event_type, data or {})
         await session.send(prompt)
         logger.debug("[%s] Narrator event queued: %s", game_id, event_type)
 
@@ -437,9 +469,9 @@ class NarratorManager:
             logger.info("[%s] Narrator manager: session stopped", game_id)
 
 
-# ── Phase prompt builder ──────────────────────────────────────────────────────
+# ── Phase prompt builder (exported) ──────────────────────────────────────────
 
-def _build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
+def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
     """Convert a game event into a structured narrator prompt."""
     round_num = data.get("round", 1)
 
@@ -449,16 +481,21 @@ def _build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             f"[GAME START — NIGHT PHASE — Round 1] "
             f"The characters of Thornwood tonight are: {cast_str}. "
             "Open the game with a foreboding 2–3 sentence monologue that establishes "
-            "the dark, tense atmosphere of the village. "
+            "the dark, tense atmosphere of the village under the threat of a Shapeshifter. "
             "Then call get_game_state to confirm who is present."
         )
 
     if event_type == "night_resolved":
         killed = data.get("eliminated") or data.get("killed")
         protected = data.get("protected")
+        hunter_triggered = data.get("hunter_triggered", False)
         if killed:
+            hunter_note = (
+                f" Worse still, {killed} was the Hunter — they dragged another victim down with them."
+                if hunter_triggered else ""
+            )
             return (
-                f"[NIGHT RESOLVED] {killed} was found dead at dawn. "
+                f"[NIGHT RESOLVED] {killed} was found dead at dawn.{hunter_note} "
                 "Narrate this grim discovery (2–3 sentences). "
                 "Then call advance_phase to begin the day."
             )

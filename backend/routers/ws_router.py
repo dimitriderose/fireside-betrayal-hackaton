@@ -642,8 +642,10 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
     killed = night_result.get("killed")
 
     if killed:
-        # eliminate_character provides metadata + logs the elimination event
-        elim_result = await game_master.eliminate_character(game_id, killed)
+        # eliminate_character logs the event and returns metadata.
+        # resolve_night already called fs.eliminate_by_character() so the DB update
+        # is idempotent; by_vote=False ensures the event log is correct.
+        elim_result = await game_master.eliminate_character(game_id, killed, by_vote=False)
 
         await manager.broadcast_elimination(
             game_id,
@@ -681,6 +683,7 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
     await narrator_manager.send_phase_event(game_id, "night_resolved", {
         "eliminated": killed,
         "protected": night_result.get("protected"),
+        "hunter_triggered": night_result.get("hunter_triggered", False),
     })
 
 
@@ -688,6 +691,11 @@ async def _on_hunter_revenge(
     game_id: str, player_id: str, data: Dict, fs
 ) -> None:
     from agents.game_master import game_master
+
+    # Reject if game is already finished (e.g. duplicate message during epilogue)
+    game = await fs.get_game(game_id)
+    if not game or game.status != GameStatus.IN_PROGRESS:
+        return
 
     player = await fs.get_player(game_id, player_id)
     # Hunter must be eliminated (alive=False) and hold the HUNTER role
@@ -735,6 +743,12 @@ async def _on_hunter_revenge(
     await manager.broadcast_phase_change(game_id, next_phase)
 
 
+async def _delayed_narrator_stop(game_id: str, delay: int = 30) -> None:
+    """Fire-and-forget: give the narrator time to deliver its epilogue, then stop."""
+    await asyncio.sleep(delay)
+    await narrator_manager.stop_game(game_id)
+
+
 async def _end_game(
     game_id: str, winner: str, reason: str, fs
 ) -> None:
@@ -771,6 +785,5 @@ async def _end_game(
         "winner": winner,
         "reason": reason,
     })
-    # Give narrator a moment to deliver the epilogue before stopping the session
-    await asyncio.sleep(30)
-    await narrator_manager.stop_game(game_id)
+    # Schedule narrator teardown after 30s epilogue window — non-blocking
+    asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))
