@@ -76,6 +76,10 @@ TOOLS:
 - get_game_state: Returns phase, round, alive characters, and recent chat messages.
 - advance_phase: Moves NIGHT→DAY_DISCUSSION, DAY_DISCUSSION→DAY_VOTE, or ELIMINATION→NIGHT.
   Do NOT call during DAY_VOTE (those transitions are automatic).
+- inject_traitor_dialog: Generate an in-character spoken line from the AI Shapeshifter character
+  during DAY_DISCUSSION. Call this when the AI character is addressed directly by name, or when
+  the AI character should naturally contribute to the conversation. The AI character's name is
+  visible in get_game_state. Voice the returned dialog as if it were the character speaking.
 """
 
 
@@ -114,7 +118,30 @@ def _make_tool_declarations():
             ),
         )
 
-        return [get_state, advance]
+        inject_traitor = types.FunctionDeclaration(
+            name="inject_traitor_dialog",
+            description=(
+                "Generate an in-character spoken line from the AI Shapeshifter character "
+                "during DAY_DISCUSSION. Call this when a player addresses the AI character "
+                "directly by name, or when the AI character should naturally contribute to "
+                "the conversation. The AI character's name is available from get_game_state. "
+                "Voice the returned dialog as if the character is speaking."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "context": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "What was said or happened that prompts the AI character to respond."
+                        ),
+                    ),
+                },
+                required=["context"],
+            ),
+        )
+
+        return [get_state, advance, inject_traitor]
     except ImportError:
         logger.warning("google-genai not installed — tool declarations unavailable")
         return []
@@ -186,9 +213,11 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             "new_phase": next_phase.value,
         }
 
-        # When entering NIGHT, inform narrator about role-players so it can skip
-        # waiting if no night actions will be submitted
+        # When entering NIGHT: fire traitor night selection + inform narrator about role-players
         if next_phase == Phase.NIGHT:
+            from agents.traitor_agent import trigger_night_selection
+            asyncio.create_task(trigger_night_selection(game_id))
+
             game_after = await fs.get_game(game_id)
             result["round"] = game_after.round if game_after else game.round
 
@@ -205,9 +234,38 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                     "Narrate a brief night scene, then call advance_phase again immediately."
                 )
 
+        # When entering DAY_VOTE: fire traitor vote selection
+        elif next_phase == Phase.DAY_VOTE:
+            from agents.traitor_agent import trigger_vote_selection
+            asyncio.create_task(trigger_vote_selection(game_id))
+
         return result
     finally:
         _advancing_phase.discard(game_id)
+
+
+async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, Any]:
+    """
+    Generate an in-character spoken line from the AI Shapeshifter character
+    and broadcast it as a transcript so text clients also see it.
+    Returns {character_name, dialog} to the narrator for voicing.
+    """
+    from agents.traitor_agent import traitor_agent
+    from routers.ws_router import manager as ws_manager
+
+    result = await traitor_agent.generate_dialog(game_id, context)
+    # Broadcast text transcript so text-only clients see the AI character's line
+    await ws_manager.broadcast_transcript(
+        game_id,
+        speaker=result["character_name"],
+        text=result["dialog"],
+        source="ai_character",
+    )
+    logger.info(
+        "[%s] inject_traitor_dialog: %s said: %.80s…",
+        game_id, result["character_name"], result["dialog"],
+    )
+    return result
 
 
 # ── Narrator Session ──────────────────────────────────────────────────────────
@@ -392,6 +450,11 @@ class NarratorSession:
                     result = await handle_get_game_state(self.game_id)
                 elif fc.name == "advance_phase":
                     result = await handle_advance_phase(self.game_id)
+                elif fc.name == "inject_traitor_dialog":
+                    result = await handle_inject_traitor_dialog(
+                        self.game_id,
+                        (fc.args or {}).get("context", ""),
+                    )
                 else:
                     result = {"error": f"Unknown tool: {fc.name}"}
                     logger.warning(
