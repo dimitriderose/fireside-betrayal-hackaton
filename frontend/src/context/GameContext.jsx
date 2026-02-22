@@ -12,7 +12,10 @@ const initialState = {
   round: 0,
   difficulty: 'normal',
   players: [],          // [{ id, characterName, alive, connected, ready }]
-  votes: {},            // { characterName: count }
+  aiCharacter: null,    // { name: string, alive: boolean } | null
+  votes: {},            // { characterName: count } — vote tally from backend
+  voteMap: {},          // { characterName: votedFor | null } — who voted for whom
+  myVote: null,         // character name this player voted for (null = not voted yet)
   storyLog: [],         // [{ id, speaker, text, source, phase, round, timestamp }]
   winner: null,         // 'villagers' | 'shapeshifter'
   reveals: [],          // [{ characterName, playerName, role }]
@@ -28,8 +31,9 @@ function gameReducer(state, action) {
     case 'SET_PLAYER':
       return {
         ...state,
-        playerId: action.playerId,
-        playerName: action.playerName,
+        playerId: action.playerId ?? state.playerId,
+        playerName: action.playerName ?? state.playerName,
+        characterName: action.characterName ?? state.characterName,
         isHost: action.isHost ?? state.isHost,
       }
     case 'SET_GAME':
@@ -41,14 +45,21 @@ function gameReducer(state, action) {
     case 'SET_ROLE':
       return {
         ...state,
-        characterName: action.characterName,
-        role: action.role,
+        characterName: action.characterName ?? state.characterName,
+        role: action.role ?? state.role,
         abilities: action.abilities ?? [],
       }
+    case 'SET_AI_CHARACTER':
+      return { ...state, aiCharacter: action.aiCharacter }
+    case 'SET_MY_VOTE':
+      return { ...state, myVote: action.vote }
     case 'UPDATE_PLAYERS':
       return { ...state, players: action.players }
     case 'ADD_PLAYER': {
-      const existing = state.players.filter(p => p.id !== action.player.id)
+      // Deduplicate by both id and characterName to prevent ghost entries from player_joined
+      const existing = state.players.filter(
+        p => p.id !== action.player.id && p.characterName !== action.player.characterName
+      )
       return { ...state, players: [...existing, action.player] }
     }
     case 'ADD_MESSAGE':
@@ -59,22 +70,45 @@ function gameReducer(state, action) {
           { ...action.message, id: action.message.id ?? `${Date.now()}-${Math.random()}` },
         ].slice(-200), // keep last 200 messages
       }
-    case 'VOTE_UPDATE':
-      return { ...state, votes: action.votes }
+    case 'VOTE_UPDATE': {
+      // Ignore stale vote_updates that arrive after the phase has already changed
+      if (state.phase !== 'day_vote') return state
+      // Restore myVote from voteMap after reconnect (connected message doesn't carry voted_for)
+      const restoredVote = action.voteMap?.[state.characterName] ?? state.myVote
+      return {
+        ...state,
+        votes: action.tally ?? state.votes,
+        voteMap: action.voteMap ?? state.voteMap,
+        myVote: restoredVote,
+      }
+    }
     case 'ELIMINATION': {
       const isLocalPlayerEliminated = state.characterName === action.character
+      const isAIEliminated = state.aiCharacter?.name === action.character
       return {
         ...state,
         players: state.players.map(p =>
           p.characterName === action.character ? { ...p, alive: false } : p
         ),
         isEliminated: state.isEliminated || isLocalPlayerEliminated,
+        aiCharacter: isAIEliminated
+          ? { ...state.aiCharacter, alive: false }
+          : state.aiCharacter,
       }
     }
     case 'NIGHT_ACTION_SUBMITTED':
       return { ...state, nightActionSubmitted: true }
     case 'PHASE_CHANGE':
-      return { ...state, phase: action.phase, round: action.round ?? state.round, nightActionSubmitted: false }
+      return {
+        ...state,
+        phase: action.phase,
+        round: action.round ?? state.round,
+        nightActionSubmitted: false,
+        // Reset per-round vote state on every phase transition
+        votes: {},
+        voteMap: {},
+        myVote: null,
+      }
     case 'GAME_OVER':
       return {
         ...state,

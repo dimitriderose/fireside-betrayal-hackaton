@@ -157,6 +157,7 @@ class ConnectionManager:
         await self.broadcast(game_id, {
             "type": "phase_change",
             "phase": Phase.NIGHT.value,
+            "round": 1,
         })
         for a in assignments:
             await self.send_to(game_id, a["player_id"], {
@@ -168,11 +169,16 @@ class ConnectionManager:
             })
 
     async def broadcast_phase_change(
-        self, game_id: str, phase: Phase
+        self, game_id: str, phase: Phase, round: Optional[int] = None
     ) -> None:
+        if round is None:
+            from services import firestore_service as _fs
+            game = await _fs.get_game(game_id)
+            round = game.round if game else 0
         await self.broadcast(game_id, {
             "type": "phase_change",
             "phase": phase.value,
+            "round": round,
         })
 
     async def broadcast_elimination(
@@ -314,7 +320,9 @@ async def websocket_endpoint(
                 continue
 
             msg_type = data.get("type", "")
-            await _handle_message(game_id, playerId, msg_type, data, fs)
+            # Frontend sends { type, data: { ... } }; unwrap inner payload for handlers
+            inner_data = data.get("data") if isinstance(data.get("data"), dict) else {}
+            await _handle_message(game_id, playerId, msg_type, inner_data, fs)
 
     except WebSocketDisconnect:
         pass
