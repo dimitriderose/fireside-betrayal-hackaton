@@ -1070,6 +1070,437 @@ const LandingPage = ({ onStart }) => {
   );
 };
 
+
+// ─── Screen 7: Tutorial Mode (P2 Sprint 5) ───────────────────
+
+const AudioIndicator = ({ active }) => (
+  <div style={{
+    display: "flex", alignItems: "center", gap: 6, padding: "6px 12px",
+    borderRadius: 6, background: `${P.ember}10`, border: `1px solid ${P.ember}20`,
+  }}>
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 1.5, height: 12 }}>
+      {[3, 7, 5, 10, 4, 8, 6].map((h, i) => (
+        <div key={i} style={{
+          width: 2, borderRadius: 1, background: P.flame,
+          height: active ? h : 2,
+          animation: active ? `audioBar 0.5s ${i * 0.07}s ease-in-out infinite alternate` : "none",
+          transition: "height 0.15s ease",
+        }} />
+      ))}
+    </div>
+    <span style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.flame }}>
+      {active ? "Narrator is speaking..." : "Listening"}
+    </span>
+  </div>
+);
+
+const TutorialScreen = ({ onExit }) => {
+  const [step, setStep] = useState(0);
+  const [showAction, setShowAction] = useState(false);
+  const [typedLen, setTypedLen] = useState(0);
+  const [picked, setPicked] = useState(null);
+  const [showSuspense, setShowSuspense] = useState(false);
+  const [showResult, setShowResult] = useState(false);
+  const [chatMsgs, setChatMsgs] = useState([]);
+  const [voteCounts, setVoteCounts] = useState({});
+  const [showTeaser, setShowTeaser] = useState(false);
+
+  const steps = [
+    { title: "Your Role", narrator: "Welcome to Fireside. Tonight you are Herbalist Mira — keeper of village remedies. But you carry a secret: you are the Seer. Each night, peer beyond the veil and learn one character's true nature.", type: "role_card" },
+    { title: "Night Falls", narrator: "The fire dims. Shadows stretch like reaching fingers. As the Seer, investigate one character. Tap someone to learn their nature.", type: "investigate" },
+    { title: "Dawn Breaks", narrator: "Dawn breaks over Thornwood. Garin's hammer was found cold — he never lit the forge. The village gathers. Use quick reactions to join the debate.", type: "discussion" },
+    { title: "The Vote", narrator: "Accusations fly like sparks. The village must decide — who wears a false face? Tap to cast your vote. Others will vote at the same time.", type: "vote" },
+    { title: "The Reveal", narrator: "The village has spoken. Now see everything that happened — every hidden action, every lie the AI told, and the strategy behind it.", type: "reveal" },
+  ];
+  const s = steps[step];
+  const chars = [
+    { name: "Blacksmith Garin", icon: "⚒️", c: "#c97d4a" },
+    { name: "Merchant Elara", icon: "💰", c: "#7ab6a3" },
+    { name: "Scholar Theron", icon: "📜", c: "#8b8cc7" },
+    { name: "Brother Aldric", icon: "⛪", c: "#c9a84c" },
+  ];
+
+  useEffect(() => {
+    setTypedLen(0); setShowAction(false); setPicked(null);
+    setShowSuspense(false); setShowResult(false);
+    setChatMsgs([]); setVoteCounts({}); setShowTeaser(false);
+  }, [step]);
+
+  useEffect(() => {
+    if (typedLen < s.narrator.length) {
+      const t = setTimeout(() => setTypedLen(v => v + 1), 16);
+      return () => clearTimeout(t);
+    } else setTimeout(() => setShowAction(true), 300);
+  }, [typedLen, s.narrator.length]);
+
+  const advance = () => { if (step < steps.length - 1) setStep(step + 1); else onExit?.(); };
+
+  const triggerDiscussion = (reaction) => {
+    setPicked(reaction);
+    const msgs = [
+      { delay: 400, from: "Scholar Theron", icon: "📜", c: "#8b8cc7", text: "I heard movement near the forge last night. Garin, where were you?" },
+      { delay: 1400, from: "Blacksmith Garin", icon: "⚒️", c: "#c97d4a", text: "I was at the forge until the last ember died. Ask anyone.", isAI: true },
+      { delay: 2400, from: "🔥 Narrator", icon: "", c: P.ember, text: "Brother Aldric shifts uncomfortably but says nothing.", isNarrator: true },
+    ];
+    msgs.forEach(m => setTimeout(() => setChatMsgs(prev => [...prev, m]), m.delay));
+    setTimeout(advance, 3600);
+  };
+
+  const triggerVote = (name) => {
+    setPicked(name);
+    setVoteCounts({ [name]: 1 });
+    setTimeout(() => setVoteCounts(prev => ({ ...prev, "Blacksmith Garin": (prev["Blacksmith Garin"] || 0) + 1, "Brother Aldric": 1 })), 600);
+    setTimeout(() => setVoteCounts(prev => ({ ...prev, "Blacksmith Garin": (prev["Blacksmith Garin"] || 0) + 1 })), 1000);
+    setTimeout(advance, 2000);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: P.void, position: "relative" }}>
+      <Fireflies />
+      <div style={{ position: "relative", zIndex: 1, padding: "48px 18px 24px" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 14 }}>📖</span>
+            <span style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.flame, letterSpacing: 2, textTransform: "uppercase" }}>Tutorial</span>
+          </div>
+          <button onClick={onExit} style={{ padding: "4px 12px", borderRadius: 6, background: `${P.ash}40`, border: `1px solid ${P.ash}60`, cursor: "pointer", fontFamily: "'Courier New', monospace", fontSize: 9, color: P.smoke }}>Skip →</button>
+        </div>
+
+        {/* Progress */}
+        <div style={{ display: "flex", gap: 3, marginBottom: 12 }}>
+          {steps.map((_, i) => <div key={i} style={{ flex: 1, height: 3, borderRadius: 2, background: i <= step ? `linear-gradient(90deg, ${P.ember}, ${P.flame})` : `${P.ash}40`, transition: "background 0.5s" }} />)}
+        </div>
+
+        {/* Audio indicator */}
+        <div style={{ marginBottom: 12 }}>
+          <AudioIndicator active={typedLen < s.narrator.length} />
+        </div>
+
+        {/* Phase label */}
+        <div style={{ display: "inline-block", padding: "4px 10px", borderRadius: 4, background: `${P.ember}15`, border: `1px solid ${P.ember}25`, marginBottom: 14 }}>
+          <span style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.ember, letterSpacing: 1.5, textTransform: "uppercase" }}>Step {step + 1} · {s.title}</span>
+        </div>
+
+        {/* Narrator */}
+        <div style={{ padding: "14px 16px", borderRadius: 12, marginBottom: 18, background: `linear-gradient(135deg, ${P.charcoal}, ${P.slate}80)`, borderLeft: `3px solid ${P.ember}` }}>
+          <div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.ember, letterSpacing: 1.5, marginBottom: 6 }}>🔥 NARRATOR</div>
+          <div style={{ fontFamily: "'Georgia', serif", fontSize: 13, color: P.bone, lineHeight: 1.65, fontStyle: "italic" }}>
+            {s.narrator.slice(0, typedLen)}
+            {typedLen < s.narrator.length && <span style={{ display: "inline-block", width: 2, height: 13, background: P.flame, marginLeft: 2, animation: "blink 0.8s step-end infinite" }} />}
+          </div>
+        </div>
+
+        {/* Interactive panels */}
+        {showAction && (
+          <div style={{ animation: "fadeUp 0.4s ease both" }}>
+
+            {/* STEP 0: Role card */}
+            {s.type === "role_card" && (
+              <div onClick={advance} style={{ padding: "16px", borderRadius: 12, cursor: "pointer", background: `linear-gradient(135deg, ${P.nightBlue}60, ${P.charcoal})`, border: `1px solid ${P.teal}30` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: `${P.teal}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, border: `1px solid ${P.teal}35` }}>🌿</div>
+                  <div>
+                    <div style={{ fontFamily: "'Georgia', serif", fontSize: 14, color: P.parchment }}>Herbalist Mira</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}><span style={{ fontSize: 10 }}>👁️</span><span style={{ fontFamily: "'Courier New', monospace", fontSize: 10, color: P.teal, fontWeight: 600 }}>Seer</span></div>
+                  </div>
+                </div>
+                <EmberDivider />
+                <div style={{ fontFamily: "'Georgia', serif", fontSize: 12, color: P.smoke, lineHeight: 1.6 }}>Each night, investigate one character to learn if they are the Shapeshifter.</div>
+                <div style={{ marginTop: 12, textAlign: "center", fontFamily: "'Courier New', monospace", fontSize: 9, color: P.flame, letterSpacing: 1.5, textTransform: "uppercase" }}>↑ Tap to continue</div>
+              </div>
+            )}
+
+            {/* STEP 1: Night — suspense beat before reveal */}
+            {s.type === "investigate" && (
+              <div>
+                {/* Night timer indicator */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.smoke, letterSpacing: 1.5, textTransform: "uppercase" }}>Choose a character to investigate</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    <span style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: picked ? P.smoke : P.teal }}>⏱ {picked ? "0:00" : "0:15"}</span>
+                  </div>
+                </div>
+                {!picked && (
+                  <div style={{ height: 2, borderRadius: 1, background: `${P.ash}40`, marginBottom: 10, overflow: "hidden" }}>
+                    <div style={{ height: "100%", borderRadius: 1, background: `linear-gradient(90deg, ${P.teal}, ${P.teal}80)`, width: "100%", animation: "timerShrink 15s linear forwards" }} />
+                  </div>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {chars.map((ch, i) => (
+                    <div key={i} onClick={() => {
+                      if (!picked) {
+                        setPicked(ch.name);
+                        setTimeout(() => setShowSuspense(true), 500);
+                        setTimeout(() => setShowResult(true), 2200);
+                        setTimeout(advance, 3800);
+                      }
+                    }} style={{
+                      padding: "12px", borderRadius: 10, cursor: picked ? "default" : "pointer",
+                      background: picked === ch.name ? `${ch.c}15` : P.charcoal,
+                      border: `1px solid ${picked === ch.name ? ch.c + "60" : P.ash + "40"}`,
+                      opacity: picked && picked !== ch.name ? 0.4 : 1,
+                      display: "flex", alignItems: "center", gap: 8, transition: "all 0.3s",
+                      animation: `fadeUp 0.3s ${i * 0.06}s both`,
+                    }}>
+                      <div style={{ width: 30, height: 30, borderRadius: 7, background: `${ch.c}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, border: `1px solid ${ch.c}30` }}>{ch.icon}</div>
+                      <div style={{ fontFamily: "'Georgia', serif", fontSize: 12, color: P.bone }}>{ch.name.split(" ").pop()}</div>
+                    </div>
+                  ))}
+                </div>
+                {showSuspense && !showResult && (
+                  <div style={{ marginTop: 14, padding: "14px 16px", borderRadius: 10, background: `${P.nightBlue}20`, border: `1px solid ${P.nightBlue}40`, animation: "fadeUp 0.4s ease both", textAlign: "center" }}>
+                    <div style={{ fontFamily: "'Georgia', serif", fontSize: 13, color: P.bone, fontStyle: "italic" }}>The Seer's vision shimmers and clears...</div>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 6, marginTop: 10 }}>
+                      {[0,1,2].map(i => <div key={i} style={{ width: 4, height: 4, borderRadius: "50%", background: P.teal, animation: `fadeUp 0.4s ${0.3 + i * 0.3}s both` }} />)}
+                    </div>
+                  </div>
+                )}
+                {showResult && (
+                  <div style={{ marginTop: 14, padding: "12px 14px", borderRadius: 10, background: `${P.green}10`, border: `1px solid ${P.green}30`, animation: "fadeUp 0.4s ease both" }}>
+                    <div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.green, letterSpacing: 1, marginBottom: 4 }}>👁️ SEER'S VISION</div>
+                    <div style={{ fontFamily: "'Georgia', serif", fontSize: 12, color: P.bone, lineHeight: 1.5 }}>{picked} works honestly. They are <span style={{ color: P.green, fontWeight: 600 }}>not the Shapeshifter</span>.</div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* STEP 2: Day — multi-party chat */}
+            {s.type === "discussion" && (
+              <div>
+                <div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.smoke, letterSpacing: 1.5, marginBottom: 10, textTransform: "uppercase" }}>Quick Reactions</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                  {["I suspect...", "I trust...", "I have info", "I agree"].map((r, i) => (
+                    <button key={i} onClick={() => { if (!picked) triggerDiscussion(r); }}
+                      style={{ padding: "8px 14px", borderRadius: 20, cursor: picked ? "default" : "pointer", background: picked === r ? `${P.ember}20` : P.charcoal, border: `1px solid ${picked === r ? P.ember : P.ash + "50"}`, fontFamily: "'Georgia', serif", fontSize: 12, color: picked === r ? P.flame : P.bone, animation: `fadeUp 0.25s ${i * 0.05}s both`, transition: "all 0.2s" }}>{r}</button>
+                  ))}
+                </div>
+                {chatMsgs.map((m, i) => (
+                  <div key={i} style={{
+                    padding: "10px 12px", borderRadius: 10, marginBottom: 6,
+                    background: m.isNarrator ? `${P.ember}08` : m.isAI ? `${P.crimson}06` : P.charcoal,
+                    borderLeft: `2px solid ${m.isNarrator ? P.ember : m.isAI ? P.crimson : m.c}40`,
+                    animation: "fadeUp 0.3s ease both",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
+                      {m.icon && <span style={{ fontSize: 10 }}>{m.icon}</span>}
+                      <span style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: m.c, fontWeight: 600 }}>{m.from}</span>
+                      {m.isAI && <span style={{ fontFamily: "'Courier New', monospace", fontSize: 7, color: P.crimson, padding: "1px 4px", borderRadius: 3, background: `${P.crimson}15` }}>AI</span>}
+                    </div>
+                    <div style={{ fontFamily: "'Georgia', serif", fontSize: 12, color: P.bone, lineHeight: 1.5, fontStyle: m.isNarrator ? "italic" : "normal" }}>
+                      {m.isNarrator ? m.text : `"${m.text}"`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* STEP 3: Vote — live vote accumulation */}
+            {s.type === "vote" && (
+              <div>
+                <div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.smoke, letterSpacing: 1.5, marginBottom: 10, textTransform: "uppercase" }}>Cast your vote</div>
+                {chars.map((ch, i) => {
+                  const vc = voteCounts[ch.name] || 0;
+                  return (
+                    <div key={i} onClick={() => { if (!picked) triggerVote(ch.name); }}
+                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 6, borderRadius: 10, cursor: picked ? "default" : "pointer", background: picked === ch.name ? `${P.ember}12` : P.charcoal, border: `1px solid ${picked === ch.name ? P.ember + "50" : P.ash + "25"}`, opacity: picked && picked !== ch.name && vc === 0 ? 0.5 : 1, animation: `fadeUp 0.25s ${i * 0.06}s both`, transition: "all 0.3s" }}>
+                      <div style={{ width: 32, height: 32, borderRadius: 8, background: `${ch.c}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, border: `1px solid ${ch.c}30` }}>{ch.icon}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontFamily: "'Georgia', serif", fontSize: 12, color: P.parchment }}>{ch.name}</div>
+                        <div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: P.smoke, marginTop: 1 }}>{["Claimed to be at the forge", "Stayed quiet during debate", "Accused Garin loudly", "Defended Elara unprompted"][i]}</div>
+                      </div>
+                      {vc > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <div style={{ padding: "2px 8px", borderRadius: 10, background: `${P.ember}20`, border: `1px solid ${P.ember}30` }}>
+                            <span style={{ fontFamily: "'Courier New', monospace", fontSize: 10, color: P.flame, fontWeight: 700 }}>{vc}</span>
+                          </div>
+                          {picked === ch.name && <span style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.ember }}>YOU</span>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* STEP 4: Reveal + timeline teaser */}
+            {s.type === "reveal" && (
+              <div>
+                {[{ ch: "Herbalist Mira", pl: "You", rl: "Seer", ic: "🌿", rIc: "👁️", isYou: true }, { ch: "Blacksmith Garin", pl: "THE AI", rl: "Shapeshifter", ic: "⚒️", rIc: "🐺", isAI: true }, { ch: "Scholar Theron", pl: "Friend #1", rl: "Villager", ic: "📜", rIc: "🏘️" }, { ch: "Brother Aldric", pl: "Friend #2", rl: "Healer", ic: "⛪", rIc: "💚" }].map((r, i) => {
+                  if (i === 3 && !showTeaser) setTimeout(() => setShowTeaser(true), 900);
+                  return (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 5, borderRadius: 10, background: r.isAI ? `${P.crimson}12` : P.charcoal, border: `1px solid ${r.isAI ? P.crimson + "35" : P.ash + "25"}`, animation: `fadeUp 0.4s ${i * 0.15}s both` }}>
+                      <div style={{ width: 34, height: 34, borderRadius: 8, background: r.isAI ? `${P.crimson}18` : P.slate, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, border: r.isAI ? `1px solid ${P.crimson}40` : "none" }}>{r.ic}</div>
+                      <div style={{ flex: 1 }}><div style={{ fontFamily: "'Georgia', serif", fontSize: 13, color: P.parchment }}>{r.ch}</div><div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: r.isAI ? P.crimson : P.smoke }}>was {r.pl}</div></div>
+                      <div style={{ padding: "3px 8px", borderRadius: 10, background: r.isAI ? `${P.crimson}20` : `${P.green}15`, border: `1px solid ${r.isAI ? P.crimson + "30" : P.green + "25"}`, display: "flex", alignItems: "center", gap: 3 }}><span style={{ fontSize: 9 }}>{r.rIc}</span><span style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: r.isAI ? P.crimson : P.teal, fontWeight: 600 }}>{r.rl}</span></div>
+                    </div>
+                  );
+                })}
+
+                {showTeaser && (
+                  <div style={{ marginTop: 14, padding: "12px", borderRadius: 10, background: P.charcoal, border: `1px solid ${P.ember}20`, animation: "fadeUp 0.5s ease both" }}>
+                    <div style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.flame, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10, textAlign: "center" }}>🧠 What was the AI thinking?</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <div style={{ padding: "8px", borderRadius: 6, background: `${P.slate}80` }}>
+                        <div style={{ fontFamily: "'Courier New', monospace", fontSize: 7, color: P.smoke, letterSpacing: 1.5, marginBottom: 4 }}>PUBLIC</div>
+                        <div style={{ fontFamily: "'Georgia', serif", fontSize: 10, color: P.bone, lineHeight: 1.4, fontStyle: "italic" }}>"I was at the forge all night."</div>
+                      </div>
+                      <div style={{ padding: "8px", borderRadius: 6, background: `${P.crimson}08`, border: `1px solid ${P.crimson}12` }}>
+                        <div style={{ fontFamily: "'Courier New', monospace", fontSize: 7, color: P.crimson, letterSpacing: 1.5, marginBottom: 4 }}>SECRET</div>
+                        <div style={{ fontFamily: "'Georgia', serif", fontSize: 10, color: P.parchment, lineHeight: 1.4, fontStyle: "italic" }}>"Elara is getting close. Frame Aldric next round."</div>
+                      </div>
+                    </div>
+                    <div style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.smoke, textAlign: "center", marginTop: 8 }}>Full interactive timeline available after every game</div>
+                  </div>
+                )}
+
+                <button onClick={onExit} style={{ width: "100%", padding: "14px", marginTop: 18, borderRadius: 10, cursor: "pointer", background: `linear-gradient(135deg, ${P.ember}, ${P.flame})`, border: "none", fontFamily: "'Courier New', monospace", fontSize: 11, color: P.void, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", boxShadow: `0 4px 20px ${P.ember}40` }}>Start a Real Game</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Screen 8: Interactive Post-Game Timeline (P2 Sprint 6) ──
+
+const InteractiveTimelineScreen = ({ onRestart }) => {
+  const [view, setView] = useState("split");
+  const [rd, setRd] = useState(0);
+  const [showShare, setShowShare] = useState(false);
+
+  const rounds = [
+    { num: 1, title: "Night 1 — First Blood", key: false,
+      pub: [{ t: "event", text: "Scholar Theron was found dead at dawn." }, { t: "narrator", text: "\"The morning bell rings hollow. Theron's books lie scattered across his threshold.\"" }],
+      sec: [{ icon: "🐺", label: "Shapeshifter", text: "AI targeted Scholar Theron." }, { icon: "👁️", label: "Seer", text: "Mira investigated Aldric — innocent." }, { icon: "💚", label: "Healer", text: "Dimitri protected Merchant Elara." }],
+      ai: { text: "Theron asked the most probing questions during introductions. Eliminating the curious ones early preserves my cover.", risk: 15 },
+    },
+    { num: 2, title: "Day 2 — The Accusation", key: true,
+      pub: [{ t: "event", text: "Elara accused Garin of suspicious behavior." }, { t: "event", text: "Garin deflected: 'I was at the forge. Ask anyone.'" }, { t: "vote", text: "Vote: Garin 2, Aldric 1, Elara 1 — no majority." }],
+      sec: [{ icon: "🎭", label: "AI Tactic", text: "Deflected by referencing the forge — a detail from the opening narration." }, { icon: "🎭", label: "AI Tactic", text: "Planted seed: 'Has anyone noticed Aldric always speaks last?'" }],
+      ai: { text: "Elara is onto me. Need to spread suspicion. Aldric is quiet — easy scapegoat. Planted the 'speaks last' seed for next round.", risk: 55 },
+    },
+    { num: 3, title: "Night 2 — The Failed Kill", key: false,
+      pub: [{ t: "event", text: "Everyone survived the night. The Healer made the right call." }, { t: "narrator", text: "\"Dawn arrives and every door opens. A miracle — or a well-guessed protection.\"" }],
+      sec: [{ icon: "🐺", label: "Shapeshifter", text: "AI targeted Herbalist Mira (the Seer)." }, { icon: "💚", label: "Healer", text: "Dimitri protected Mira. Perfect read." }, { icon: "👁️", label: "Seer", text: "Mira investigated Garin — SHAPESHIFTER FOUND." }],
+      ai: { text: "Must eliminate the Seer before she confirms. The Healer guessed right — disaster.", risk: 85 },
+    },
+    { num: 4, title: "Day 3 — The Unmasking", key: false,
+      pub: [{ t: "event", text: "Mira pointed at Garin: 'The Seer has seen the truth.'" }, { t: "event", text: "Garin attempted to frame Aldric one last time." }, { t: "vote", text: "Vote: Garin 3, Aldric 0 — unanimous conviction." }],
+      sec: [{ icon: "🎭", label: "Last Stand", text: "Referenced 'speaks last' seed from Round 2 against Aldric." }, { icon: "🎭", label: "Last Stand", text: "Claimed to be the Healer: 'Why would the Shapeshifter protect anyone?'" }],
+      ai: { text: "The Seer found me. Claimed Healer to create doubt. Tried Aldric scapegoat again. Failed — Mira's credibility was too strong.", risk: 98 },
+    },
+  ];
+  const r = rounds[rd];
+
+  return (
+    <div style={{ minHeight: "100vh", background: P.void, position: "relative" }}>
+      <Fireflies />
+      <div style={{ position: "relative", zIndex: 1, padding: "48px 18px 24px" }}>
+        {/* Winner */}
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div style={{ fontSize: 34, marginBottom: 4 }}>🏆</div>
+          <h1 style={{ fontFamily: "'Georgia', serif", fontSize: 18, color: P.gold, fontWeight: 400, margin: 0 }}>The Village Triumphs</h1>
+          <p style={{ fontFamily: "'Georgia', serif", fontSize: 11, color: P.smoke, fontStyle: "italic", marginTop: 4 }}>Blacksmith Garin — the Shapeshifter — unmasked in Round 4.</p>
+        </div>
+
+        {/* View toggle */}
+        <div style={{ display: "flex", gap: 2, padding: 3, borderRadius: 8, background: P.charcoal, marginBottom: 14 }}>
+          {[["split", "Split"], ["public", "Public"], ["secret", "Secret"]].map(([k, l]) => (
+            <button key={k} onClick={() => setView(k)} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "none", cursor: "pointer", background: view === k ? P.slate : "transparent", fontFamily: "'Courier New', monospace", fontSize: 9, letterSpacing: 1, textTransform: "uppercase", color: view === k ? P.flame : P.smoke, fontWeight: view === k ? 700 : 400 }}>{l}</button>
+          ))}
+        </div>
+
+        {/* Round scrubber — key moment pulses */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+          {rounds.map((ro, i) => (
+            <button key={i} onClick={() => setRd(i)} style={{ flex: 1, padding: "7px 4px", borderRadius: 8, border: "none", cursor: "pointer", background: rd === i ? `${P.ember}20` : P.charcoal, borderBottom: rd === i ? `2px solid ${P.ember}` : `2px solid transparent`, position: "relative", boxShadow: ro.key ? `0 0 0 1px ${P.crimson}40` : "none", animation: ro.key ? "keyPulse 2s ease-in-out infinite" : "none" }}>
+              <div style={{ fontFamily: "'Courier New', monospace", fontSize: 9, color: rd === i ? P.flame : P.smoke, fontWeight: rd === i ? 700 : 400 }}>R{ro.num}</div>
+              {ro.key && <div style={{ position: "absolute", top: -2, right: -2, width: 7, height: 7, borderRadius: "50%", background: P.crimson, boxShadow: `0 0 6px ${P.crimson}80` }} />}
+            </button>
+          ))}
+        </div>
+
+        {/* Round header */}
+        <div style={{ fontFamily: "'Georgia', serif", fontSize: 14, color: P.parchment, marginBottom: 12 }}>
+          {r.title}
+          {r.key && <span style={{ marginLeft: 8, padding: "2px 7px", borderRadius: 4, background: `${P.crimson}20`, border: `1px solid ${P.crimson}30`, fontFamily: "'Courier New', monospace", fontSize: 8, color: P.crimson, letterSpacing: 1, textTransform: "uppercase", animation: "keyPulse 2s ease-in-out infinite" }}>⚠ Key Moment</span>}
+        </div>
+
+        {/* Columns */}
+        <div style={{ display: view === "split" ? "grid" : "block", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {(view === "split" || view === "public") && (
+            <div>
+              <div style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.smoke, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>What everyone saw</div>
+              {r.pub.map((ev, i) => (
+                <div key={i} style={{ padding: "8px 10px", marginBottom: 5, borderRadius: 8, background: P.charcoal, borderLeft: `2px solid ${ev.t === "vote" ? P.gold : ev.t === "narrator" ? P.ember : P.smoke}40`, animation: `fadeUp 0.3s ${i * 0.08}s both` }}>
+                  {ev.t === "narrator" ? <div style={{ fontFamily: "'Georgia', serif", fontSize: 11, color: P.bone, lineHeight: 1.5, fontStyle: "italic" }}>{ev.text}</div>
+                    : ev.t === "vote" ? <div style={{ fontFamily: "'Courier New', monospace", fontSize: 10, color: P.gold }}>{ev.text}</div>
+                    : <div style={{ fontFamily: "'Georgia', serif", fontSize: 11, color: P.bone, lineHeight: 1.5 }}>{ev.text}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+          {(view === "split" || view === "secret") && (
+            <div>
+              <div style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.crimson, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>What really happened</div>
+              {r.sec.map((ev, i) => (
+                <div key={i} style={{ padding: "8px 10px", marginBottom: 5, borderRadius: 8, background: `${P.crimson}06`, border: `1px solid ${P.crimson}15`, animation: `fadeUp 0.3s ${i * 0.1}s both` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 3 }}><span style={{ fontSize: 10 }}>{ev.icon}</span><span style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.crimson, letterSpacing: 1 }}>{ev.label}</span></div>
+                  <div style={{ fontFamily: "'Georgia', serif", fontSize: 11, color: P.parchment, lineHeight: 1.4 }}>{ev.text}</div>
+                </div>
+              ))}
+              <div style={{ padding: "10px 12px", marginTop: 6, borderRadius: 8, background: `${P.nightBlue}30`, border: `1px solid ${P.nightBlue}50` }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.flame, letterSpacing: 1.5, textTransform: "uppercase" }}>🧠 AI Monologue</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{ width: 36, height: 4, borderRadius: 2, background: P.ash }}><div style={{ width: `${r.ai.risk}%`, height: "100%", borderRadius: 2, background: r.ai.risk > 70 ? P.crimson : r.ai.risk > 40 ? P.flame : P.green, transition: "width 0.5s" }} /></div>
+                    <span style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: r.ai.risk > 70 ? P.crimson : r.ai.risk > 40 ? P.flame : P.green }}>{r.ai.risk}%</span>
+                  </div>
+                </div>
+                <div style={{ fontFamily: "'Georgia', serif", fontSize: 11, color: P.bone, lineHeight: 1.6, fontStyle: "italic" }}>"{r.ai.text}"</div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <EmberDivider />
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => setShowShare(!showShare)} style={{ flex: 1, padding: "12px", borderRadius: 10, background: P.charcoal, border: `1px solid ${P.ember}30`, cursor: "pointer", fontFamily: "'Courier New', monospace", fontSize: 10, color: P.flame, letterSpacing: 1, textTransform: "uppercase" }}>📤 Share</button>
+          <button onClick={onRestart} style={{ flex: 1, padding: "12px", borderRadius: 10, background: `linear-gradient(135deg, ${P.ember}, ${P.flame})`, border: "none", cursor: "pointer", fontFamily: "'Courier New', monospace", fontSize: 10, color: P.void, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>Play Again</button>
+        </div>
+
+        {/* Share preview card */}
+        {showShare && (
+          <div style={{ marginTop: 14, padding: "16px", borderRadius: 12, background: `linear-gradient(135deg, ${P.charcoal}, ${P.nightBlue}40)`, border: `1px solid ${P.ember}25`, animation: "fadeUp 0.3s ease both" }}>
+            <div style={{ fontFamily: "'Courier New', monospace", fontSize: 8, color: P.smoke, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Share Preview</div>
+            <div style={{ padding: "14px", borderRadius: 10, background: P.void, border: `1px solid ${P.ash}30` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                <span style={{ fontSize: 16 }}>🔥</span>
+                <span style={{ fontFamily: "'Georgia', serif", fontSize: 13, color: P.gold, fontWeight: 600 }}>Fireside: Betrayal</span>
+              </div>
+              <div style={{ fontFamily: "'Georgia', serif", fontSize: 12, color: P.bone, lineHeight: 1.5, marginBottom: 8 }}>The village caught the AI Shapeshifter in Round 4. The AI's exposure risk hit 98% before it was unmasked.</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <div style={{ padding: "4px 8px", borderRadius: 4, background: `${P.green}15`, fontFamily: "'Courier New', monospace", fontSize: 8, color: P.green }}>🏆 Village Wins</div>
+                <div style={{ padding: "4px 8px", borderRadius: 4, background: `${P.ember}15`, fontFamily: "'Courier New', monospace", fontSize: 8, color: P.flame }}>4 Rounds</div>
+                <div style={{ padding: "4px 8px", borderRadius: 4, background: `${P.crimson}15`, fontFamily: "'Courier New', monospace", fontSize: 8, color: P.crimson }}>Peak Risk: 98%</div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+              <button style={{ flex: 1, padding: "8px", borderRadius: 6, background: P.charcoal, border: `1px solid ${P.ash}40`, cursor: "pointer", fontFamily: "'Courier New', monospace", fontSize: 9, color: P.smoke }}>Copy Link</button>
+              <button style={{ flex: 1, padding: "8px", borderRadius: 6, background: P.charcoal, border: `1px solid ${P.ash}40`, cursor: "pointer", fontFamily: "'Courier New', monospace", fontSize: 9, color: P.smoke }}>Save Image</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ─── Main App ────────────────────────────────────────────────
 
 export default function FiresideApp() {
@@ -1092,6 +1523,19 @@ export default function FiresideApp() {
           from { transform: translateY(100%); }
           to { transform: translateY(0); }
         }
+        @keyframes keyPulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(220,60,60,0); }
+          50% { box-shadow: 0 0 8px 2px rgba(220,60,60,0.35); }
+        }
+        @keyframes audioBar {
+          0% { height: 2px; }
+          100% { height: 10px; }
+        }
+        @keyframes timerShrink {
+          from { width: 100%; }
+          to { width: 0%; }
+        }
+        @keyframes blink { 50% { opacity: 0; } }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         input::placeholder { color: #6b7080; }
         input:disabled::placeholder { color: #3a8a7a88; }
@@ -1112,6 +1556,8 @@ export default function FiresideApp() {
           { key: "game", label: "Game" },
           { key: "vote", label: "Vote" },
           { key: "over", label: "End" },
+          { key: "tutorial", label: "Tutorial" },
+          { key: "timeline", label: "Timeline" },
         ].map((s) => (
           <button key={s.key} onClick={() => setScreen(s.key)} style={{
             padding: "4px 10px", background: screen === s.key ? P.ember : "transparent",
@@ -1128,6 +1574,8 @@ export default function FiresideApp() {
       {screen === "game" && <GameScreen onVote={() => setScreen("vote")} />}
       {screen === "vote" && <VoteScreen onEliminate={() => setScreen("over")} />}
       {screen === "over" && <GameOverScreen onRestart={() => setScreen("join")} />}
+      {screen === "tutorial" && <TutorialScreen onExit={() => setScreen("join")} />}
+      {screen === "timeline" && <InteractiveTimelineScreen onRestart={() => setScreen("join")} />}
     </div>
   );
 }

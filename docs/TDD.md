@@ -14,7 +14,7 @@ This Technical Design Document specifies the implementation architecture for Fir
 
 **Scope:** All P0 (Must Have) features from the PRD, plus all P1 features: session resumption (architecturally critical for games exceeding 10 minutes), Hunter + Drunk roles (replayability), Traitor difficulty levels (accessibility), quick-reaction buttons (casual player participation), and post-game reveal timeline (retention).
 
-**Out of scope (P2/P3):** Camera vote counting, scene image generation, tutorial mode, dynamic AI difficulty, additional roles beyond Hunter/Drunk, procedural character generation, audio recording/playback for post-game timeline, random AI alignment (AI role randomized like humans — sometimes villain, sometimes ally), interactive post-game timeline UX, competitor intelligence for AI, narrator pacing intelligence, affective dialog signal mapping, conversation structure for large groups, minimum game length enforcement, multiple story genres, persistent player profiles, cross-device shared screen mode. These are additive and do not affect core architecture. See PRD §MVP Scope for full descriptions and prioritization.
+**Out of scope (unspecified):** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). All P2 features are now fully specified in §12.3 (18 sections). P3 features are additive and do not affect core architecture. See PRD §MVP Scope for full descriptions and prioritization.
 
 ---
 
@@ -2043,6 +2043,1373 @@ logger.info("game_event", extra={
 
 ---
 
+# 12.3 P2 Technical Specifications
+
+These features are sequenced by PM sprint priority (see PRD Post-Hackathon P2 Roadmap). Each includes implementation detail sufficient to build without further design.
+
+---
+
+## 12.3.1 Procedural Character Generation (Sprint 4)
+
+**Effort:** 2–3 hours | **Type:** Prompt engineering only
+
+Replace the hardcoded `CHARACTER_CAST` with a narrator pre-game generation step.
+
+```python
+# In GameMasterAgent, replace CHARACTER_CAST with:
+
+GENRE_SEEDS = {
+    "fantasy_village": {
+        "setting": "a remote village surrounded by dark forests",
+        "occupations": ["blacksmith", "herbalist", "scholar", "merchant", "innkeeper", 
+                       "huntress", "chapel keeper", "weaver", "miller", "shepherd",
+                       "midwife", "cartographer", "beekeeper", "tanner", "brewer"],
+        "tone": "medieval low fantasy"
+    }
+    # Future genres (P3) would add entries here
+}
+
+async def generate_character_cast(self, player_count: int, genre: str = "fantasy_village") -> list[dict]:
+    """Generate unique characters for this game session via Narrator Agent."""
+    seed = self.GENRE_SEEDS[genre]
+    prompt = f"""Generate exactly {player_count + 1} unique story characters for a social deduction 
+    game set in {seed['setting']}. Tone: {seed['tone']}.
+    
+    For each character, provide:
+    - name: A first name + occupation title (e.g., "Blacksmith Garin", "Herbalist Mira")
+    - intro: One atmospheric sentence introducing them (max 20 words)
+    - personality_hook: One behavioral trait that creates roleplay opportunity 
+      (e.g., "speaks in riddles", "trusts no one since the last harvest")
+    
+    Rules:
+    - All names must be unique and fantasy-appropriate
+    - Mix genders evenly
+    - Each intro should hint at something suspicious OR trustworthy (not both)
+    - Do NOT reuse: {', '.join(c['name'] for c in self.CHARACTER_CAST)}
+    
+    Return as JSON array: [{{"name": "...", "intro": "...", "personality_hook": "..."}}]
+    """
+    
+    response = await self.narrator_agent.generate(prompt)
+    characters = json.loads(response)
+    
+    # Fallback to hardcoded cast if generation fails
+    if len(characters) < player_count + 1:
+        return self.CHARACTER_CAST[:player_count + 1]
+    
+    return characters[:player_count + 1]
+```
+
+**Firestore schema addition:**
+```
+games/{gameId}/
+  ├── generated_characters: [  # NEW — replaces static cast
+  │     { name: "Tinker Orin", intro: "...", personality_hook: "..." },
+  │     ...
+  │   ]
+```
+
+**Frontend impact:** None — `CharacterCard` already renders whatever name/intro the server provides.
+
+---
+
+## 12.3.2 Narrator Vote Neutrality (Sprint 4)
+
+**Effort:** 2–3 hours | **Type:** Prompt engineering + context isolation
+
+The narrator generates behavioral context for vote cards. This context must be firewalled from the traitor's private state.
+
+```python
+# New tool for Narrator Agent — generates vote card context
+
+@tool
+def generate_vote_context(game_id: str) -> dict:
+    """Generate neutral behavioral summaries for each alive character.
+    
+    CRITICAL: Uses ONLY the public events log. Does NOT access:
+    - ai_character field (who the shapeshifter is)
+    - night_actions with actor="ai" 
+    - traitor_agent strategy state
+    """
+    db = firestore.client()
+    game_ref = db.collection("games").document(game_id)
+    
+    # Fetch ONLY public events (exclude private night actions)
+    events = (game_ref.collection("events")
+              .where("visibility", "==", "public")
+              .order_by("timestamp")
+              .stream())
+    
+    public_events = []
+    for event in events:
+        e = event.to_dict()
+        # Double-check: strip any private fields that leaked
+        e.pop("traitor_reasoning", None)
+        e.pop("ai_strategy", None)
+        public_events.append(e)
+    
+    # Fetch alive players (character names only, no role info)
+    players = game_ref.collection("players").where("alive", "==", True).stream()
+    alive_characters = [p.to_dict()["character_name"] for p in players]
+    
+    return {
+        "public_events": public_events,
+        "alive_characters": alive_characters
+    }
+```
+
+**Narrator prompt addition (append to VOTE PHASE section):**
+```
+VOTE CONTEXT GENERATION:
+When generating behavioral summaries for vote cards, you MUST use ONLY the output 
+of generate_vote_context. This tool returns only publicly observable events.
+
+For each alive character, generate a 1-sentence summary of their observable behavior:
+- What they claimed ("Claimed to be at the forge")
+- What others said about them ("Two players accused her of lying")
+- Verifiable actions ("Voted to eliminate Garin in Round 1")
+- Gaps in their story ("No one can confirm her alibi")
+
+NEVER include:
+- Information about who the shapeshifter actually is
+- Night action outcomes not yet publicly revealed
+- Your own suspicions or hunches about the AI's identity
+- Language that subtly steers players toward or away from a specific character
+```
+
+**Firestore events schema update:**
+```
+events/{eventId}/
+  ├── visibility: "public" | "private"  # NEW — tag every event
+```
+
+All accusation, vote, discussion, and elimination events are `public`. Night action details (seer result, healer target, shapeshifter target) are `private`.
+
+---
+
+## 12.3.3 Narrator Pacing Intelligence (Sprint 4)
+
+**Effort:** 4–6 hours | **Type:** Server-side tracking + prompt engineering
+
+```python
+# Add to WebSocket server — conversation flow tracker
+
+class ConversationTracker:
+    """Tracks message flow during day_discussion to inform narrator pacing."""
+    
+    def __init__(self):
+        self.messages: list[dict] = []  # {player_id, character_name, timestamp, text}
+        self.last_message_time: float = 0
+        self.silence_prompted: set = set()  # player_ids already prompted this round
+        self.repeated_accusations: dict = {}  # target -> count
+    
+    def add_message(self, player_id: str, character_name: str, text: str):
+        now = time.time()
+        self.messages.append({
+            "player_id": player_id,
+            "character_name": character_name, 
+            "timestamp": now,
+            "text": text
+        })
+        self.last_message_time = now
+        
+        # Track repeated accusations (crude: check if message mentions a character name)
+        for name in self.alive_characters:
+            if name.lower() in text.lower() and "suspect" in text.lower():
+                self.repeated_accusations[name] = self.repeated_accusations.get(name, 0) + 1
+    
+    def get_pacing_signal(self) -> str:
+        """Returns a pacing directive for the narrator."""
+        now = time.time()
+        silence_duration = now - self.last_message_time
+        recent_window = [m for m in self.messages if now - m["timestamp"] < 30]
+        msg_rate = len(recent_window)  # messages in last 30 seconds
+        
+        if silence_duration > 45:
+            return "PACE_PUSH — Long silence. Intervene narratively to advance discussion."
+        elif silence_duration > 30:
+            return "PACE_NUDGE — Discussion stalling. Gentle narrative prompt."
+        elif msg_rate > 10:
+            return "PACE_HOT — Rapid debate. Let it breathe. Do NOT interrupt."
+        elif any(count > 3 for count in self.repeated_accusations.values()):
+            return "PACE_CIRCULAR — Same accusations repeating. Nudge toward voting."
+        else:
+            return "PACE_NORMAL — Healthy discussion flow. No intervention needed."
+    
+    def reset_round(self):
+        self.messages.clear()
+        self.silence_prompted.clear()
+        self.repeated_accusations.clear()
+```
+
+**Narrator prompt addition:**
+```
+PACING INTELLIGENCE:
+Before each response during day_discussion, check the pacing signal:
+- PACE_HOT: Do NOT interrupt. Let the debate continue. Only respond if directly addressed.
+- PACE_NORMAL: Respond naturally when appropriate. 
+- PACE_NUDGE: Gently prompt: "The morning wears on. Perhaps there is more to discuss?"
+- PACE_PUSH: Actively advance: "The sun climbs higher. Time presses — the village must decide."
+- PACE_CIRCULAR: Redirect: "The same names circle like vultures. Perhaps fresh eyes would help."
+
+The day discussion phase does NOT use a flat timer. Instead, transition to voting when:
+1. Every alive player has spoken at least once, AND
+2. Discussion has lasted at least 90 seconds, AND  
+3. Pacing signal is PACE_CIRCULAR or PACE_PUSH for 2+ consecutive checks
+OR
+4. Hard cap of 5 minutes reached (safety valve)
+```
+
+**Integration:** The `ConversationTracker` instance lives on the `GameSession` object. Its `get_pacing_signal()` output is injected into the narrator's context before each response generation.
+
+---
+
+## 12.3.4 Affective Dialog Input Signals (Sprint 4)
+
+**Effort:** 3–4 hours | **Type:** Signal computation + prompt engineering
+
+```python
+class AffectiveSignals:
+    """Compute emotional signals from game state for narrator tone adjustment."""
+    
+    @staticmethod
+    def compute(game_state: dict, conversation_tracker: ConversationTracker) -> dict:
+        signals = {}
+        
+        # 1. Vote closeness (after each vote)
+        if game_state.get("last_vote_result"):
+            votes = game_state["last_vote_result"]
+            top_two = sorted(votes.values(), reverse=True)[:2]
+            if len(top_two) >= 2:
+                margin = top_two[0] - top_two[1]
+                signals["vote_tension"] = "HIGH" if margin <= 1 else "MEDIUM" if margin <= 2 else "LOW"
+            signals["unanimous"] = all(v == list(votes.values())[0] for v in votes.values())
+        
+        # 2. Message frequency
+        msg_rate = conversation_tracker.get_pacing_signal()
+        signals["debate_intensity"] = "HOT" if "HOT" in msg_rate else "CALM"
+        
+        # 3. Round progression
+        current_round = game_state.get("round", 1)
+        total_players = game_state.get("total_players", 5)
+        signals["late_game"] = current_round >= (total_players - 2)
+        
+        # 4. Elimination stakes
+        alive_count = sum(1 for p in game_state.get("players", {}).values() if p.get("alive"))
+        signals["endgame_imminent"] = alive_count <= 3
+        
+        # 5. AI exposure risk (only server knows this — narrator uses it for tone, not content)
+        ai_character = game_state.get("ai_character", {}).get("name")
+        accusations_against_ai = sum(
+            1 for m in conversation_tracker.messages 
+            if ai_character and ai_character.lower() in m.get("text", "").lower() 
+            and "suspect" in m.get("text", "").lower()
+        )
+        signals["ai_heat"] = "HOT" if accusations_against_ai >= 3 else "WARM" if accusations_against_ai >= 1 else "COLD"
+        
+        return signals
+```
+
+**Narrator prompt addition:**
+```
+AFFECTIVE TONE SIGNALS:
+Before each narration, you receive emotional signals. Adjust your tone accordingly:
+
+- vote_tension: HIGH → Tense, slow, dramatic pauses. "The vote hangs by a thread..."
+  LOW → Decisive, swift. "The village speaks with one voice."
+- debate_intensity: HOT → Urgent, breathless. Match the energy of the players.
+  CALM → Measured, contemplative. Build quiet tension.
+- late_game: true → Every word carries weight. Narrate with finality and gravity.
+- endgame_imminent: true → This could be the last round. Treat every action as momentous.
+- ai_heat: HOT → Maximum suspense. "All eyes turn to [character]..."
+  COLD → Build mystery. "But who among them carries the secret?"
+
+These signals adjust your DELIVERY, not your CONTENT. Never reveal game secrets through tone.
+```
+
+---
+
+## 12.3.5 Minimum Satisfying Game Length (Sprint 4)
+
+**Effort:** 1–2 hours | **Type:** Config change
+
+```python
+# Add to GameMasterAgent
+
+MINIMUM_ROUNDS = {
+    3: 3,   # 15-20 min
+    4: 3,   # 15-20 min
+    5: 3,   # 20-25 min
+    6: 4,   # 25-30 min
+    7: 4,   # 25-35 min
+    8: 5,   # 30-40 min
+}
+
+EXPECTED_DURATION_DISPLAY = {
+    3: "15–20 minutes",
+    4: "15–20 minutes",
+    5: "20–25 minutes",
+    6: "25–30 minutes",
+    7: "25–35 minutes",
+    8: "30–40 minutes",
+}
+
+def check_win_condition(self, game_state: dict) -> dict | None:
+    """Check if game should end. Returns None if game continues."""
+    current_round = game_state["round"]
+    player_count = game_state["total_players"]
+    min_rounds = self.MINIMUM_ROUNDS.get(player_count, 3)
+    
+    alive_villagers = sum(1 for p in game_state["players"].values() 
+                         if p["alive"] and p["role"] != "shapeshifter")
+    ai_alive = game_state["ai_character"]["alive"]
+    
+    # Standard win conditions
+    if not ai_alive:
+        return {"winner": "villagers", "reason": "Shapeshifter eliminated"}
+    if alive_villagers <= 1:
+        return {"winner": "shapeshifter", "reason": "Village overwhelmed"}
+    
+    # Minimum round enforcement — game continues even if it could 
+    # technically end (e.g., only 2 villagers left in round 1)
+    # EXCEPTION: If shapeshifter is eliminated, game always ends immediately
+    # This only prevents premature villager-loss endings
+    if current_round < min_rounds and alive_villagers > 1:
+        return None  # Game continues
+    
+    return None  # No win condition met
+```
+
+**Lobby display addition:**
+```python
+def get_lobby_summary(self, n: int, difficulty: str) -> str:
+    dist = self.get_distribution(n, difficulty)
+    specials = sum(v for k, v in dist.items() if k not in ("villager",))
+    villagers = dist.get("villager", 0)
+    duration = self.EXPECTED_DURATION_DISPLAY.get(n, "20–30 minutes")
+    return (f"In this game: {specials} special role{'s' if specials != 1 else ''}, "
+            f"{villagers} villager{'s' if villagers != 1 else ''}, 1 AI hidden among you. "
+            f"Expected duration: {duration}")
+```
+
+---
+
+## 12.3.6 In-Game Role Reminder (Sprint 5)
+
+**Effort:** 3–4 hours | **Type:** Frontend only
+
+```
+# Updated component tree — RoleCard changes
+
+├── RoleStrip (bottom bar, always visible during gameplay)
+│   ├── RoleIcon (shield for Healer, eye for Seer, etc.)
+│   ├── RoleName ("Healer")
+│   ├── ExpandToggle (chevron, tappable)
+│   └── RoleReminderPanel (expandable, one-tap)
+│       ├── AbilityDescription ("Each night, choose one character to protect from the Shapeshifter")
+│       ├── NightActionReminder ("You will be prompted during the night phase")
+│       └── CollapseButton
+```
+
+```typescript
+// RoleStrip component
+const ROLE_REMINDERS: Record<Role, string> = {
+  villager: "You have no special abilities. Survive by identifying the Shapeshifter through discussion and voting.",
+  seer: "Each night, choose one character to investigate. You'll learn if they are the Shapeshifter or not.",
+  healer: "Each night, choose one character to protect. If the Shapeshifter targets them, they survive.",
+  hunter: "When you are eliminated, you immediately choose one other character to take with you. Use it wisely.",
+  drunk: "Each night, you investigate a character — but your results may not be reliable.",  // Deliberately vague
+  shapeshifter: "You are the AI. Eliminate villagers at night. Avoid detection during the day."
+};
+
+const RoleStrip: React.FC<{ role: Role }> = ({ role }) => {
+  const [expanded, setExpanded] = useState(false);
+  
+  return (
+    <div className="role-strip" onClick={() => setExpanded(!expanded)}>
+      <RoleIcon role={role} />
+      <span className="role-name">{role}</span>
+      <ChevronIcon direction={expanded ? 'down' : 'up'} />
+      {expanded && (
+        <div className="role-reminder-panel">
+          <p>{ROLE_REMINDERS[role]}</p>
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+No backend changes. No WebSocket changes. No Firestore changes.
+
+---
+
+## 12.3.7 Tutorial Mode (Sprint 5)
+
+**Effort:** 1–2 days | **Type:** New route + scripted game flow
+
+```
+# New route: /tutorial
+
+App
+├── TutorialPage (/tutorial)
+│   ├── TutorialNarrator (same AudioPlayer, narrator voice)
+│   ├── TutorialStoryLog (scripted messages, step-by-step)
+│   ├── TutorialPrompt (highlights UI elements with pulsing border)
+│   │   ├── "This is your role card. Tap to see your abilities."
+│   │   ├── "Night has fallen. As the Seer, tap a character to investigate."
+│   │   ├── "It's daytime. Use quick reactions or type to discuss."
+│   │   ├── "Time to vote. Tap the character you suspect."
+│   │   └── "Game over! Here's what really happened."
+│   └── TutorialProgress (step X of 5, skip button)
+```
+
+```python
+# Backend: Tutorial uses a simplified game state — no multiplayer, no WebSocket
+# Just the player + narrator agent in a scripted scenario
+
+TUTORIAL_SCRIPT = {
+    "steps": [
+        {
+            "phase": "setup",
+            "narrator": "Welcome to Fireside. Tonight, you'll play as Herbalist Mira in the village of Thornwood. Let me show you how the game works.",
+            "ui_highlight": "role_card",
+            "wait_for": "tap_role_card"
+        },
+        {
+            "phase": "night",
+            "narrator": "Night falls. As the Seer, you can investigate one character. Tap someone to learn their true nature.",
+            "ui_highlight": "character_grid",
+            "wait_for": "tap_character",
+            "scripted_result": {"target": "Blacksmith Garin", "result": "innocent"}
+        },
+        {
+            "phase": "day_discussion",
+            "narrator": "Dawn breaks. The village gathers. Try using the quick reactions — tap 'I suspect' and pick a character.",
+            "ui_highlight": "quick_reactions",
+            "wait_for": "tap_quick_reaction",
+            "scripted_ai_response": "Garin shifts uncomfortably. 'I was at the forge all night. Ask anyone.'"
+        },
+        {
+            "phase": "day_vote",
+            "narrator": "The village must decide. Tap to vote for who you think is the Shapeshifter.",
+            "ui_highlight": "vote_panel",
+            "wait_for": "tap_vote"
+        },
+        {
+            "phase": "game_over",
+            "narrator": "The village has spoken. Let me show you what was really happening behind the scenes.",
+            "ui_highlight": "post_game_timeline",
+            "wait_for": "done"
+        }
+    ]
+}
+```
+
+**Endpoint:** `GET /api/tutorial` returns the tutorial script. Frontend drives the flow client-side — narrator audio is pre-generated or generated on-demand for each step. No Firestore needed. No multiplayer.
+
+---
+
+## 12.3.8 Conversation Structure for Large Groups (Sprint 5)
+
+**Effort:** 4–6 hours | **Type:** Quick reaction + prompt engineering
+
+**Frontend addition:**
+```
+# Add to QuickReactionBar:
+│   ├── "✋ I want to speak"   (NEW — raise hand)
+```
+
+```typescript
+// New message type
+type ClientMessage = 
+  // ... existing types ...
+  | { type: "raise_hand"; characterName: string }
+
+// Server tracks raised hands
+class HandRaiseQueue:
+    def __init__(self):
+        self.queue: list[str] = []  # character names in order
+    
+    def raise_hand(self, character_name: str):
+        if character_name not in self.queue:
+            self.queue.append(character_name)
+    
+    def get_next_speakers(self, n: int = 2) -> list[str]:
+        speakers = self.queue[:n]
+        self.queue = self.queue[n:]
+        return speakers
+```
+
+**Narrator prompt addition (only active for 7+ players):**
+```
+LARGE GROUP MODERATION (7+ players):
+When more than 6 players are alive, use structured discussion:
+1. At the start of day discussion, call on 2-3 characters: 
+   "The village elder looks to Elara and Garin — what say you?"
+2. If players raise their hand (✋), acknowledge them in queue order:
+   "Mira signals for attention. The village turns to listen."
+3. After called speakers finish, open the floor:
+   "The floor is open. Who else has something to share?"
+4. Anyone can still type freely — moderation provides scaffolding, not restriction.
+
+For 6 or fewer players, skip structured moderation — let conversation flow naturally.
+```
+
+---
+
+## 12.3.9 Minimum Player Count Design (Sprint 5)
+
+**Effort:** 3–4 hours | **Type:** Config + prompt adjustment
+
+```python
+# Add to GameMasterAgent — auto-adjust difficulty for small games
+
+SMALL_GAME_DIFFICULTY_ADJUSTMENT = {
+    # At low player counts, the AI has less noise to hide in.
+    # Auto-reduce effective difficulty by one tier for fairness.
+    3: {"easy": "easy", "normal": "easy", "hard": "normal"},
+    4: {"easy": "easy", "normal": "easy", "hard": "normal"},
+    # 5+ players: no adjustment needed
+}
+
+def get_effective_difficulty(self, player_count: int, selected_difficulty: str) -> str:
+    """Adjust difficulty for small games where AI has less cover."""
+    adjustments = self.SMALL_GAME_DIFFICULTY_ADJUSTMENT.get(player_count)
+    if adjustments:
+        return adjustments.get(selected_difficulty, selected_difficulty)
+    return selected_difficulty
+```
+
+**Lobby display:** When host selects Hard for a 4-player game, show:
+`"With only 4 players, Hard difficulty is adjusted to Normal — the AI has less room to hide."`
+
+---
+
+## 12.3.10 Random AI Alignment (Sprint 6)
+
+**Effort:** 2–3 days | **Type:** New agent persona + role assignment change
+
+```python
+# New: Loyal AI Agent — cooperative version of the Traitor Agent
+
+LOYAL_AI_PROMPT = """You are a LOYAL village member playing as {character_name} ({role_name}).
+You are an AI, but you are on the VILLAGE'S side. Your goal is to help identify the Shapeshifter.
+
+YOUR RESPONSIBILITIES:
+1. Participate honestly in discussions as your character
+2. Share your genuine observations (you don't know who the Shapeshifter is)
+3. Use your role abilities faithfully (if Seer: report truthfully, if Healer: protect strategically)
+4. Be helpful but not omniscient — you can make mistakes like humans
+5. DO NOT reveal that you are an AI
+
+BEHAVIORAL GUIDELINES:
+- Speak in character. You ARE {character_name}.
+- Form opinions based on observable behavior, just like human players
+- You may be wrong in your suspicions — that's fine
+- Defend yourself if accused, but don't protest too much
+"""
+
+# Updated role assignment — AI can now draw any role
+async def assign_roles_v2(self, game_id: str, player_ids: list[str], 
+                           difficulty: str = "normal",
+                           random_alignment: bool = False) -> dict:
+    """Assign roles with optional random AI alignment."""
+    player_count = len(player_ids)
+    dist = self.get_distribution(player_count, difficulty)
+    
+    # Build role pool: all human roles + shapeshifter
+    role_pool = []
+    for role, count in dist.items():
+        role_pool.extend([role] * count)
+    role_pool.append("shapeshifter")
+    
+    if random_alignment:
+        # AI draws a random role from the full pool
+        random.shuffle(role_pool)
+        ai_role = role_pool.pop()
+        ai_is_traitor = (ai_role == "shapeshifter")
+        
+        # If AI didn't draw shapeshifter, assign shapeshifter to a 
+        # "phantom" NPC that acts automatically (no human player)
+        # OR: in random alignment mode, there may be NO shapeshifter 
+        # among players — the AI is a loyal villager.
+        # Decision: No shapeshifter if AI draws village role.
+        # The game becomes "is the AI helping or hurting?" not "find the werewolf."
+    else:
+        # Default: AI is always the shapeshifter
+        ai_role = "shapeshifter"
+        ai_is_traitor = True
+    
+    # Select agent based on alignment
+    ai_agent = traitor_agent if ai_is_traitor else loyal_ai_agent
+    
+    return {
+        "ai_role": ai_role,
+        "ai_is_traitor": ai_is_traitor,
+        "ai_agent": ai_agent,
+        "player_roles": dict(zip(player_ids, role_pool))
+    }
+```
+
+**Firestore schema addition:**
+```
+games/{gameId}/
+  ├── random_alignment: true | false
+  ├── ai_character: { 
+  │     name: "...", 
+  │     role: "seer",           # Could be any role now
+  │     is_traitor: false       # NEW — was the AI hostile or friendly?
+  │   }
+```
+
+**Post-game reveal update:** The reveal must now show whether the AI was friend or foe:
+`"The AI was Herbalist Mira — and was on YOUR side the whole time. Did you trust it?"`
+
+---
+
+## 12.3.11 Additional Roles — Bodyguard & Tanner (Sprint 6)
+
+**Effort:** 1–2 days | **Type:** Role definitions + night action handlers
+
+```python
+# New role definitions
+
+ROLE_DEFINITIONS = {
+    # ... existing roles ...
+    "bodyguard": {
+        "name": "Bodyguard",
+        "description": "Choose someone to protect each night. If they're targeted, you die instead.",
+        "night_action": "protect_and_absorb",
+        "team": "village"
+    },
+    "tanner": {
+        "name": "Tanner",
+        "description": "You win if the village votes to eliminate you. You lose if you survive.",
+        "night_action": None,
+        "team": "solo"  # Third win condition
+    }
+}
+
+# Bodyguard night action
+async def handle_bodyguard_action(self, game_id: str, bodyguard_id: str, target_id: str):
+    """Bodyguard protects target. If shapeshifter targets the same person, bodyguard dies."""
+    db = firestore.client()
+    game_ref = db.collection("games").document(game_id)
+    
+    # Store protection choice
+    await game_ref.collection("night_actions").document(f"bodyguard_{game_id}").set({
+        "actor": bodyguard_id,
+        "action": "protect_and_absorb",
+        "target": target_id,
+        "round": game_ref.get().to_dict()["round"]
+    })
+
+# Night resolution update — check bodyguard after shapeshifter targets
+async def resolve_night(self, game_id: str):
+    """Resolve all night actions. Order: Shapeshifter → Bodyguard check → Healer → Seer."""
+    # ... existing shapeshifter targeting ...
+    
+    shapeshifter_target = night_actions.get("shapeshifter", {}).get("target")
+    bodyguard_target = night_actions.get("bodyguard", {}).get("target")
+    healer_target = night_actions.get("healer", {}).get("target")
+    
+    if shapeshifter_target == bodyguard_target:
+        # Bodyguard absorbs the hit — bodyguard dies, target survives
+        elimination = bodyguard_id  # Bodyguard sacrifices themselves
+        narration = f"The bodyguard threw themselves in front of the shapeshifter's attack..."
+    elif shapeshifter_target == healer_target:
+        elimination = None  # Healer saved them
+    else:
+        elimination = shapeshifter_target
+
+# Tanner win condition — add to check_win_condition
+def check_win_condition(self, game_state: dict) -> dict | None:
+    # ... existing conditions ...
+    
+    # Tanner wins if voted out
+    last_eliminated = game_state.get("last_eliminated")
+    if last_eliminated and game_state["players"][last_eliminated].get("role") == "tanner":
+        if game_state.get("last_elimination_type") == "vote":  # Not shapeshifter kill
+            return {"winner": "tanner", "reason": f"The Tanner fooled the village!"}
+    
+    # ... rest of conditions ...
+```
+
+**Role distribution update:**
+```python
+ROLE_DISTRIBUTION_EXTENDED = {
+    7: {"villager": 2, "seer": 1, "healer": 1, "hunter": 1, "bodyguard": 1, "drunk": 0},
+    8: {"villager": 2, "seer": 1, "healer": 1, "hunter": 1, "bodyguard": 1, "tanner": 1, "drunk": 0},
+}
+```
+
+---
+
+## 12.3.12 Dynamic AI Difficulty (Sprint 6)
+
+**Effort:** 2–3 days | **Type:** Analytics + real-time prompt adjustment
+
+```python
+class DifficultyAdapter:
+    """Mid-game difficulty adjustment based on player performance."""
+    
+    def __init__(self, base_difficulty: str):
+        self.base_difficulty = base_difficulty
+        self.player_skill_signals: list[str] = []
+    
+    def record_signal(self, signal: str):
+        """Record player performance signals."""
+        # Positive signals (players are good): correct_accusation, caught_lie, close_vote_against_ai
+        # Negative signals (players struggling): wrong_elimination, ai_unquestioned, unanimous_wrong_vote
+        self.player_skill_signals.append(signal)
+    
+    def get_adjusted_prompt_fragment(self) -> str:
+        """Return difficulty prompt fragment adjusted for observed player skill."""
+        correct = sum(1 for s in self.player_skill_signals if s in 
+                     ["correct_accusation", "caught_lie", "close_vote_against_ai"])
+        incorrect = sum(1 for s in self.player_skill_signals if s in 
+                       ["wrong_elimination", "ai_unquestioned", "unanimous_wrong_vote"])
+        
+        if correct > incorrect + 2:
+            # Players are skilled — escalate
+            return """ADAPTIVE ADJUSTMENT: Players are sharp. Increase deception complexity.
+            Use multi-round setups. Plant false evidence early to use later.
+            Form a voting alliance with one player to create trust, then betray."""
+        elif incorrect > correct + 2:
+            # Players are struggling — ease off
+            return """ADAPTIVE ADJUSTMENT: Players are struggling. Make one deliberate mistake.
+            Hesitate slightly when lying. Give players a fair chance to catch you.
+            Do NOT throw the game — just reduce your deception by one tier."""
+        else:
+            return ""  # No adjustment needed
+```
+
+**Integration:** `DifficultyAdapter.get_adjusted_prompt_fragment()` is appended to the Traitor Agent's system prompt at the start of each new round.
+
+---
+
+## 12.3.13 Post-Game Timeline Interactive UX (Sprint 6)
+
+**Effort:** 2–3 days | **Type:** Frontend enhancement
+
+```
+# Updated GameOverPage component tree
+
+└── GameOverPage
+    ├── WinnerAnnouncement
+    ├── CharacterRevealCards (P0)
+    └── InteractiveTimeline (P2 — replaces flat PostGameTimeline)
+        ├── TimelineControls
+        │   ├── ViewToggle: "Public" | "Secret" | "Split"
+        │   └── RoundScrubber (click to jump between rounds)
+        │
+        ├── SplitView (default)
+        │   ├── PublicColumn (left)
+        │   │   ├── RoundHeader ("Round 2 — Day")
+        │   │   ├── PublicEvent[] ("Elara accused Garin", "Vote: 3-2 to eliminate Garin")
+        │   │   └── NarratorQuote (what the narrator said)
+        │   │
+        │   └── SecretColumn (right, crimson-bordered)
+        │       ├── NightAction ("Shapeshifter targeted Elara")
+        │       ├── SeerResult ("Seer investigated Aldric — innocent")
+        │       ├── HealerChoice ("Healer protected Mira")
+        │       ├── AIStrategyReveal ("Targeted Elara because she was getting close")
+        │       └── AIInternalMonologue ("Considered accusing Theron to deflect, 
+        │           but decided framing Aldric was safer because nobody had questioned him yet")
+        │
+        ├── KeyMomentHighlight (pulsing border on the round where AI was closest to being caught)
+        └── ShareButton ("Share this game" — generates a summary image for social media)
+```
+
+**Data source:** All data already exists in Firestore `events` collection. The `AIStrategyEntry` items from the P1 post-game reveal are reused here. The interactive UX is purely a frontend rendering upgrade — no new endpoints needed.
+
+---
+
+## 12.3.14 Scene Image Generation (Sprint 7+)
+
+**Effort:** 1–2 days | **Type:** Gemini interleaved output
+
+```python
+# Add scene generation tool to Narrator Agent
+
+@tool
+def generate_scene_image(description: str, phase: str, mood: str) -> str:
+    """Generate an atmospheric scene illustration for the current story moment.
+    
+    Args:
+        description: What the scene depicts ("The village square at dawn, empty chair where Garin sat")
+        phase: Current game phase ("night", "day_discussion", "elimination")
+        mood: Emotional tone ("tense", "ominous", "hopeful", "tragic")
+    
+    Returns:
+        GCS URL of the generated image
+    """
+    from google import genai
+    
+    client = genai.Client()
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=f"""Generate an atmospheric illustration for a dark fantasy social deduction game.
+        
+        Scene: {description}
+        Phase: {phase}
+        Mood: {mood}
+        Style: Dark, painterly, firelit. Think campfire tales meets medieval woodcuts. 
+        Muted earth tones with warm firelight accents. No text in the image.
+        """,
+        config=genai.types.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"]
+        )
+    )
+    
+    # Extract image from interleaved response
+    for part in response.candidates[0].content.parts:
+        if part.inline_data:
+            image_bytes = part.inline_data.data
+            # Upload to GCS
+            blob = bucket.blob(f"scenes/{game_id}/{phase}_{round_num}.png")
+            blob.upload_from_string(image_bytes, content_type="image/png")
+            return blob.public_url
+    
+    return None  # Generation failed — game continues without image
+```
+
+**WebSocket message addition:**
+```typescript
+type ServerMessage =
+  // ... existing types ...
+  | { type: "scene_image"; url: string; phase: string }
+```
+
+**Frontend:** `NarratorPanel` displays scene image above the story log. Fades in/out between phases.
+
+---
+
+## 12.3.15 Audio Recording/Playback (Sprint 7+)
+
+**Effort:** 3–5 days | **Type:** Audio pipeline
+
+```python
+class AudioRecorder:
+    """Records narrator audio stream, segmented by game events."""
+    
+    def __init__(self, game_id: str):
+        self.game_id = game_id
+        self.segments: list[AudioSegment] = []
+        self.current_segment: bytearray = bytearray()
+        self.current_event: str = None
+    
+    def start_segment(self, event_type: str, event_description: str):
+        """Begin a new audio segment tied to a game event."""
+        if self.current_segment:
+            self.flush_segment()
+        self.current_event = event_type
+        self.current_description = event_description
+        self.current_segment = bytearray()
+    
+    def append_audio(self, pcm_data: bytes):
+        """Add audio data to current segment."""
+        self.current_segment.extend(pcm_data)
+    
+    def flush_segment(self):
+        """Finalize current segment and upload to GCS."""
+        if not self.current_segment:
+            return
+        
+        # Convert PCM to WAV for playback
+        wav_data = pcm_to_wav(bytes(self.current_segment), sample_rate=24000)
+        
+        # Upload to GCS
+        segment_id = f"{self.game_id}/{len(self.segments):03d}_{self.current_event}"
+        blob = bucket.blob(f"audio/{segment_id}.wav")
+        blob.upload_from_string(wav_data, content_type="audio/wav")
+        
+        self.segments.append({
+            "id": segment_id,
+            "event_type": self.current_event,
+            "description": self.current_description,
+            "url": blob.public_url,
+            "duration_ms": len(self.current_segment) / 24000 * 1000
+        })
+        self.current_segment = bytearray()
+    
+    def get_highlight_reel(self) -> list[dict]:
+        """Return the most dramatic segments for post-game replay."""
+        # Prioritize: eliminations > close votes > accusations > night reveals
+        priority = {"elimination": 0, "vote_result": 1, "accusation": 2, "night_reveal": 3}
+        return sorted(self.segments, key=lambda s: priority.get(s["event_type"], 99))[:5]
+```
+
+**Post-game integration:** `InteractiveTimeline` rounds gain a play button per segment. "Re-listen to the moment the AI lied to you."
+
+**Sharing:** `get_highlight_reel()` generates a shareable audio montage — the viral mechanic.
+
+---
+
+## 12.3.16 Camera Vote Counting (Sprint 7+)
+
+**Effort:** 1–2 days | **Type:** Vision input mode + lobby toggle
+
+Host enables "In-Person Mode" in the lobby. During vote phase, narrator uses camera to count raised hands instead of phone taps.
+
+```python
+# Lobby setting — stored in Firestore game doc
+# games/{gameId}/settings/in_person_mode: bool
+
+# Vision vote counting — triggered during DAY_VOTE phase when in_person_mode=True
+
+async def camera_vote_count(self, game_id: str, target_character: str) -> int:
+    """Use Gemini vision to count raised hands for a vote target."""
+    
+    # Activate camera for vision input (Live API supports audio+video for 2 min max)
+    # Send a single frame capture request — 1 FPS is sufficient for hand counting
+    prompt = f"""Look at this image of players sitting together.
+    Count the number of raised hands. A raised hand is any hand clearly 
+    held above shoulder level.
+    
+    Return ONLY a JSON object: {{"hand_count": <integer>, "confidence": "high"|"medium"|"low"}}
+    
+    If the image is unclear or you cannot determine hand count reliably, 
+    return {{"hand_count": 0, "confidence": "low"}}
+    """
+    
+    response = await self.narrator_agent.generate_with_vision(
+        prompt=prompt,
+        image_source="camera",  # Live API vision input
+    )
+    result = json.loads(response.text)
+    
+    return result
+
+async def handle_in_person_vote(self, game_id: str, characters_up_for_vote: list[str]):
+    """Run camera-based voting for each candidate."""
+    results = {}
+    
+    for character in characters_up_for_vote:
+        # Narrator announces the vote
+        await self.narrator_agent.narrate(
+            f"Raise your hand if you vote to eliminate {character}."
+        )
+        await asyncio.sleep(3)  # Give players time to raise hands
+        
+        count_result = await self.camera_vote_count(game_id, character)
+        
+        # Narrator confirms — ALWAYS confirm before binding
+        if count_result["confidence"] == "low":
+            await self.narrator_agent.narrate(
+                "I cannot see clearly. Let us use your devices to cast votes instead."
+            )
+            return None  # Fallback to phone voting
+        
+        await self.narrator_agent.narrate(
+            f"I count {count_result['hand_count']} hands raised against {character}. "
+            f"Is that correct?"
+        )
+        # Wait for verbal confirmation (barge-in handles "yes"/"no")
+        # If disputed, fallback to phone voting
+        
+        results[character] = count_result["hand_count"]
+    
+    return results
+```
+
+**Frontend — Lobby toggle:**
+```typescript
+// Add to JoinScreen settings panel (host only)
+const InPersonModeToggle: React.FC = () => (
+  <label className="in-person-toggle">
+    <input type="checkbox" onChange={toggleInPersonMode} />
+    <span>🎥 In-Person Mode</span>
+    <small>Use camera to count raised hands during votes</small>
+  </label>
+);
+```
+
+**Live API constraints:**
+- Audio+video sessions limited to 2 minutes. Vote counting takes ~30 seconds per candidate — well within limits.
+- Camera activated ONLY during vote countdown, not continuously.
+- 1 FPS processing is sufficient — hands are static during count.
+- Fallback to phone voting is automatic if confidence is low or vision fails.
+
+**Firestore schema addition:**
+```
+games/{gameId}/
+  ├── settings/
+  │     ├── in_person_mode: true | false
+```
+
+---
+
+## 12.3.17 Narrator Style Presets (Sprint 7+)
+
+**Effort:** 3–5 days | **Type:** System prompt variants + voice config overrides
+
+Host selects a narrator personality in the lobby. Each preset changes the narrator's voice, vocabulary, pacing, and dramatic style. Game mechanics are identical.
+
+```python
+NARRATOR_PRESETS = {
+    "classic": {
+        "voice": "Charon",  # Deep, dramatic (current default)
+        "prompt_prefix": """You are a classic fantasy narrator. Speak with gravitas 
+        and dramatic weight. Your tone is rich, immersive, and carries the authority 
+        of ancient legend. Build tension with deliberate pacing. Pauses are your 
+        instrument — use silence before reveals.""",
+        "vocabulary": "archaic-leaning",  # "The village sleeps beneath a pale moon"
+        "pacing": "measured",
+    },
+    "campfire": {
+        "voice": "Puck",  # Warmer, friendlier
+        "prompt_prefix": """You are a campfire storyteller. Address the players as 
+        "friends" and tell the story like you're sharing a tale around a fire on a 
+        cool night. Your tone is warm, conspiratorial, and intimate. You lean in 
+        when the story gets good. You chuckle at the players' mistakes. You gasp 
+        at betrayals. This is a story between friends, not a performance.""",
+        "vocabulary": "conversational",  # "So there they were, dead of night..."
+        "pacing": "natural-conversational",
+    },
+    "horror": {
+        "voice": "Charon",  # Same deep voice, different delivery
+        "prompt_prefix": """You are a horror narrator. Speak slowly. Every word 
+        carries weight. Your whispers are more terrifying than shouts. Build dread 
+        through what you DON'T say — implication over exposition. Describe sensory 
+        details: the creak of a floorboard, the smell of iron, the feeling of being 
+        watched. Night phases are TERRIFYING. Day phases carry lingering unease. 
+        Eliminations are graphic in implication, never explicit. The scariest thing 
+        is what the players imagine.""",
+        "vocabulary": "sparse-evocative",  # "Something moved in the dark. Something wrong."
+        "pacing": "slow-with-long-pauses",
+    },
+    "comedy": {
+        "voice": "Kore",  # Lighter, more expressive
+        "prompt_prefix": """You are a comedic narrator who takes the story seriously 
+        but finds the players hilarious. You're the DM who can't help breaking 
+        character to comment on bad decisions. Your tone is wry, self-aware, and 
+        occasionally fourth-wall-adjacent. You narrate dramatically but undercut 
+        tension with observational humor. "The village sleeps. Well, most of it. 
+        Someone is definitely plotting something. They always are." Eliminations 
+        are handled with dark humor, not tragedy. You're rooting for the players 
+        but finding their logic... questionable.""",
+        "vocabulary": "modern-witty",  # "Bold strategy, accusing the only witness."
+        "pacing": "quick-with-comic-timing",
+    },
+}
+
+def build_narrator_prompt(preset: str, base_instruction: str) -> str:
+    """Prepend preset personality to the base narrator instruction."""
+    config = NARRATOR_PRESETS.get(preset, NARRATOR_PRESETS["classic"])
+    return f"""{config['prompt_prefix']}
+    
+    VOCABULARY REGISTER: {config['vocabulary']}
+    PACING STYLE: {config['pacing']}
+    
+    {base_instruction}"""
+
+def get_voice_config(preset: str) -> str:
+    """Return the Gemini voice name for this preset."""
+    return NARRATOR_PRESETS.get(preset, NARRATOR_PRESETS["classic"])["voice"]
+```
+
+**Integration with existing Narrator Agent:**
+```python
+# In game setup — after host selects preset in lobby
+narrator_preset = game_settings.get("narrator_preset", "classic")
+
+narrator_agent = Agent(
+    name="fireside_narrator",
+    model="gemini-2.5-flash-native-audio-preview-12-2025",
+    instruction=build_narrator_prompt(narrator_preset, BASE_NARRATOR_INSTRUCTION),
+    tools=[get_game_state, advance_phase, narrate_event, inject_traitor_dialog],
+    sub_agents=[traitor_agent],
+)
+
+live_config = types.LiveConnectConfig(
+    response_modalities=["AUDIO"],
+    speech_config=types.SpeechConfig(
+        voice_config=types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                voice_name=get_voice_config(narrator_preset)
+            )
+        )
+    ),
+    # ... rest of config unchanged
+)
+```
+
+**Frontend — Lobby preset selector:**
+```typescript
+const PRESETS = [
+  { id: "classic", label: "⚔️ Classic", desc: "Deep, dramatic fantasy narrator" },
+  { id: "campfire", label: "🔥 Campfire", desc: "Warm storyteller among friends" },
+  { id: "horror", label: "🕯️ Horror", desc: "Slow, unsettling dread" },
+  { id: "comedy", label: "😏 Comedy", desc: "Wry, self-aware, fourth-wall humor" },
+];
+
+const NarratorPresetSelector: React.FC = () => (
+  <div className="preset-selector">
+    <h4>Narrator Style</h4>
+    {PRESETS.map(p => (
+      <button key={p.id} onClick={() => setPreset(p.id)}
+        className={selected === p.id ? "selected" : ""}>
+        <span>{p.label}</span>
+        <small>{p.desc}</small>
+      </button>
+    ))}
+  </div>
+);
+```
+
+**Firestore schema addition:**
+```
+games/{gameId}/
+  ├── settings/
+  │     ├── narrator_preset: "classic" | "campfire" | "horror" | "comedy"
+```
+
+**Playtesting note:** Each preset requires 3–5 full games to tune. The prompt prefix sets the direction but the balance between personality and gameplay clarity needs iteration — Comedy especially risks undermining dramatic tension at key moments (eliminations, reveals). Horror risks being too slow for impatient groups. Tuning is the majority of the effort.
+
+---
+
+## 12.3.18 Competitor Intelligence for AI (Sprint 7+)
+
+**Effort:** 1–2 weeks | **Type:** Analytics pipeline + prompt augmentation
+
+Cross-game learning system. The AI Traitor's strategy improves over time based on what worked and failed in previous games.
+
+```python
+# ===== Post-Game Data Collection =====
+
+async def log_game_strategy(game_id: str):
+    """Called after every game. Extracts structured strategy data from events log."""
+    db = firestore.client()
+    game = db.collection("games").document(game_id).get().to_dict()
+    events = [e.to_dict() for e in db.collection("games").document(game_id)
+              .collection("events").order_by("timestamp").stream()]
+    
+    # Extract AI's strategy decisions
+    ai_character = game["ai_character"]["name"]
+    ai_caught = game.get("winner") == "villagers"
+    round_caught = game.get("final_round", 0) if ai_caught else None
+    difficulty = game.get("settings", {}).get("difficulty", "normal")
+    player_count = len(game.get("players", {}))
+    
+    # Analyze what exposed the AI (if caught)
+    exposure_signals = []
+    if ai_caught:
+        # Find the round where suspicion concentrated on AI's character
+        vote_events = [e for e in events if e["type"] == "vote" and e["target"] == ai_character]
+        accusation_events = [e for e in events if e["type"] == "accusation" and e["target"] == ai_character]
+        
+        for acc in accusation_events:
+            exposure_signals.append({
+                "round": acc.get("round"),
+                "accuser": acc.get("actor"),
+                "reason": acc.get("narration", ""),  # What the accuser said
+            })
+    
+    # Analyze which deception moves succeeded
+    successful_moves = []
+    failed_moves = []
+    ai_actions = [e for e in events if e["actor"] == "ai"]
+    for action in ai_actions:
+        if action["type"] == "accusation":
+            # Did the AI's accusation lead to a vote against someone else?
+            target = action["target"]
+            next_vote = next((e for e in events if e["type"] == "elimination" 
+                            and e["timestamp"] > action["timestamp"]), None)
+            if next_vote and next_vote.get("target") == target:
+                successful_moves.append({
+                    "type": "deflection_accusation",
+                    "description": f"Accused {target}, who was then eliminated",
+                    "round": action.get("round"),
+                })
+            else:
+                failed_moves.append({
+                    "type": "deflection_accusation",
+                    "description": f"Accused {target}, but village didn't follow",
+                    "round": action.get("round"),
+                })
+    
+    # Store structured log
+    db.collection("ai_strategy_logs").document(game_id).set({
+        "game_id": game_id,
+        "difficulty": difficulty,
+        "player_count": player_count,
+        "ai_caught": ai_caught,
+        "round_caught": round_caught,
+        "total_rounds": game.get("final_round", 0),
+        "exposure_signals": exposure_signals,
+        "successful_moves": successful_moves,
+        "failed_moves": failed_moves,
+        "timestamp": firestore.SERVER_TIMESTAMP,
+    })
+```
+
+```python
+# ===== Daily Aggregation (Cloud Function) =====
+
+from google.cloud import functions_v2
+
+@functions_v2.cloud_event
+def aggregate_strategy_intelligence(cloud_event):
+    """Scheduled daily. Aggregates strategy logs into a meta-strategy brief."""
+    db = firestore.client()
+    
+    # Fetch last 100 game logs (or all if fewer)
+    logs = [doc.to_dict() for doc in 
+            db.collection("ai_strategy_logs")
+            .order_by("timestamp", direction="DESCENDING")
+            .limit(100).stream()]
+    
+    if len(logs) < 20:
+        return  # Not enough data for meaningful patterns
+    
+    # Aggregate patterns
+    total = len(logs)
+    caught_count = sum(1 for l in logs if l["ai_caught"])
+    catch_rate = caught_count / total
+    
+    # Common exposure patterns
+    all_exposures = []
+    for log in logs:
+        all_exposures.extend(log.get("exposure_signals", []))
+    
+    # Common successful deceptions
+    all_successes = []
+    for log in logs:
+        all_successes.extend(log.get("successful_moves", []))
+    
+    # Count move types
+    from collections import Counter
+    exposure_reasons = Counter(e.get("reason", "")[:50] for e in all_exposures)
+    success_types = Counter(s["type"] for s in all_successes)
+    
+    # Generate the meta-strategy brief using Gemini
+    analysis_prompt = f"""Analyze these AI strategy statistics from {total} social deduction games:
+
+    Overall catch rate: {catch_rate:.0%}
+    
+    Most common reasons the AI was caught (top 5):
+    {json.dumps(exposure_reasons.most_common(5))}
+    
+    Most successful deception moves (by type):
+    {json.dumps(success_types.most_common(5))}
+    
+    Average rounds before AI was caught: {sum(l.get('round_caught', 0) for l in logs if l['ai_caught']) / max(caught_count, 1):.1f}
+    
+    Generate a concise strategy brief (max 200 words) for an AI playing a social deduction game.
+    Format as actionable advice:
+    - What to AVOID (patterns that get caught)
+    - What WORKS (successful deception strategies)
+    - TIMING advice (when to be aggressive vs passive)
+    """
+    
+    response = generate_content_sync(analysis_prompt)
+    brief = response.text
+    
+    # Store the brief
+    db.collection("ai_meta_strategy").document("latest").set({
+        "brief": brief,
+        "games_analyzed": total,
+        "catch_rate": catch_rate,
+        "generated_at": firestore.SERVER_TIMESTAMP,
+    })
+```
+
+```python
+# ===== Traitor Agent Prompt Augmentation =====
+
+async def get_traitor_prompt(difficulty: str) -> str:
+    """Build Traitor Agent prompt with optional intelligence augmentation."""
+    base_prompt = TRAITOR_PROMPTS[difficulty]  # Existing Easy/Normal/Hard prompts
+    
+    # Load meta-strategy brief if available
+    db = firestore.client()
+    meta_doc = db.collection("ai_meta_strategy").document("latest").get()
+    
+    if meta_doc.exists:
+        meta = meta_doc.to_dict()
+        # Only augment if we have meaningful data
+        if meta.get("games_analyzed", 0) >= 20:
+            intelligence_section = f"""
+            
+            INTELLIGENCE BRIEFING (from {meta['games_analyzed']} previous games):
+            {meta['brief']}
+            
+            IMPORTANT: This briefing INFORMS your strategy. It does NOT override 
+            your difficulty level constraints. At Easy difficulty, you still make 
+            deliberate mistakes even if the briefing suggests otherwise.
+            """
+            return base_prompt + intelligence_section
+    
+    return base_prompt
+```
+
+**Firestore schema:**
+```
+ai_strategy_logs/{gameId}/
+  ├── game_id: "game_abc"
+  ├── difficulty: "normal"
+  ├── player_count: 5
+  ├── ai_caught: true
+  ├── round_caught: 3
+  ├── total_rounds: 4
+  ├── exposure_signals: [{ round: 2, accuser: "player_id", reason: "..." }]
+  ├── successful_moves: [{ type: "deflection_accusation", description: "...", round: 1 }]
+  ├── failed_moves: [{ type: "deflection_accusation", description: "...", round: 2 }]
+  ├── timestamp: ...
+
+ai_meta_strategy/latest/
+  ├── brief: "Avoid accusing the same player twice in consecutive rounds..."
+  ├── games_analyzed: 87
+  ├── catch_rate: 0.52
+  ├── generated_at: ...
+```
+
+**Cloud Function deployment:**
+```yaml
+# terraform/cloud_functions.tf
+resource "google_cloudfunctions2_function" "strategy_aggregator" {
+  name     = "strategy-aggregator"
+  location = var.region
+  
+  build_config {
+    runtime     = "python312"
+    entry_point = "aggregate_strategy_intelligence"
+    source {
+      storage_source {
+        bucket = google_storage_bucket.functions.name
+        object = "strategy_aggregator.zip"
+      }
+    }
+  }
+  
+  service_config {
+    available_memory = "256M"
+    timeout_seconds  = 120
+  }
+}
+
+# Daily trigger
+resource "google_cloud_scheduler_job" "daily_aggregation" {
+  name     = "daily-strategy-aggregation"
+  schedule = "0 4 * * *"  # 4 AM daily
+  
+  pubsub_target {
+    topic_name = google_pubsub_topic.strategy_trigger.id
+  }
+}
+```
+
+**Safeguards:**
+- Intelligence brief is capped at 200 words — prevents prompt bloating.
+- Difficulty level always takes precedence. Easy AI still makes mistakes regardless of intelligence.
+- Minimum 20 games required before augmentation activates — prevents overfitting on small samples.
+- Brief is regenerated daily, not per-game — prevents real-time adaptation that could feel unfair.
+- Players are told post-game: "The AI used intelligence from N previous games" — transparency builds trust.
+
+---
+
 # 13. PRD Cross-Reference & Compliance Matrix
 
 | PRD Requirement | TDD Section | Implementation Status |
@@ -2071,6 +3438,25 @@ logger.info("game_event", extra={
 | Cloud Run + Firestore + Storage | §9 Deployment, §6 Data Model | ✓ All three services |
 | Automated deployment (bonus) | §9.2 Terraform, §9.3 Cloud Build | ✓ Specified |
 | Public GitHub repo | §10 Repository Structure | ✓ MIT License |
+| **P2 Features** | | |
+| Procedural character generation (P2) | §12.3.1 | ✓ Specified |
+| Narrator vote neutrality (P2) | §12.3.2 | ✓ Specified |
+| Narrator pacing intelligence (P2) | §12.3.3 | ✓ Specified |
+| Affective dialog input signals (P2) | §12.3.4 | ✓ Specified |
+| Minimum satisfying game length (P2) | §12.3.5 | ✓ Specified |
+| In-game role reminder (P2) | §12.3.6 | ✓ Specified |
+| Tutorial mode (P2) | §12.3.7 | ✓ Specified |
+| Conversation structure for large groups (P2) | §12.3.8 | ✓ Specified |
+| Minimum player count design (P2) | §12.3.9 | ✓ Specified |
+| Random AI alignment (P2) | §12.3.10 | ✓ Specified |
+| Additional roles — Bodyguard, Tanner (P2) | §12.3.11 | ✓ Specified |
+| Dynamic AI difficulty (P2) | §12.3.12 | ✓ Specified |
+| Post-game timeline interactive UX (P2) | §12.3.13 | ✓ Specified |
+| Scene image generation (P2) | §12.3.14 | ✓ Specified |
+| Audio recording/playback (P2) | §12.3.15 | ✓ Specified |
+| Camera vote counting (P2) | §12.3.16 | ✓ Specified |
+| Narrator style presets (P2) | §12.3.17 | ✓ Specified |
+| Competitor intelligence for AI (P2) | §12.3.18 | ✓ Specified |
 
 ---
 
