@@ -275,6 +275,8 @@ class NarratorSession:
     Per-game Gemini Live API session.
     Maintains a background task that keeps the session open and streams
     PCM audio to all connected players via the WebSocket hub.
+    Automatically reconnects on session timeout using the Live API session
+    resumption handle so conversation context is preserved across reconnects.
     """
 
     def __init__(self, game_id: str):
@@ -282,6 +284,7 @@ class NarratorSession:
         self._queue: asyncio.Queue = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._session_handle: Optional[str] = None  # Live API session resumption handle
 
     async def start(self) -> None:
         self._running = True
@@ -337,72 +340,113 @@ class NarratorSession:
         client = genai.Client(api_key=settings.gemini_api_key)
         tool_decls = _make_tool_declarations()
 
-        config = types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=settings.narrator_voice
+        # Base config (without session-specific handle) — rebuilt each reconnect
+        def _make_config() -> "types.LiveConnectConfig":
+            return types.LiveConnectConfig(
+                response_modalities=["AUDIO"],
+                # Session resumption: on timeout the session restarts from the last
+                # captured handle, preserving full conversation context.
+                session_resumption=types.SessionResumptionConfig(
+                    handle=self._session_handle  # None → new session; str → resume
+                ),
+                # Context window compression: auto-summarise older turns so the
+                # narrator can run indefinitely without hitting the 128K token limit.
+                # google-genai>=1.0.0 uses SlidingWindow subconfig (not enabled=True).
+                context_window_compression=types.ContextWindowCompressionConfig(
+                    sliding_window=types.SlidingWindow(),
+                ),
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name=settings.narrator_voice
+                        )
                     )
-                )
-            ),
-            system_instruction=types.Content(
-                parts=[types.Part(text=NARRATOR_SYSTEM_PROMPT)]
-            ),
-            tools=[types.Tool(function_declarations=tool_decls)] if tool_decls else [],
-        )
+                ),
+                system_instruction=types.Content(
+                    parts=[types.Part(text=NARRATOR_SYSTEM_PROMPT)]
+                ),
+                tools=[types.Tool(function_declarations=tool_decls)] if tool_decls else [],
+            )
 
-        try:
-            async with client.aio.live.connect(
-                model=settings.narrator_model, config=config
-            ) as session:
-                logger.info("[%s] Narrator Live API session connected", self.game_id)
+        # Outer reconnect loop — re-enters on session timeout (Live API ~10 min limit).
+        # Uses exponential backoff; gives up after MAX_RECONNECT_ATTEMPTS consecutive errors.
+        _backoff = 2.0
+        _max_backoff = 60.0
+        _consecutive_errors = 0
+        _MAX_ATTEMPTS = 10
 
-                sender = asyncio.create_task(
-                    self._sender(session), name=f"narrator-sender-{self.game_id}"
-                )
-                receiver = asyncio.create_task(
-                    self._receiver(session), name=f"narrator-receiver-{self.game_id}"
-                )
-                try:
-                    done, pending = await asyncio.wait(
-                        [sender, receiver],
-                        return_when=asyncio.FIRST_COMPLETED,
+        while self._running:
+            try:
+                async with client.aio.live.connect(
+                    model=settings.narrator_model, config=_make_config()
+                ) as session:
+                    label = "resumed" if self._session_handle else "new"
+                    logger.info(
+                        "[%s] Narrator Live API session connected (%s)", self.game_id, label
                     )
-                    # Cancel sibling and wait for it to clean up
-                    for t in pending:
-                        t.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    # Re-raise any exception from the completed task
-                    for t in done:
-                        if not t.cancelled() and t.exception():
-                            raise t.exception()
-                except asyncio.CancelledError:
-                    sender.cancel()
-                    receiver.cancel()
-                    await asyncio.gather(sender, receiver, return_exceptions=True)
-                    raise
+                    _consecutive_errors = 0  # reset on successful connect
+                    _backoff = 2.0
 
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception("[%s] Narrator session error", self.game_id)
+                    sender = asyncio.create_task(
+                        self._sender(session), name=f"narrator-sender-{self.game_id}"
+                    )
+                    receiver = asyncio.create_task(
+                        self._receiver(session), name=f"narrator-receiver-{self.game_id}"
+                    )
+                    try:
+                        done, pending = await asyncio.wait(
+                            [sender, receiver],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        for t in pending:
+                            t.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        for t in done:
+                            if not t.cancelled() and t.exception():
+                                raise t.exception()
+                    except asyncio.CancelledError:
+                        sender.cancel()
+                        receiver.cancel()
+                        await asyncio.gather(sender, receiver, return_exceptions=True)
+                        raise
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                _consecutive_errors += 1
+                logger.exception(
+                    "[%s] Narrator session error (attempt %d/%d)",
+                    self.game_id, _consecutive_errors, _MAX_ATTEMPTS,
+                )
+                if _consecutive_errors >= _MAX_ATTEMPTS:
+                    logger.error(
+                        "[%s] Narrator giving up after %d consecutive errors.",
+                        self.game_id, _MAX_ATTEMPTS,
+                    )
+                    break
+                if self._running:
+                    await asyncio.sleep(min(_backoff, _max_backoff))
+                    _backoff *= 2
 
     async def _sender(self, session) -> None:
         """Drain the queue and forward text prompts to the Live API session."""
         while self._running:
+            text = None
             try:
                 text = await asyncio.wait_for(self._queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
+            # task_done in finally so cancellation mid-send never leaves queue stuck.
             try:
                 await session.send(input=text, end_of_turn=True)
-                self._queue.task_done()
                 logger.debug("[%s] Narrator ← %.80s…", self.game_id, text)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.warning("[%s] Narrator send error: %s", self.game_id, exc)
+            finally:
                 self._queue.task_done()
 
     async def _receiver(self, session) -> None:
@@ -417,6 +461,16 @@ class NarratorSession:
             async for response in session.receive():
                 if not self._running:
                     break
+
+                # Session resumption handle — store for reconnect after timeout
+                resumption = getattr(response, "session_resumption_update", None)
+                if resumption:
+                    new_handle = getattr(resumption, "new_handle", None)
+                    if new_handle:
+                        self._session_handle = new_handle
+                        logger.debug(
+                            "[%s] Narrator session handle refreshed", self.game_id
+                        )
 
                 # PCM audio → broadcast to all players
                 if response.data:
@@ -437,9 +491,10 @@ class NarratorSession:
                     await self._handle_tool_call(session, response.tool_call, gtypes)
 
         except asyncio.CancelledError:
-            pass
+            raise  # let asyncio.wait see this task as cancelled
         except Exception:
             logger.exception("[%s] Narrator receiver error", self.game_id)
+            raise  # propagate so asyncio.wait sees the exception and triggers reconnect
 
     async def _handle_tool_call(self, session, tool_call, types) -> None:
         """Execute the model's tool calls and send responses back."""
