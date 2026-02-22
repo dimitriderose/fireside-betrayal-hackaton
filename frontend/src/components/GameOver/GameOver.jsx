@@ -11,41 +11,37 @@ const ROLE_ICONS = {
 }
 
 // Timeline event type → { icon, label(actor, target, data) }
+// night_target is intentionally omitted — night_kill_attempt already covers the same action
 const EVENT_RENDERERS = {
-  night_target: (e) => ({
-    icon: '🎯',
-    text: `${e.actor} chose to eliminate ${e.target}.`,
-    hidden: true,
-  }),
   night_kill_attempt: (e) => ({
     icon: e.data?.blocked ? '🛡️' : '🗡️',
     text: e.data?.blocked
-      ? `${e.actor} attacked ${e.target} — but the Healer intervened.`
-      : `${e.actor} eliminated ${e.target}.`,
+      ? `${e.actor ?? 'Unknown'} attacked ${e.target ?? 'Unknown'} — but the Healer intervened.`
+      : `${e.actor ?? 'Unknown'} eliminated ${e.target ?? 'Unknown'}.`,
     hidden: true,
   }),
   night_heal: (e) => ({
     icon: '💚',
-    text: `${e.actor} protected ${e.target} through the night.`,
+    text: `${e.actor ?? 'Unknown'} protected ${e.target ?? 'Unknown'} through the night.`,
     hidden: true,
   }),
   night_investigation: (e) => ({
     icon: e.data?.is_drunk ? '🍺' : '🔮',
     text: e.data?.is_drunk
-      ? `${e.actor} investigated ${e.target} (received wrong result — they are Drunk).`
-      : `${e.actor} investigated ${e.target}: ${e.data?.result ? 'IS the Shapeshifter' : 'is NOT the Shapeshifter'}.`,
+      ? `${e.actor ?? 'Unknown'} investigated ${e.target ?? 'Unknown'} (received wrong result — they are Drunk).`
+      : `${e.actor ?? 'Unknown'} investigated ${e.target ?? 'Unknown'}: ${e.data?.result ? 'IS the Shapeshifter' : 'is NOT the Shapeshifter'}.`,
     hidden: true,
   }),
   elimination: (e) => ({
     icon: '⚰️',
     text: e.data?.was_traitor
-      ? `${e.target} was eliminated — the Shapeshifter unmasked!`
-      : `${e.target} was eliminated (${e.data?.role ?? 'villager'}).`,
+      ? `${e.target ?? 'Unknown'} was eliminated — the Shapeshifter unmasked!`
+      : `${e.target ?? 'Unknown'} was eliminated (${e.data?.role ?? 'villager'}).`,
     hidden: false,
   }),
   hunter_revenge: (e) => ({
     icon: '🏹',
-    text: `${e.actor} took ${e.target} with them as their dying act.`,
+    text: `${e.actor ?? 'Unknown'} took ${e.target ?? 'Unknown'} with them as their dying act.`,
     hidden: false,
   }),
 }
@@ -88,7 +84,7 @@ function TimelineRound({ roundEntry }) {
           const rendered = renderer(ev)
           return (
             <div
-              key={i}
+              key={ev.id ?? `${ev.type}-${ev.actor}-${ev.target}-${i}`}
               style={{
                 display: 'flex',
                 gap: 10,
@@ -109,7 +105,7 @@ function TimelineRound({ roundEntry }) {
                 {rendered.hidden && (
                   <span
                     style={{
-                      fontSize: '0.6rem',
+                      fontSize: '0.6875rem',
                       color: 'var(--accent)',
                       textTransform: 'uppercase',
                       letterSpacing: '0.08em',
@@ -221,7 +217,7 @@ export default function GameOver() {
                           className={`badge ${isTraitor ? 'badge-danger' : 'badge-muted'}`}
                           style={{ fontSize: '0.625rem' }}
                         >
-                          {r.role?.charAt(0).toUpperCase() + r.role?.slice(1)}
+                          {r.role ? r.role.charAt(0).toUpperCase() + r.role.slice(1) : '?'}
                         </span>
                         {isMe && (
                           <div
@@ -263,8 +259,8 @@ export default function GameOver() {
             <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: 16 }}>
               Every hidden action — now revealed.
             </p>
-            {strategyLog.map((roundEntry, i) => (
-              <TimelineRound key={i} roundEntry={roundEntry} />
+            {strategyLog.map((roundEntry) => (
+              <TimelineRound key={roundEntry.round} roundEntry={roundEntry} />
             ))}
           </div>
         )}

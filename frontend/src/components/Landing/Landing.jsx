@@ -143,8 +143,8 @@ export default function Landing() {
           How It Plays
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          {STEPS.map((s, i) => (
-            <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+          {STEPS.map((s) => (
+            <div key={s.title} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
               <div
                 style={{
                   fontSize: '1.375rem',
@@ -257,7 +257,6 @@ export default function Landing() {
         style={{
           paddingTop: 32,
           paddingBottom: 32,
-          textAlign: 'center',
         }}
       >
         <p

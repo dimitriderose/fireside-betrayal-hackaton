@@ -411,16 +411,19 @@ function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction }) {
           </button>
         </div>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {targets.map(name => (
-            <button
-              key={name}
-              className="btn btn-ghost btn-sm"
-              style={{ fontSize: '0.75rem', padding: '6px 10px' }}
-              onClick={() => { onReaction(picker, name); setPicker(null) }}
-            >
-              {name.split(' ').slice(0, 2).join(' ')}
-            </button>
-          ))}
+          {targets.length === 0
+            ? <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>No other players alive.</span>
+            : targets.map(name => (
+              <button
+                key={name}
+                className="btn btn-ghost btn-sm"
+                style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+                onClick={() => { onReaction(picker, name); setPicker(null) }}
+              >
+                {name.split(' ').slice(0, 2).join(' ')}
+              </button>
+            ))
+          }
         </div>
       </div>
     )
@@ -431,15 +434,17 @@ function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction }) {
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         <button
           className="btn btn-ghost btn-sm"
-          style={{ fontSize: '0.75rem', padding: '6px 10px' }}
-          onClick={() => setPicker('suspect')}
+          style={{ fontSize: '0.75rem', padding: '6px 10px', opacity: targets.length === 0 ? 0.4 : 1 }}
+          onClick={() => targets.length > 0 && setPicker('suspect')}
+          disabled={targets.length === 0}
         >
           🔍 Suspect…
         </button>
         <button
           className="btn btn-ghost btn-sm"
-          style={{ fontSize: '0.75rem', padding: '6px 10px' }}
-          onClick={() => setPicker('trust')}
+          style={{ fontSize: '0.75rem', padding: '6px 10px', opacity: targets.length === 0 ? 0.4 : 1 }}
+          onClick={() => targets.length > 0 && setPicker('trust')}
+          disabled={targets.length === 0}
         >
           🤝 Trust…
         </button>
@@ -859,6 +864,7 @@ export default function GameScreen() {
               onSubmit={handleChat}
             />
             <QuickReactionBar
+              key={round}
               aliveCharacters={aliveCharacters}
               myCharacterName={characterName}
               onReaction={handleQuickReaction}

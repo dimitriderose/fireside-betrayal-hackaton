@@ -779,7 +779,17 @@ async def _on_quick_reaction(
         return
 
     reaction = str(data.get("reaction", "")).strip()
-    target = str(data.get("target", "")).strip()
+    target = str(data.get("target", "")).strip()[:80]  # cap — character names are short
+
+    # Validate target is an alive character if required
+    if reaction in ("suspect", "trust") and target:
+        alive_players = await fs.get_alive_players(game_id)
+        ai_char = await fs.get_ai_character(game_id)
+        alive_names = {p.character_name for p in alive_players}
+        if ai_char and ai_char.alive:
+            alive_names.add(ai_char.name)
+        if target not in alive_names:
+            return  # target is not a valid alive character
 
     # Map reaction type + optional target to a human-readable line
     if reaction == "suspect" and target:
@@ -823,18 +833,22 @@ def _build_timeline(events: list) -> list:
     Returns list of { round: int, events: list[dict] } sorted by round.
     Hidden events (night actions, kill attempts, investigations) are included
     since this is shown AFTER the game ends.
+    Round-0 (pre-game setup) events are excluded.
     """
     by_round: Dict[int, list] = {}
     for ev in events:
-        r = ev.round or 0
+        r = getattr(ev, "round", None) or 0
+        if r == 0:
+            continue  # skip pre-game setup events
         if r not in by_round:
             by_round[r] = []
         by_round[r].append({
-            "type": ev.type,
-            "actor": ev.actor,
-            "target": ev.target,
-            "data": ev.data or {},
-            "visible": ev.visible_in_game,
+            "id": getattr(ev, "id", None),
+            "type": getattr(ev, "type", None),
+            "actor": getattr(ev, "actor", None),
+            "target": getattr(ev, "target", None),
+            "data": getattr(ev, "data", None) or {},
+            "visible": getattr(ev, "visible_in_game", False),
         })
     return [
         {"round": r, "events": evs}

@@ -19,7 +19,7 @@ const initialState = {
   storyLog: [],         // [{ id, speaker, text, source, phase, round, timestamp }]
   winner: null,         // 'villagers' | 'shapeshifter'
   reveals: [],          // [{ characterName, playerName, role }]
-  strategyLog: [],      // [{ round, reasoning, action }]
+  strategyLog: [],      // [{ round: int, events: [{ type, actor, target, data, visible }] }]
   connected: false,
   isEliminated: false,   // true when the local player's character has been eliminated
   nightActionSubmitted: false, // true after seer/healer submits night action
