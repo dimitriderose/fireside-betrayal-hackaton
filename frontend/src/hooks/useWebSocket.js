@@ -8,6 +8,7 @@ export function useWebSocket(gameId, playerId) {
   const wsRef = useRef(null)
   const attemptRef = useRef(0)
   const timerRef = useRef(null)
+  const mountedRef = useRef(true)
   const [connectionStatus, setConnectionStatus] = useState('disconnected')
 
   const handleMessage = useCallback((event) => {
@@ -38,7 +39,7 @@ export function useWebSocket(gameId, playerId) {
       case 'elimination':
         dispatch({ type: 'ELIMINATION', character: msg.data.character, wasTraitor: msg.data.wasTraitor })
         if (msg.data.narration) {
-          dispatch({ type: 'ADD_MESSAGE', message: { speaker: 'Narrator', text: msg.data.narration, source: 'narrator' } })
+          dispatch({ type: 'ADD_MESSAGE', message: { speaker: 'Narrator', text: msg.data.narration, source: 'narrator', phase: msg.data.phase, round: msg.data.round } })
         }
         break
       case 'hunter_revenge':
@@ -47,9 +48,18 @@ export function useWebSocket(gameId, playerId) {
       case 'game_over':
         dispatch({ type: 'GAME_OVER', winner: msg.data.winner, reveals: msg.data.reveals, strategyLog: msg.data.strategyLog })
         break
-      case 'player_joined':
-        dispatch({ type: 'ADD_PLAYER', player: msg.data })
+      case 'player_joined': {
+        // Normalize snake_case keys from backend to camelCase for the frontend
+        const p = msg.data
+        dispatch({ type: 'ADD_PLAYER', player: {
+          id: p.id,
+          characterName: p.character_name ?? p.characterName ?? '',
+          alive: p.alive ?? true,
+          connected: p.connected ?? true,
+          ready: p.ready ?? false,
+        }})
         break
+      }
       case 'error':
         dispatch({ type: 'SET_ERROR', error: msg.data.message })
         break
@@ -62,8 +72,11 @@ export function useWebSocket(gameId, playerId) {
     if (!gameId || !playerId) return
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
-    const host = window.location.hostname
-    const wsUrl = `ws://${host}:8000/ws/${gameId}/${playerId}`
+    // Use wss:// on HTTPS (production), ws:// on HTTP (local dev)
+    // In dev, Vite proxies /ws → ws://localhost:8000 via vite.config.js
+    const wsBase = import.meta.env.VITE_WS_URL
+      ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+    const wsUrl = `${wsBase}/ws/${gameId}/${playerId}`
     setConnectionStatus('connecting')
 
     const ws = new WebSocket(wsUrl)
@@ -80,6 +93,8 @@ export function useWebSocket(gameId, playerId) {
     ws.onclose = () => {
       setConnectionStatus('disconnected')
       dispatch({ type: 'SET_CONNECTED', connected: false })
+      // Guard: don't reconnect if the component has unmounted
+      if (!mountedRef.current) return
       const delay = RECONNECT_DELAYS[Math.min(attemptRef.current, RECONNECT_DELAYS.length - 1)]
       attemptRef.current++
       timerRef.current = setTimeout(connect, delay)
@@ -95,8 +110,10 @@ export function useWebSocket(gameId, playerId) {
   }, [])
 
   useEffect(() => {
+    mountedRef.current = true
     if (gameId && playerId) connect()
     return () => {
+      mountedRef.current = false
       clearTimeout(timerRef.current)
       wsRef.current?.close()
     }

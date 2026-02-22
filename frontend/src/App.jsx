@@ -12,6 +12,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/join" element={<JoinLobby />} />
+          <Route path="/join/:gameCode" element={<JoinLobby />} />
           <Route path="/game/:gameId" element={<GameScreen />} />
           <Route path="/gameover/:gameId" element={<GameOver />} />
           <Route path="*" element={<Navigate to="/" replace />} />

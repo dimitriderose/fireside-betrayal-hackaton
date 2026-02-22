@@ -258,6 +258,16 @@ a:hover { text-decoration: underline; }
 }
 .slide-up { animation: slide-up 400ms ease forwards; }
 
+/* ===== Accessibility: respect reduced-motion preference ===== */
+@media (prefers-reduced-motion: reduce) {
+  .fire-flicker,
+  .pulse-glow,
+  .fade-in,
+  .slide-up {
+    animation: none;
+  }
+}
+
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar       { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: var(--bg); }

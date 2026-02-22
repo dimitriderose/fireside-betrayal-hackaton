@@ -8,7 +8,7 @@ const initialState = {
   role: null,           // villager | seer | healer | hunter | drunk | shapeshifter
   abilities: [],
   isHost: false,
-  phase: 'lobby',       // lobby | night | day_discussion | day_vote | elimination | game_over
+  phase: 'setup',       // setup | night | day_discussion | day_vote | elimination | game_over
   round: 0,
   difficulty: 'normal',
   players: [],          // [{ id, characterName, alive, connected, ready }]
@@ -18,6 +18,8 @@ const initialState = {
   reveals: [],          // [{ characterName, playerName, role }]
   strategyLog: [],      // [{ round, reasoning, action }]
   connected: false,
+  isEliminated: false,   // true when the local player's character has been eliminated
+  nightActionSubmitted: false, // true after seer/healer submits night action
   error: null,
 }
 
@@ -43,8 +45,6 @@ function gameReducer(state, action) {
         role: action.role,
         abilities: action.abilities ?? [],
       }
-    case 'PHASE_CHANGE':
-      return { ...state, phase: action.phase, round: action.round ?? state.round }
     case 'UPDATE_PLAYERS':
       return { ...state, players: action.players }
     case 'ADD_PLAYER': {
@@ -56,18 +56,25 @@ function gameReducer(state, action) {
         ...state,
         storyLog: [
           ...state.storyLog,
-          { ...action.message, id: `${Date.now()}-${Math.random()}` },
+          { ...action.message, id: action.message.id ?? `${Date.now()}-${Math.random()}` },
         ].slice(-200), // keep last 200 messages
       }
     case 'VOTE_UPDATE':
       return { ...state, votes: action.votes }
-    case 'ELIMINATION':
+    case 'ELIMINATION': {
+      const isLocalPlayerEliminated = state.characterName === action.character
       return {
         ...state,
         players: state.players.map(p =>
           p.characterName === action.character ? { ...p, alive: false } : p
         ),
+        isEliminated: state.isEliminated || isLocalPlayerEliminated,
       }
+    }
+    case 'NIGHT_ACTION_SUBMITTED':
+      return { ...state, nightActionSubmitted: true }
+    case 'PHASE_CHANGE':
+      return { ...state, phase: action.phase, round: action.round ?? state.round, nightActionSubmitted: false }
     case 'GAME_OVER':
       return {
         ...state,
