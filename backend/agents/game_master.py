@@ -86,6 +86,8 @@ class GameMaster:
         """
         fs = get_firestore_service()
         game = await fs.get_game(game_id)
+        if not game:
+            raise ValueError(f"Game {game_id} not found")
         players = await fs.get_alive_players(game_id)
         night_actions = await fs.get_night_actions(game_id)
         ai_char = await fs.get_ai_character(game_id)
@@ -117,10 +119,13 @@ class GameMaster:
                     if ev.target in char_to_player:
                         shapeshifter_target = ev.target
                     break
-            if not shapeshifter_target and players:
-                # Default: kill a random alive player (fallback)
-                shapeshifter_target = random.choice(players).character_name
-                logger.warning(f"[{game_id}] Shapeshifter had no target set — random: {shapeshifter_target}")
+            if not shapeshifter_target:
+                if players:
+                    # Default: kill a random alive player (fallback)
+                    shapeshifter_target = random.choice(players).character_name
+                    logger.warning(f"[{game_id}] Shapeshifter had no target set — random: {shapeshifter_target}")
+                else:
+                    logger.warning(f"[{game_id}] Shapeshifter had no target and no alive players — skipping kill")
 
         # ── Step 2: Healer protection ─────────────────────────────────────────
         healer_id = role_map.get(Role.HEALER.value)
@@ -215,7 +220,7 @@ class GameMaster:
                 type="night_investigation",
                 round=game.round,
                 phase=Phase.NIGHT,
-                actor=id_to_player.get(sr["investigating_player_id"], players[0]).character_name
+                actor=id_to_player[sr["investigating_player_id"]].character_name
                       if sr["investigating_player_id"] in id_to_player else "seer",
                 target=sr["character"],
                 data={
@@ -304,9 +309,10 @@ class GameMaster:
         eliminated_role = None
         needs_hunter_revenge = False
         hunter_character = None
-        found = was_traitor  # traitor always "found"
+        found = False
 
         if was_traitor:
+            found = True
             await fs.update_game(game_id, {"ai_character.alive": False})
             eliminated_role = "shapeshifter"
         else:
