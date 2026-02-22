@@ -23,6 +23,7 @@ const initialState = {
   connected: false,
   isEliminated: false,   // true when the local player's character has been eliminated
   nightActionSubmitted: false, // true after seer/healer submits night action
+  hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
   error: null,
 }
 
@@ -94,8 +95,14 @@ function gameReducer(state, action) {
         aiCharacter: isAIEliminated
           ? { ...state.aiCharacter, alive: false }
           : state.aiCharacter,
+        hunterRevengeNeeded:
+          isLocalPlayerEliminated && (action.triggerHunterRevenge ?? false)
+            ? true
+            : state.hunterRevengeNeeded,
       }
     }
+    case 'HUNTER_REVENGE_DONE':
+      return { ...state, hunterRevengeNeeded: false }
     case 'NIGHT_ACTION_SUBMITTED':
       return { ...state, nightActionSubmitted: true }
     case 'PHASE_CHANGE':
@@ -104,6 +111,7 @@ function gameReducer(state, action) {
         phase: action.phase,
         round: action.round ?? state.round,
         nightActionSubmitted: false,
+        hunterRevengeNeeded: false,
         // Reset per-round vote state on every phase transition
         votes: {},
         voteMap: {},

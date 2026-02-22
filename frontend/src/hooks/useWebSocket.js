@@ -98,7 +98,12 @@ export function useWebSocket(gameId, playerId) {
 
       case 'elimination':
         // msg: { type, characterName, wasTraitor, role, triggerHunterRevenge, tally }
-        dispatch({ type: 'ELIMINATION', character: msg.characterName, wasTraitor: msg.wasTraitor })
+        dispatch({
+          type: 'ELIMINATION',
+          character: msg.characterName,
+          wasTraitor: msg.wasTraitor,
+          triggerHunterRevenge: msg.triggerHunterRevenge ?? false,
+        })
         break
 
       case 'hunter_revenge':
