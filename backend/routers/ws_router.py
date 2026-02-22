@@ -29,12 +29,18 @@ to keep the coordinator role in one place.
 """
 import json
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from models.game import Phase, Role, GameStatus, ChatMessage
 from services.firestore_service import get_firestore_service
+
+# Games whose vote tally is currently being resolved.
+# Guards against double-advance when two players vote simultaneously.
+# Safe without a Lock because asyncio is single-threaded: no await between
+# the membership test and the add(), so no interleaving is possible.
+_resolving_votes: Set[str] = set()
 
 logger = logging.getLogger(__name__)
 
@@ -314,9 +320,11 @@ async def websocket_endpoint(
         manager.disconnect(game_id, playerId)
         await fs.set_player_connected(game_id, playerId, connected=False)
         player_refresh = await fs.get_player(game_id, playerId)
-        char_name = (
-            player_refresh.character_name if player_refresh else playerId
-        )
+        # Use character_name if assigned (in-game), fall back to player name (lobby)
+        if player_refresh:
+            char_name = player_refresh.character_name or player_refresh.name
+        else:
+            char_name = playerId
         await manager.broadcast(game_id, {
             "type": "player_left",
             "characterName": char_name,
@@ -459,6 +467,15 @@ async def _on_vote(
         })
         return
 
+    # Prevent changing a vote once cast
+    if player.voted_for is not None:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "You have already voted this round",
+            "code": "VOTE_ALREADY_CAST",
+        })
+        return
+
     await fs.cast_vote(game_id, player_id, target)
 
     # Broadcast updated vote map
@@ -478,41 +495,51 @@ async def _on_vote(
     # Auto-advance when all alive humans have voted
     voted_count = sum(1 for p in all_players if p.alive and p.voted_for)
     alive_count = sum(1 for p in all_players if p.alive)
-    if voted_count >= alive_count:
+    if voted_count >= alive_count and game_id not in _resolving_votes:
         await _resolve_vote_and_advance(game_id, fs)
 
 
 async def _resolve_vote_and_advance(game_id: str, fs) -> None:
-    """Tally, eliminate, check win condition, advance phase."""
-    from agents.game_master import game_master
+    """Tally, eliminate, check win condition, advance phase.
 
-    tally_result = await game_master.tally_votes(game_id)
+    Protected by _resolving_votes set so concurrent calls from simultaneous
+    last votes cannot fire this twice for the same game.
+    """
+    if game_id in _resolving_votes:
+        return
+    _resolving_votes.add(game_id)
+    try:
+        from agents.game_master import game_master
 
-    if tally_result["result"] == "no_votes":
-        logger.warning(f"[{game_id}] No votes cast — skipping to NIGHT")
+        tally_result = await game_master.tally_votes(game_id)
+
+        if tally_result["result"] == "no_votes":
+            logger.warning(f"[{game_id}] No votes cast — skipping to NIGHT")
+            next_phase = await game_master.advance_phase(game_id)
+            await manager.broadcast_phase_change(game_id, next_phase)
+            return
+
+        eliminated = tally_result["eliminated"]
+        elim_result = await game_master.eliminate_character(game_id, eliminated)
+
+        await manager.broadcast_elimination(
+            game_id,
+            character_name=eliminated,
+            was_traitor=elim_result["was_traitor"],
+            role=elim_result["role"],
+            needs_hunter_revenge=elim_result["needs_hunter_revenge"],
+            tally=tally_result["tally"],
+        )
+
+        win = await game_master.check_win_condition(game_id)
+        if win:
+            await _end_game(game_id, win["winner"], win["reason"], fs)
+            return
+
         next_phase = await game_master.advance_phase(game_id)
         await manager.broadcast_phase_change(game_id, next_phase)
-        return
-
-    eliminated = tally_result["eliminated"]
-    elim_result = await game_master.eliminate_character(game_id, eliminated)
-
-    await manager.broadcast_elimination(
-        game_id,
-        character_name=eliminated,
-        was_traitor=elim_result["was_traitor"],
-        role=elim_result["role"],
-        needs_hunter_revenge=elim_result["needs_hunter_revenge"],
-        tally=tally_result["tally"],
-    )
-
-    win = await game_master.check_win_condition(game_id)
-    if win:
-        await _end_game(game_id, win["winner"], win["reason"], fs)
-        return
-
-    next_phase = await game_master.advance_phase(game_id)
-    await manager.broadcast_phase_change(game_id, next_phase)
+    finally:
+        _resolving_votes.discard(game_id)
 
 
 async def _on_night_action(
@@ -585,10 +612,11 @@ async def _on_hunter_revenge(
     from agents.game_master import game_master
 
     player = await fs.get_player(game_id, player_id)
-    if not player or player.role != Role.HUNTER:
+    # Hunter must be eliminated (alive=False) and hold the HUNTER role
+    if not player or player.role != Role.HUNTER or player.alive:
         await manager.send_to(game_id, player_id, {
             "type": "error",
-            "message": "Only the Hunter can use hunter_revenge",
+            "message": "Only an eliminated Hunter can use hunter_revenge",
             "code": "NOT_HUNTER",
         })
         return
