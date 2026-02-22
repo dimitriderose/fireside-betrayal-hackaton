@@ -351,6 +351,7 @@ class NarratorSession:
                 ),
                 # Context window compression: auto-summarise older turns so the
                 # narrator can run indefinitely without hitting the 128K token limit.
+                # google-genai>=1.0.0 uses SlidingWindow subconfig (not enabled=True).
                 context_window_compression=types.ContextWindowCompressionConfig(
                     sliding_window=types.SlidingWindow(),
                 ),
@@ -367,7 +368,13 @@ class NarratorSession:
                 tools=[types.Tool(function_declarations=tool_decls)] if tool_decls else [],
             )
 
-        # Outer reconnect loop — re-enters on session timeout (Live API ~10 min limit)
+        # Outer reconnect loop — re-enters on session timeout (Live API ~10 min limit).
+        # Uses exponential backoff; gives up after MAX_RECONNECT_ATTEMPTS consecutive errors.
+        _backoff = 2.0
+        _max_backoff = 60.0
+        _consecutive_errors = 0
+        _MAX_ATTEMPTS = 10
+
         while self._running:
             try:
                 async with client.aio.live.connect(
@@ -377,6 +384,8 @@ class NarratorSession:
                     logger.info(
                         "[%s] Narrator Live API session connected (%s)", self.game_id, label
                     )
+                    _consecutive_errors = 0  # reset on successful connect
+                    _backoff = 2.0
 
                     sender = asyncio.create_task(
                         self._sender(session), name=f"narrator-sender-{self.game_id}"
@@ -404,26 +413,40 @@ class NarratorSession:
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.exception("[%s] Narrator session error", self.game_id)
+                _consecutive_errors += 1
+                logger.exception(
+                    "[%s] Narrator session error (attempt %d/%d)",
+                    self.game_id, _consecutive_errors, _MAX_ATTEMPTS,
+                )
+                if _consecutive_errors >= _MAX_ATTEMPTS:
+                    logger.error(
+                        "[%s] Narrator giving up after %d consecutive errors.",
+                        self.game_id, _MAX_ATTEMPTS,
+                    )
+                    break
                 if self._running:
-                    # Brief pause before reconnect attempt
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(min(_backoff, _max_backoff))
+                    _backoff *= 2
 
     async def _sender(self, session) -> None:
         """Drain the queue and forward text prompts to the Live API session."""
         while self._running:
+            text = None
             try:
                 text = await asyncio.wait_for(self._queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
+            # task_done in finally so cancellation mid-send never leaves queue stuck.
             try:
                 await session.send(input=text, end_of_turn=True)
-                self._queue.task_done()
                 logger.debug("[%s] Narrator ← %.80s…", self.game_id, text)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.warning("[%s] Narrator send error: %s", self.game_id, exc)
+            finally:
                 self._queue.task_done()
 
     async def _receiver(self, session) -> None:
@@ -468,9 +491,10 @@ class NarratorSession:
                     await self._handle_tool_call(session, response.tool_call, gtypes)
 
         except asyncio.CancelledError:
-            pass
+            raise  # let asyncio.wait see this task as cancelled
         except Exception:
             logger.exception("[%s] Narrator receiver error", self.game_id)
+            raise  # propagate so asyncio.wait sees the exception and triggers reconnect
 
     async def _handle_tool_call(self, session, tool_call, types) -> None:
         """Execute the model's tool calls and send responses back."""
