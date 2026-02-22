@@ -23,6 +23,7 @@ const initialState = {
   connected: false,
   isEliminated: false,   // true when the local player's character has been eliminated
   nightActionSubmitted: false, // true after seer/healer submits night action
+  hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
   error: null,
 }
 
@@ -56,10 +57,14 @@ function gameReducer(state, action) {
     case 'UPDATE_PLAYERS':
       return { ...state, players: action.players }
     case 'ADD_PLAYER': {
-      // Deduplicate by both id and characterName to prevent ghost entries from player_joined
-      const existing = state.players.filter(
-        p => p.id !== action.player.id && p.characterName !== action.player.characterName
-      )
+      // If we already know this character (from UPDATE_PLAYERS), skip — real entry takes precedence
+      if (
+        action.player.characterName &&
+        state.players.some(p => p.characterName === action.player.characterName)
+      ) {
+        return state
+      }
+      const existing = state.players.filter(p => p.id !== action.player.id)
       return { ...state, players: [...existing, action.player] }
     }
     case 'ADD_MESSAGE':
@@ -94,8 +99,14 @@ function gameReducer(state, action) {
         aiCharacter: isAIEliminated
           ? { ...state.aiCharacter, alive: false }
           : state.aiCharacter,
+        hunterRevengeNeeded:
+          isLocalPlayerEliminated && (action.triggerHunterRevenge ?? false)
+            ? true
+            : state.hunterRevengeNeeded,
       }
     }
+    case 'HUNTER_REVENGE_DONE':
+      return { ...state, hunterRevengeNeeded: false }
     case 'NIGHT_ACTION_SUBMITTED':
       return { ...state, nightActionSubmitted: true }
     case 'PHASE_CHANGE':
@@ -104,6 +115,7 @@ function gameReducer(state, action) {
         phase: action.phase,
         round: action.round ?? state.round,
         nightActionSubmitted: false,
+        hunterRevengeNeeded: false,
         // Reset per-round vote state on every phase transition
         votes: {},
         voteMap: {},
@@ -116,6 +128,12 @@ function gameReducer(state, action) {
         reveals: action.reveals ?? [],
         strategyLog: action.strategyLog ?? [],
         phase: 'game_over',
+        // Reset transient in-round state (PHASE_CHANGE doesn't run for game_over)
+        nightActionSubmitted: false,
+        hunterRevengeNeeded: false,
+        votes: {},
+        voteMap: {},
+        myVote: null,
       }
     case 'SET_CONNECTED':
       return { ...state, connected: action.connected }

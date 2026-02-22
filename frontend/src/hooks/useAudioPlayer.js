@@ -9,19 +9,22 @@ export function useAudioPlayer() {
   const ctxRef = useRef(null)
   const gainRef = useRef(null)
   const nextTimeRef = useRef(0)
+  const volumeRef = useRef(1.0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [volume, setVolumeState] = useState(1.0)
 
+  // getCtx reads volume from volumeRef (not the state closure) so its identity is stable.
+  // Stable getCtx → stable playChunk → no event listener churn during slider drags.
   const getCtx = useCallback(() => {
     if (!ctxRef.current || ctxRef.current.state === 'closed') {
       ctxRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 })
       gainRef.current = ctxRef.current.createGain()
-      gainRef.current.gain.value = volume
+      gainRef.current.gain.value = volumeRef.current
       gainRef.current.connect(ctxRef.current.destination)
     }
-    if (ctxRef.current.state === 'suspended') ctxRef.current.resume()
+    if (ctxRef.current.state === 'suspended') ctxRef.current.resume().catch(() => {})
     return ctxRef.current
-  }, [volume])
+  }, [])
 
   const playChunk = useCallback((base64PCM) => {
     try {
@@ -62,6 +65,7 @@ export function useAudioPlayer() {
   }, [getCtx])
 
   const setVolume = useCallback((v) => {
+    volumeRef.current = v
     setVolumeState(v)
     if (gainRef.current) gainRef.current.gain.value = v
   }, [])
