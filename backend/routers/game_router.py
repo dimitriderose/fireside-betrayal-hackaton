@@ -74,6 +74,7 @@ async def get_game(game_id: str):
         raise HTTPException(status_code=404, detail="Game not found")
 
     players = await fs.get_all_players(game_id)
+    player_count = len(players)
     return {
         "game_id": game.id,
         "status": game.status.value,
@@ -90,7 +91,9 @@ async def get_game(game_id: str):
             else None
         ),
         "players": [p.to_public() for p in players],
-        "player_count": len(players),
+        "player_count": player_count,
+        # Shown in the lobby before game start — role counts + expected duration.
+        "lobby_summary": game_master.get_lobby_summary(player_count, game.difficulty.value),
     }
 
 
