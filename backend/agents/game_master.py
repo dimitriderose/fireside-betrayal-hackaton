@@ -10,6 +10,7 @@ Responsibilities:
 
 All game rules are implemented here. Nothing is hallucinated.
 """
+import asyncio
 import random
 import logging
 import uuid
@@ -403,8 +404,16 @@ class GameMaster:
         }
         """
         fs = get_firestore_service()
-        ai_char = await fs.get_ai_character(game_id)
 
+        # Fetch game state and alive players concurrently for a consistent snapshot.
+        game, alive_players = await asyncio.gather(
+            fs.get_game(game_id),
+            fs.get_alive_players(game_id),
+        )
+        if not game:
+            raise ValueError(f"Game {game_id} not found")
+
+        ai_char = game.ai_character
         if not ai_char or not ai_char.alive:
             # Shapeshifter eliminated — villagers win immediately, no round floor.
             return {
@@ -412,18 +421,20 @@ class GameMaster:
                 "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
             }
 
-        alive_players = await fs.get_alive_players(game_id)
         human_alive = len(alive_players)
 
         if human_alive <= 1:
             # Potential shapeshifter win — check minimum round floor first.
-            # total_players = human players + 1 AI (the AI is stored separately
-            # as ai_character on GameState, not in the players collection).
-            game = await fs.get_game(game_id)
-            all_players = await fs.get_all_players(game_id)
-            total_players = len(all_players) + 1
+            # character_cast includes all names (humans + AI) set at game start.
+            total_players = len(game.character_cast)
+            if total_players not in self.MINIMUM_ROUNDS:
+                logger.warning(
+                    "[%s] check_win_condition: unrecognised player count %d — "
+                    "MINIMUM_ROUNDS and ROLE_DISTRIBUTION are out of sync",
+                    game_id, total_players,
+                )
             min_rounds = self.MINIMUM_ROUNDS.get(total_players, 3)
-            current_round = game.round if game else 1
+            current_round = game.round
 
             if current_round < min_rounds:
                 logger.info(
