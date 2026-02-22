@@ -92,8 +92,14 @@ async def get_game(game_id: str):
         ),
         "players": [p.to_public() for p in players],
         "player_count": player_count,
-        # Shown in the lobby before game start — role counts + expected duration.
-        "lobby_summary": game_master.get_lobby_summary(player_count, game.difficulty.value),
+        # Lobby-only: shown before game start so host can see role breakdown + duration.
+        # Hidden once the game is in progress to avoid leaking structural role info.
+        # n = human players + 1 AI (AI is not in the players collection).
+        "lobby_summary": (
+            game_master.get_lobby_summary(player_count + 1)
+            if game.status == GameStatus.LOBBY
+            else None
+        ),
     }
 
 

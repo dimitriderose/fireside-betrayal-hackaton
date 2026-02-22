@@ -417,9 +417,11 @@ class GameMaster:
 
         if human_alive <= 1:
             # Potential shapeshifter win — check minimum round floor first.
+            # total_players = human players + 1 AI (the AI is stored separately
+            # as ai_character on GameState, not in the players collection).
             game = await fs.get_game(game_id)
             all_players = await fs.get_all_players(game_id)
-            total_players = len(all_players)
+            total_players = len(all_players) + 1
             min_rounds = self.MINIMUM_ROUNDS.get(total_players, 3)
             current_round = game.round if game else 1
 
@@ -440,9 +442,10 @@ class GameMaster:
 
         return None  # Game continues
 
-    def get_lobby_summary(self, n: int, difficulty: str) -> str:
+    def get_lobby_summary(self, n: int) -> str:
         """
         Generate a human-readable lobby summary string shown to the host before game start.
+        n = total character count including the AI (human players + 1).
         Includes role breakdown and expected game duration.
         """
         distribution = ROLE_DISTRIBUTION.get(n, [])
