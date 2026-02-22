@@ -205,12 +205,14 @@ class ConnectionManager:
         winner: str,
         reason: str,
         character_reveals: list,
+        timeline: Optional[list] = None,
     ) -> None:
         await self.broadcast(game_id, {
             "type": "game_over",
             "winner": winner,
             "reason": reason,
             "characterReveals": character_reveals,
+            "timeline": timeline or [],
         })
 
     async def broadcast_transcript(
@@ -368,6 +370,9 @@ async def _handle_message(
 
     elif msg_type == "hunter_revenge":
         await _on_hunter_revenge(game_id, player_id, data, fs)
+
+    elif msg_type == "quick_reaction":
+        await _on_quick_reaction(game_id, player_id, data, fs)
 
     else:
         await manager.send_to(game_id, player_id, {
@@ -758,6 +763,85 @@ async def _on_hunter_revenge(
         asyncio.create_task(trigger_night_selection(game_id))
 
 
+async def _on_quick_reaction(
+    game_id: str, player_id: str, data: Dict, fs
+) -> None:
+    """
+    Quick-reaction shortcut during DAY_DISCUSSION.
+    Sends a preset line as a regular chat message so all clients + narrator see it.
+    """
+    game = await fs.get_game(game_id)
+    if not game or game.phase != Phase.DAY_DISCUSSION:
+        return
+
+    player = await fs.get_player(game_id, player_id)
+    if not player or not player.alive:
+        return
+
+    reaction = str(data.get("reaction", "")).strip()
+    target = str(data.get("target", "")).strip()
+
+    # Map reaction type + optional target to a human-readable line
+    if reaction == "suspect" and target:
+        text = f"I suspect {target}."
+    elif reaction == "trust" and target:
+        text = f"I trust {target}."
+    elif reaction == "agree":
+        text = "I agree."
+    elif reaction == "information":
+        text = "I have information."
+    else:
+        return  # Unknown or missing required target
+
+    speaker = player.character_name or player_id
+    msg = ChatMessage(
+        speaker=speaker,
+        speaker_player_id=player_id,
+        text=text,
+        source="player",
+        phase=game.phase,
+        round=game.round,
+    )
+    await fs.add_chat_message(game_id, msg)
+
+    await manager.broadcast_transcript(
+        game_id,
+        speaker=speaker,
+        text=text,
+        source="player",
+        phase=game.phase.value,
+        round_num=game.round,
+    )
+
+    # Forward to narrator so it can react narratively
+    await narrator_manager.forward_player_message(game_id, speaker, text, game.phase.value)
+
+
+def _build_timeline(events: list) -> list:
+    """
+    Group game events by round for the post-game reveal timeline.
+    Returns list of { round: int, events: list[dict] } sorted by round.
+    Hidden events (night actions, kill attempts, investigations) are included
+    since this is shown AFTER the game ends.
+    """
+    by_round: Dict[int, list] = {}
+    for ev in events:
+        r = ev.round or 0
+        if r not in by_round:
+            by_round[r] = []
+        by_round[r].append({
+            "type": ev.type,
+            "actor": ev.actor,
+            "target": ev.target,
+            "data": ev.data or {},
+            "visible": ev.visible_in_game,
+        })
+    return [
+        {"round": r, "events": evs}
+        for r, evs in sorted(by_round.items())
+    ]
+
+
 async def _delayed_narrator_stop(game_id: str, delay: int = 30) -> None:
     """Fire-and-forget: give the narrator time to deliver its epilogue, then stop."""
     await asyncio.sleep(delay)
@@ -788,11 +872,16 @@ async def _end_game(
             "alive": ai_char.alive,
         })
 
+    # Build post-game reveal timeline from all events (including hidden ones)
+    all_events = await fs.get_events(game_id, visible_only=False)
+    timeline = _build_timeline(all_events)
+
     await manager.broadcast_game_over(
         game_id,
         winner=winner,
         reason=reason,
         character_reveals=reveals,
+        timeline=timeline,
     )
     logger.info(f"[{game_id}] Game over — winner: {winner}")
 
