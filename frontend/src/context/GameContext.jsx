@@ -57,10 +57,14 @@ function gameReducer(state, action) {
     case 'UPDATE_PLAYERS':
       return { ...state, players: action.players }
     case 'ADD_PLAYER': {
-      // Deduplicate by both id and characterName to prevent ghost entries from player_joined
-      const existing = state.players.filter(
-        p => p.id !== action.player.id && p.characterName !== action.player.characterName
-      )
+      // If we already know this character (from UPDATE_PLAYERS), skip — real entry takes precedence
+      if (
+        action.player.characterName &&
+        state.players.some(p => p.characterName === action.player.characterName)
+      ) {
+        return state
+      }
+      const existing = state.players.filter(p => p.id !== action.player.id)
       return { ...state, players: [...existing, action.player] }
     }
     case 'ADD_MESSAGE':
@@ -124,6 +128,12 @@ function gameReducer(state, action) {
         reveals: action.reveals ?? [],
         strategyLog: action.strategyLog ?? [],
         phase: 'game_over',
+        // Reset transient in-round state (PHASE_CHANGE doesn't run for game_over)
+        nightActionSubmitted: false,
+        hunterRevengeNeeded: false,
+        votes: {},
+        voteMap: {},
+        myVote: null,
       }
     case 'SET_CONNECTED':
       return { ...state, connected: action.connected }

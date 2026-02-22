@@ -1,4 +1,4 @@
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, Navigate } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 
 const ROLE_ICONS = {
@@ -14,6 +14,9 @@ export default function GameOver() {
   const navigate = useNavigate()
   const { state, dispatch } = useGame()
   const { winner, reveals, characterName: myCharacterName } = state
+
+  // Guard against direct URL navigation or page refresh (no game state in context)
+  if (!winner) return <Navigate to="/" replace />
 
   const handlePlayAgain = () => {
     dispatch({ type: 'RESET' })

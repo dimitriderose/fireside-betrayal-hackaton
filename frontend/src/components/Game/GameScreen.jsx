@@ -401,6 +401,9 @@ function RoleCard({ roleInfo, characterName, role }) {
         borderTop: '1px solid var(--border)',
         padding: expanded ? '16px' : '10px 16px',
         transition: 'padding 0.2s ease',
+        position: 'sticky',
+        bottom: 0,
+        zIndex: 5,
       }}
     >
       <div className="container" style={{ padding: 0 }}>
@@ -517,7 +520,7 @@ export default function GameScreen() {
   const [chatText, setChatText] = useState('')
   const [startLoading, setStartLoading] = useState(false)
   const [startError, setStartError] = useState(null)
-  const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length || 1)
+  const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
 
   // Auto-scroll story log to bottom on new messages
   useEffect(() => {
@@ -753,8 +756,8 @@ export default function GameScreen() {
           </div>
         )}
 
-        {/* Eliminated spectator notice */}
-        {isEliminated && phase !== 'setup' && phase !== 'day_vote' && (
+        {/* Eliminated spectator notice — suppressed when Hunter revenge is pending */}
+        {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'day_vote' && (
           <div className="container" style={{ paddingTop: 12 }}>
             <p style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: '0.875rem' }}>
               🕯 You watch from beyond…
