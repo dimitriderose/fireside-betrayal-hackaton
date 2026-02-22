@@ -40,7 +40,8 @@ class GameStatus(str, Enum):
     FINISHED = "finished"
 
 
-# Role distribution by player count (human players only; AI adds 1 shapeshifter)
+# Role distribution keyed by TOTAL character count (human players + 1 AI Shapeshifter).
+# e.g. key 3 = 2 humans + 1 AI, key 8 = 7 humans + 1 AI.
 ROLE_DISTRIBUTION: Dict[int, List[str]] = {
     3: ["villager", "seer", "shapeshifter"],
     4: ["villager", "villager", "seer", "shapeshifter"],
