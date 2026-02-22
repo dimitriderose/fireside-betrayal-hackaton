@@ -34,7 +34,7 @@ Fireside: Betrayal combines the narrative immersion of tabletop RPGs with the so
 ## Architecture
 
 ```
-Player Phones (4-8) ←WebSocket→ Cloud Run (FastAPI)
+Player Phones (3-6) ←WebSocket→ Cloud Run (FastAPI)
                                     ├── ADK Agent Orchestrator
                                     │   ├── Narrator Agent (Live API voice)
                                     │   ├── Game Master Agent (deterministic)
@@ -47,9 +47,9 @@ Player Phones (4-8) ←WebSocket→ Cloud Run (FastAPI)
 
 | Document | Description |
 |---|---|
-| [Product Requirements (PRD)](docs/PRD.md) | Full product spec — 8 P0, 10 P1, 18 P2, 3 P3 features |
+| [Product Requirements (PRD)](docs/PRD.md) | Full product spec — 8 P0, 10 P1, 16 P2, 3 P3 features |
 | [Technical Design (TDD)](docs/TDD.md) | Implementation spec — 2,095 lines covering all P0/P1 |
-| [UI Mockup](docs/ui-mockup.jsx) | Interactive React prototype — 6 screens (Landing, Join, Game, Vote, End) |
+| [UI Mockup](docs/fireside-ui.jsx) | Interactive React prototype — 6 screens (Landing, Join, Game, Vote, End) |
 
 ## Hackathon
 
