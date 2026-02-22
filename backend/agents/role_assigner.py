@@ -1,60 +1,127 @@
 """
-Role Assignment Agent — Pure deterministic Python, no LLM.
+Role Assignment Agent — Pure deterministic Python, no LLM (except character generation).
 
 Responsibilities:
 - Shuffle and assign roles to human players based on player count + difficulty
-- Assign character names and intros from the hardcoded Thornwood fantasy cast
+- Generate unique character identities via LLM (falls back to static cast on failure)
 - Set up the AI character (Shapeshifter)
 - Apply difficulty-based role adjustments (Drunk replacement on Easy)
 
 Called once by the game router when the host starts the game.
 """
-import random
+import json
 import logging
-from typing import Dict, Any, List
+import random
+from typing import Any, Dict, List, Optional
 
+from config import settings
 from models.game import Role, Difficulty, AICharacter, ROLE_DISTRIBUTION
 from services.firestore_service import get_firestore_service
 
 logger = logging.getLogger(__name__)
 
 
-# ── Thornwood character cast ───────────────────────────────────────────────────
+# ── Fallback static character cast (used when LLM generation fails) ───────────
 # 8 characters support up to 7 human players + 1 AI (max game size).
-CHARACTER_CAST: List[Dict[str, str]] = [
+_FALLBACK_CAST: List[Dict[str, str]] = [
     {
         "name": "Blacksmith Garin",
         "intro": "The broad-shouldered smith hammers at his forge, sparks dancing in the dark.",
+        "personality_hook": "proud of his work, quick to anger when accused of dishonesty",
     },
     {
         "name": "Merchant Elara",
         "intro": "The traveling merchant counts her coins by candlelight, eyes darting to the door.",
+        "personality_hook": "deflects personal questions with talk of distant trade routes",
     },
     {
         "name": "Scholar Theron",
         "intro": "The old scholar peers at ancient texts, muttering about omens in the stars.",
+        "personality_hook": "speaks in riddles and half-finished thoughts",
     },
     {
         "name": "Herbalist Mira",
         "intro": "The herbalist tends her garden of strange flowers, humming a melody no one recognizes.",
+        "personality_hook": "trusts no one since the last harvest festival went wrong",
     },
     {
         "name": "Brother Aldric",
         "intro": "The chapel keeper lights the evening candles, his prayers a whisper against the wind.",
+        "personality_hook": "claims divine insight but contradicts himself under pressure",
     },
     {
         "name": "Innkeeper Bram",
         "intro": "The innkeeper pours ale with a steady hand, but his eyes follow everyone who enters.",
+        "personality_hook": "remembers everything said in his tavern, volunteers details selectively",
     },
     {
         "name": "Huntress Reva",
         "intro": "The huntress sharpens her arrows by firelight, her wolf-hound growling at shadows.",
+        "personality_hook": "blunt to the point of rudeness, refuses to soften accusations",
     },
     {
         "name": "Miller Oswin",
         "intro": "The old miller keeps his wheel turning day and night, watching the river for signs only he understands.",
+        "personality_hook": "speaks rarely but always at the most uncomfortable moment",
     },
 ]
+
+
+# ── Genre seed for LLM character generation ───────────────────────────────────
+GENRE_SEEDS: Dict[str, Dict[str, Any]] = {
+    "fantasy_village": {
+        "setting": "a remote village surrounded by dark forests",
+        "occupations": [
+            "blacksmith", "herbalist", "scholar", "merchant", "innkeeper",
+            "huntress", "chapel keeper", "weaver", "miller", "shepherd",
+            "midwife", "cartographer", "beekeeper", "tanner", "brewer",
+        ],
+        "tone": "medieval low fantasy",
+    }
+    # Future genres (P3) would add entries here
+}
+
+
+# ── Gemini client cache (shared with traitor agent pattern) ───────────────────
+_genai_client: Optional[Any] = None
+_genai_import_failed: bool = False
+
+
+async def _call_gemini_json(prompt: str) -> Optional[str]:
+    """Return raw text from a single Gemini generate_content call, or None on failure."""
+    global _genai_client, _genai_import_failed
+
+    if _genai_import_failed:
+        return None
+
+    if _genai_client is None:
+        try:
+            from google import genai
+        except ImportError:
+            _genai_import_failed = True
+            logger.warning("[proc-chars] google-genai not installed — using fallback cast")
+            return None
+
+        if not settings.gemini_api_key:
+            logger.warning("[proc-chars] GEMINI_API_KEY not set — using fallback cast")
+            return None
+
+        _genai_client = genai.Client(api_key=settings.gemini_api_key)
+
+    try:
+        from google.genai import types
+        response = await _genai_client.aio.models.generate_content(
+            model=settings.traitor_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=1.0,
+                max_output_tokens=1200,
+            ),
+        )
+        return response.text.strip() if response.text else None
+    except Exception as exc:
+        logger.error("[proc-chars] Gemini call failed: %s", exc)
+        return None
 
 
 class RoleAssigner:
@@ -70,6 +137,73 @@ class RoleAssigner:
     MIN_HUMANS = 2
     MAX_HUMANS = 7
 
+    async def _generate_character_cast(
+        self, n_total: int, genre: str = "fantasy_village"
+    ) -> List[Dict[str, str]]:
+        """
+        Generate n_total unique characters via Gemini.
+        Returns a list of dicts: {name, intro, personality_hook}.
+        Falls back to a shuffled slice of _FALLBACK_CAST on any failure.
+        """
+        seed = GENRE_SEEDS.get(genre, GENRE_SEEDS["fantasy_village"])
+        fallback_names = ", ".join(c["name"] for c in _FALLBACK_CAST)
+
+        prompt = (
+            f"Generate exactly {n_total} unique story characters for a social deduction game "
+            f"set in {seed['setting']}. Tone: {seed['tone']}.\n\n"
+            f"For each character, provide:\n"
+            f"- name: A first name + occupation title "
+            f"(e.g., \"Blacksmith Garin\", \"Herbalist Mira\"). "
+            f"Choose occupations from this list or invent similar ones: "
+            f"{', '.join(seed['occupations'])}.\n"
+            f"- intro: One atmospheric sentence introducing them (max 20 words).\n"
+            f"- personality_hook: One behavioral trait that creates roleplay opportunity "
+            f"(e.g., \"speaks in riddles\", \"trusts no one since the last harvest\").\n\n"
+            f"Rules:\n"
+            f"- All names must be unique and fantasy-appropriate.\n"
+            f"- Mix genders evenly.\n"
+            f"- Each intro should hint at something suspicious OR trustworthy (not both).\n"
+            f"- Do NOT reuse these names: {fallback_names}.\n\n"
+            f"Return ONLY a valid JSON array with no markdown fences:\n"
+            f'[{{"name": "...", "intro": "...", "personality_hook": "..."}}]'
+        )
+
+        raw = await _call_gemini_json(prompt)
+
+        if raw:
+            # Strip optional markdown code fences
+            text = raw.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1]
+                text = text.rsplit("```", 1)[0]
+            try:
+                characters: List[Dict[str, str]] = json.loads(text)
+                if (
+                    isinstance(characters, list)
+                    and len(characters) >= n_total
+                    and all(
+                        isinstance(c, dict)
+                        and c.get("name")
+                        and c.get("intro")
+                        for c in characters[:n_total]
+                    )
+                ):
+                    logger.info("[proc-chars] LLM generated %d characters", n_total)
+                    return characters[:n_total]
+                else:
+                    logger.warning(
+                        "[proc-chars] LLM returned %d characters (expected %d) — using fallback",
+                        len(characters) if isinstance(characters, list) else 0,
+                        n_total,
+                    )
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.warning("[proc-chars] JSON parse failed: %s — using fallback", exc)
+
+        # Fallback: return a shuffled slice of the static cast
+        cast = list(_FALLBACK_CAST)
+        random.shuffle(cast)
+        return cast[:n_total]
+
     async def assign_roles(self, game_id: str) -> Dict[str, Any]:
         """
         Shuffle and persist roles + character identities for all participants.
@@ -78,10 +212,10 @@ class RoleAssigner:
           1. Load game + all joined players from Firestore.
           2. Select role distribution by total character count + difficulty.
           3. Remove shapeshifter slot → gives exact n_human non-traitor roles.
-          4. Shuffle roles; shuffle character cast.
+          4. Shuffle roles; generate (or fallback) character cast.
           5. Assign one role + one character to each human player (persist).
           6. Assign the remaining cast character to the AI (persist).
-          7. Store character_cast list on the game document.
+          7. Store character_cast (names) and generated_characters (full data) on the game.
 
         Returns:
         {
@@ -92,10 +226,11 @@ class RoleAssigner:
                     "role": str,
                     "character_name": str,
                     "character_intro": str,
+                    "personality_hook": str,
                 },
                 ...
             ],
-            "ai_character": {"name": str, "intro": str},
+            "ai_character": {"name": str, "intro": str, "personality_hook": str},
             "character_cast": [str, ...],
         }
 
@@ -137,8 +272,8 @@ class RoleAssigner:
         # `roles` now has exactly n_human entries
         random.shuffle(roles)
 
-        # ── Shuffle character cast ─────────────────────────────────────────────
-        cast = list(CHARACTER_CAST)  # copy; do not mutate the module constant
+        # ── Generate character cast (LLM with static fallback) ─────────────────
+        cast = await self._generate_character_cast(n_total)
         random.shuffle(cast)
         # cast[0 .. n_human-1] → human players
         # cast[n_human]        → AI character
@@ -148,10 +283,12 @@ class RoleAssigner:
         for i, player in enumerate(players):
             role = roles[i]
             character = cast[i]
+            hook = character.get("personality_hook", "")
             await fs.update_player(game_id, player.id, {
                 "role": role,
                 "character_name": character["name"],
                 "character_intro": character["intro"],
+                "personality_hook": hook,
             })
             assignments.append({
                 "player_id": player.id,
@@ -159,6 +296,7 @@ class RoleAssigner:
                 "role": role,
                 "character_name": character["name"],
                 "character_intro": character["intro"],
+                "personality_hook": hook,
             })
 
         # ── Set up the AI character ────────────────────────────────────────────
@@ -168,23 +306,31 @@ class RoleAssigner:
             intro=ai_slot["intro"],
             role=Role.SHAPESHIFTER,
             alive=True,
+            backstory=ai_slot.get("personality_hook", ""),
         )
         await fs.set_ai_character(game_id, ai_char)
 
-        # ── Store the full character cast on the game document ─────────────────
+        # ── Store the full cast on the game document ───────────────────────────
         character_cast = [cast[i]["name"] for i in range(n_total)]
-        await fs.update_game(game_id, {"character_cast": character_cast})
+        await fs.update_game(game_id, {
+            "character_cast": character_cast,
+            "generated_characters": cast,
+        })
 
         logger.info(
-            f"[{game_id}] Roles assigned to {n_human} humans "
-            f"(difficulty={game.difficulty.value}). "
-            f"Roles: {[a['role'] for a in assignments]}. "
-            f"AI character: {ai_char.name} (Shapeshifter)."
+            "[%s] Roles assigned to %d humans (difficulty=%s). "
+            "Roles: %s. AI character: %s (Shapeshifter).",
+            game_id, n_human, game.difficulty.value,
+            [a["role"] for a in assignments], ai_char.name,
         )
 
         return {
             "assignments": assignments,
-            "ai_character": {"name": ai_char.name, "intro": ai_char.intro},
+            "ai_character": {
+                "name": ai_char.name,
+                "intro": ai_char.intro,
+                "personality_hook": ai_slot.get("personality_hook", ""),
+            },
             "character_cast": character_cast,
         }
 

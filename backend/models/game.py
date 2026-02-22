@@ -57,6 +57,7 @@ class PlayerState(BaseModel):
     name: str
     character_name: str = ""
     character_intro: str = ""
+    personality_hook: str = ""  # Behavioral roleplay hint (e.g. "speaks in riddles")
     role: Optional[Role] = None
     alive: bool = True
     connected: bool = False
@@ -101,6 +102,7 @@ class GameState(BaseModel):
     difficulty: Difficulty = Difficulty.NORMAL
     host_player_id: str
     character_cast: List[str] = []
+    generated_characters: List[Dict[str, Any]] = []  # Full cast data: name, intro, personality_hook
     ai_character: Optional[AICharacter] = None
     story_context: str = ""  # Running narrative context for the Narrator Agent
     session: GameSession = Field(default_factory=GameSession)
