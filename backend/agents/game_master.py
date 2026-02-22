@@ -27,6 +27,29 @@ class GameMaster:
     All methods read/write Firestore via FirestoreService.
     """
 
+    # ── Minimum satisfying game length ────────────────────────────────────────
+
+    # Minimum rounds before a shapeshifter win can be declared.
+    # Prevents 4-player games from ending in round 1 after one elimination.
+    # Shapeshifter-eliminated (villager win) always ends the game immediately.
+    MINIMUM_ROUNDS: Dict[int, int] = {
+        3: 3,   # 15–20 min
+        4: 3,   # 15–20 min
+        5: 3,   # 20–25 min
+        6: 4,   # 25–30 min
+        7: 4,   # 25–35 min
+        8: 5,   # 30–40 min
+    }
+
+    EXPECTED_DURATION_DISPLAY: Dict[int, str] = {
+        3: "15–20 minutes",
+        4: "15–20 minutes",
+        5: "20–25 minutes",
+        6: "25–30 minutes",
+        7: "25–35 minutes",
+        8: "30–40 minutes",
+    }
+
     # ── Phase transitions ──────────────────────────────────────────────────────
 
     PHASE_CYCLE = [
@@ -369,9 +392,9 @@ class GameMaster:
         """
         Check if the game is over.
 
-        Villagers win: AI character is eliminated.
-        Shapeshifter wins: alive non-AI players ≤ 1
-          (AI can manipulate the vote when they outnumber villagers)
+        Villagers win: AI character is eliminated (always immediate, no round floor).
+        Shapeshifter wins: alive human players ≤ 1, AND the game has reached the
+          minimum round count for this player size (prevents 1-round finishes).
 
         Returns None if game continues, or:
         {
@@ -383,16 +406,32 @@ class GameMaster:
         ai_char = await fs.get_ai_character(game_id)
 
         if not ai_char or not ai_char.alive:
+            # Shapeshifter eliminated — villagers win immediately, no round floor.
             return {
                 "winner": "villagers",
                 "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
             }
 
         alive_players = await fs.get_alive_players(game_id)
-        # Count human players (exclude any flagged as AI — all our players are human)
         human_alive = len(alive_players)
 
         if human_alive <= 1:
+            # Potential shapeshifter win — check minimum round floor first.
+            # total_players = human players + 1 AI (the AI is stored separately
+            # as ai_character on GameState, not in the players collection).
+            game = await fs.get_game(game_id)
+            all_players = await fs.get_all_players(game_id)
+            total_players = len(all_players) + 1
+            min_rounds = self.MINIMUM_ROUNDS.get(total_players, 3)
+            current_round = game.round if game else 1
+
+            if current_round < min_rounds:
+                logger.info(
+                    "[%s] Shapeshifter win deferred — round %d < minimum %d for %d players",
+                    game_id, current_round, min_rounds, total_players,
+                )
+                return None  # Game continues until minimum rounds reached
+
             return {
                 "winner": "shapeshifter",
                 "reason": (
@@ -402,6 +441,28 @@ class GameMaster:
             }
 
         return None  # Game continues
+
+    def get_lobby_summary(self, n: int) -> str:
+        """
+        Generate a human-readable lobby summary string shown to the host before game start.
+        n = total character count including the AI (human players + 1).
+        Includes role breakdown and expected game duration.
+        """
+        distribution = ROLE_DISTRIBUTION.get(n, [])
+        role_counts: Dict[str, int] = {}
+        for role in distribution:
+            role_counts[role] = role_counts.get(role, 0) + 1
+
+        specials = sum(v for k, v in role_counts.items() if k != Role.VILLAGER.value)
+        villagers = role_counts.get(Role.VILLAGER.value, 0)
+        duration = self.EXPECTED_DURATION_DISPLAY.get(n, "20–30 minutes")
+
+        return (
+            f"In this game: {specials} special role{'s' if specials != 1 else ''}, "
+            f"{villagers} villager{'s' if villagers != 1 else ''}, "
+            f"1 AI hidden among you. "
+            f"Expected duration: {duration}"
+        )
 
     # ── Role assignment (delegated to this module as a prep utility) ──────────
 
