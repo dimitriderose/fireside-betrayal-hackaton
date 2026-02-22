@@ -1,8 +1,13 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC datetime (replaces deprecated datetime.utcnow)."""
+    return datetime.now(timezone.utc)
 
 
 class Role(str, Enum):
@@ -29,6 +34,23 @@ class Difficulty(str, Enum):
     HARD = "hard"
 
 
+class GameStatus(str, Enum):
+    LOBBY = "lobby"         # waiting for players to join and ready up
+    IN_PROGRESS = "in_progress"
+    FINISHED = "finished"
+
+
+# Role distribution by player count (human players only; AI adds 1 shapeshifter)
+ROLE_DISTRIBUTION: Dict[int, List[str]] = {
+    3: ["villager", "seer", "shapeshifter"],
+    4: ["villager", "villager", "seer", "shapeshifter"],
+    5: ["villager", "villager", "seer", "healer", "shapeshifter"],
+    6: ["villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
+    7: ["villager", "villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
+    8: ["villager", "villager", "villager", "seer", "healer", "hunter", "drunk", "shapeshifter"],
+}
+
+
 class PlayerState(BaseModel):
     id: str
     name: str
@@ -40,7 +62,8 @@ class PlayerState(BaseModel):
     ready: bool = False
     voted_for: Optional[str] = None
     night_action: Optional[str] = None
-    joined_at: datetime = Field(default_factory=datetime.utcnow)
+    session_handle: Optional[str] = None  # WebSocket session handle for reconnection
+    joined_at: datetime = Field(default_factory=_utcnow)
 
     def to_public(self) -> Dict[str, Any]:
         """Safe representation — omits role (hidden during game)."""
@@ -60,6 +83,7 @@ class AICharacter(BaseModel):
     alive: bool = True
     backstory: str = ""
     suspicion_level: float = 0.5  # 0.0 = invisible, 1.0 = obvious
+    voted_for: Optional[str] = None  # AI's vote during DAY_VOTE phase
 
 
 class GameSession(BaseModel):
@@ -70,15 +94,16 @@ class GameSession(BaseModel):
 
 class GameState(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8].upper())
-    status: str = "lobby"  # lobby | in_progress | finished
+    status: GameStatus = GameStatus.LOBBY
     phase: Phase = Phase.SETUP
     round: int = 0
     difficulty: Difficulty = Difficulty.NORMAL
     host_player_id: str
     character_cast: List[str] = []
     ai_character: Optional[AICharacter] = None
+    story_context: str = ""  # Running narrative context for the Narrator Agent
     session: GameSession = Field(default_factory=GameSession)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class GameEvent(BaseModel):
@@ -91,7 +116,7 @@ class GameEvent(BaseModel):
     data: Dict[str, Any] = {}
     narration: Optional[str] = None
     visible_in_game: bool = True
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utcnow)
 
 
 class ChatMessage(BaseModel):
@@ -102,7 +127,7 @@ class ChatMessage(BaseModel):
     source: str = "player"  # narrator | player | quick_reaction | system
     phase: Phase
     round: int
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utcnow)
 
 
 # ── WebSocket message shapes ──────────────────────────────────────────────────

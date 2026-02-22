@@ -24,7 +24,7 @@ class FirestoreService:
 
     def _run(self, fn):
         """Run a sync Firestore call in the default thread pool."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return loop.run_in_executor(None, fn)
 
     # ── Collection helpers ────────────────────────────────────────────────────
@@ -141,9 +141,10 @@ class FirestoreService:
         await self.update_player(game_id, player_id, {"night_action": target})
 
     async def get_night_actions(self, game_id: str) -> Dict[str, str]:
-        """Return {role: target_character} for all players with night actions."""
+        """Return {player_id: target_character} for all players with night actions.
+        Keyed by player_id (not role) to avoid silent overwrites if two players share a role."""
         players = await self.get_all_players(game_id)
-        return {p.role.value: p.night_action for p in players if p.night_action and p.role}
+        return {p.id: p.night_action for p in players if p.night_action and p.role}
 
     async def clear_night_actions(self, game_id: str):
         players = await self.get_all_players(game_id)
@@ -196,5 +197,19 @@ class FirestoreService:
         return [ChatMessage(**d.to_dict()) for d in docs]
 
 
-# Singleton — imported by routers and agents
-firestore_service = FirestoreService()
+_firestore_service: Optional["FirestoreService"] = None
+
+
+def get_firestore_service() -> "FirestoreService":
+    """Lazy singleton — initialised on first call, not at import time.
+    This prevents credential errors from crashing the app before FastAPI boots.
+    Use as a FastAPI dependency: Depends(get_firestore_service)
+    """
+    global _firestore_service
+    if _firestore_service is None:
+        _firestore_service = FirestoreService()
+    return _firestore_service
+
+
+# Convenience alias for direct imports (backwards-compatible)
+firestore_service = get_firestore_service

@@ -1,0 +1,25 @@
+# Never bake secrets into Docker images
+.env
+*.json
+service-account*.json
+credentials*.json
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Development files
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
