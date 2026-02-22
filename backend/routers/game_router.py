@@ -21,6 +21,7 @@ from models.game import (
 )
 from services.firestore_service import get_firestore_service
 from agents.role_assigner import role_assigner
+from routers.ws_router import manager as ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,9 @@ async def start_game(
 
     await fs.set_status(game_id, GameStatus.IN_PROGRESS.value)
 
+    # Broadcast phase_change → NIGHT and send private role cards via WebSocket
+    await ws_manager.broadcast_game_start(game_id, assignment["assignments"])
+
     logger.info(
         f"Game {game_id} started with {len(assignment['assignments'])} players. "
         f"Characters in play: {assignment['character_cast']}."
@@ -125,8 +129,6 @@ async def start_game(
         "status": "started",
         "game_id": game_id,
         "character_cast": assignment["character_cast"],
-        # Full assignments returned here — WS hub uses these to send private role reveals
-        "assignments": assignment["assignments"],
         "ai_character": assignment["ai_character"],
     }
 
