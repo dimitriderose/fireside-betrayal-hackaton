@@ -1,9 +1,168 @@
-from fastapi import APIRouter
+"""
+Game HTTP endpoints.
 
-# Game HTTP endpoints — implemented in feature/websocket-hub
-# POST /api/games         — create game
-# GET  /api/games/{id}    — get public game state
-# POST /api/games/{id}/start — host starts the game
-# GET  /api/games/{id}/events — post-game event log
+Routes:
+  POST /api/games                    — Create game + register host as first player
+  POST /api/games/{game_id}/join     — Player joins the lobby
+  GET  /api/games/{game_id}          — Public game state (roles hidden)
+  POST /api/games/{game_id}/start    — Host starts game (triggers role assignment)
+  GET  /api/games/{game_id}/events   — Event log (visible only, or all post-game)
+"""
+import uuid
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
+
+from models.game import (
+    CreateGameRequest, CreateGameResponse,
+    JoinGameRequest, JoinGameResponse,
+    GameStatus,
+)
+from services.firestore_service import get_firestore_service
+from agents.role_assigner import role_assigner
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["games"])
+
+
+@router.post("/games", response_model=CreateGameResponse, status_code=201)
+async def create_game(body: CreateGameRequest):
+    """Create a new game and register the host as the first player."""
+    fs = get_firestore_service()
+    host_player_id = str(uuid.uuid4())
+    game = await fs.create_game(
+        host_player_id=host_player_id,
+        difficulty=body.difficulty.value,
+    )
+    await fs.add_player(game.id, host_player_id, body.host_name)
+    logger.info(f"Game {game.id} created by host {host_player_id} ({body.host_name})")
+    return CreateGameResponse(game_id=game.id, host_player_id=host_player_id)
+
+
+@router.post("/games/{game_id}/join", response_model=JoinGameResponse, status_code=200)
+async def join_game(game_id: str, body: JoinGameRequest):
+    """Add a player to the lobby. Rejected if the game has already started."""
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if game.status != GameStatus.LOBBY:
+        raise HTTPException(status_code=409, detail="Game already in progress or finished")
+
+    player_id = str(uuid.uuid4())
+    await fs.add_player(game_id, player_id, body.player_name)
+    logger.info(f"Player {player_id} ({body.player_name}) joined game {game_id}")
+    return JoinGameResponse(player_id=player_id, game_id=game_id)
+
+
+@router.get("/games/{game_id}")
+async def get_game(game_id: str):
+    """
+    Public game state.
+    Player roles are NOT included — those are delivered privately via WebSocket.
+    """
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    players = await fs.get_all_players(game_id)
+    return {
+        "game_id": game.id,
+        "status": game.status.value,
+        "phase": game.phase.value,
+        "round": game.round,
+        "difficulty": game.difficulty.value,
+        "character_cast": game.character_cast,
+        "ai_character": (
+            {
+                "name": game.ai_character.name,
+                "alive": game.ai_character.alive,
+            }
+            if game.ai_character
+            else None
+        ),
+        "players": [p.to_public() for p in players],
+        "player_count": len(players),
+    }
+
+
+@router.post("/games/{game_id}/start", status_code=200)
+async def start_game(
+    game_id: str,
+    host_player_id: str = Query(..., description="Must match the game's host_player_id"),
+):
+    """
+    Host starts the game.
+    - Assigns roles and character identities to all players.
+    - Sets game status to IN_PROGRESS.
+    - Returns assignment data so the WebSocket hub can broadcast private role cards.
+    Requires at least 2 human players to have joined.
+    """
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if game.host_player_id != host_player_id:
+        raise HTTPException(status_code=403, detail="Only the host can start the game")
+    if game.status != GameStatus.LOBBY:
+        raise HTTPException(status_code=409, detail="Game is not in lobby state")
+
+    try:
+        assignment = await role_assigner.assign_roles(game_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    await fs.set_status(game_id, GameStatus.IN_PROGRESS.value)
+
+    logger.info(
+        f"Game {game_id} started with {len(assignment['assignments'])} players. "
+        f"Characters in play: {assignment['character_cast']}."
+    )
+    return {
+        "status": "started",
+        "game_id": game_id,
+        "character_cast": assignment["character_cast"],
+        # Full assignments returned here — WS hub uses these to send private role reveals
+        "assignments": assignment["assignments"],
+        "ai_character": assignment["ai_character"],
+    }
+
+
+@router.get("/games/{game_id}/events")
+async def get_events(
+    game_id: str,
+    visible_only: bool = Query(
+        True, description="True = public events only; False = full log (post-game reveal)"
+    ),
+):
+    """
+    Game event log.
+    During play: only public events (eliminations, hunter revenge).
+    After game ends: set visible_only=false for the full hidden-action reveal.
+    """
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    events = await fs.get_events(game_id, visible_only=visible_only)
+    return {
+        "game_id": game_id,
+        "events": [
+            {
+                "id": e.id,
+                "type": e.type,
+                "round": e.round,
+                "phase": e.phase.value,
+                "actor": e.actor,
+                "target": e.target,
+                "data": e.data,
+                "narration": e.narration,
+                "timestamp": e.timestamp.isoformat(),
+            }
+            for e in events
+        ],
+    }

@@ -39,11 +39,11 @@ async def health_check():
     return {"status": "ok", "service": "fireside-betrayal", "version": "0.1.0"}
 
 
-# Routers are registered here as each P0 feature branch is merged:
-# from routers.game_router import router as game_router
-# from routers.ws_router import router as ws_router
-# app.include_router(game_router, prefix="/api")
-# app.include_router(ws_router)
+from routers.game_router import router as game_router
+from routers.ws_router import router as ws_router
+
+app.include_router(game_router, prefix="/api")
+app.include_router(ws_router)
 
 
 # Serve compiled frontend in production (Cloud Run)
