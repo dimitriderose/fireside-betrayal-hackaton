@@ -12,9 +12,10 @@ All game rules are implemented here. Nothing is hallucinated.
 """
 import random
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+import uuid
+from typing import Optional, Dict, Any, List, Set
 
-from models.game import Phase, Role, GameStatus, ROLE_DISTRIBUTION
+from models.game import Phase, Role, GameStatus, GameEvent, ROLE_DISTRIBUTION
 from services.firestore_service import get_firestore_service
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,8 @@ class GameMaster:
             new_round = game.round + 1 if next_phase == Phase.NIGHT else game.round
 
         await fs.set_phase(game_id, next_phase, new_round if next_phase == Phase.NIGHT else None)
-        logger.info(f"[{game_id}] Phase: {current} → {next_phase} (round {game.round})")
+        display_round = new_round if next_phase == Phase.NIGHT else game.round
+        logger.info(f"[{game_id}] Phase: {current} → {next_phase} (round {display_round})")
         return next_phase
 
     # ── Night action resolution ────────────────────────────────────────────────
@@ -107,14 +109,13 @@ class GameMaster:
         # ── Step 1: Shapeshifter kill target (set by TraitorAgent or default) ──
         shapeshifter_target: Optional[str] = None
         if ai_char and ai_char.alive:
-            # AI's night_action is stored on the ai_character.voted_for field
-            # (actually stored separately — check events or use a dedicated field)
-            # For now, TraitorAgent sets it via a game event of type "night_target"
-            from models.game import GameEvent
+            # TraitorAgent sets the target via a game event of type "night_target"
             events = await fs.get_events(game_id, round=game.round)
             for ev in events:
                 if ev.type == "night_target" and ev.actor == ai_char.name:
-                    shapeshifter_target = ev.target
+                    # Validate target is still alive
+                    if ev.target in char_to_player:
+                        shapeshifter_target = ev.target
                     break
             if not shapeshifter_target and players:
                 # Default: kill a random alive player (fallback)
@@ -183,8 +184,6 @@ class GameMaster:
             }
 
         # ── Log all actions as hidden events ──────────────────────────────────
-        from models.game import GameEvent
-        import uuid
 
         if shapeshifter_target:
             await fs.log_event(game_id, GameEvent(
@@ -247,7 +246,6 @@ class GameMaster:
         }
         """
         fs = get_firestore_service()
-        game = await fs.get_game(game_id)
 
         tally = await fs.get_vote_tally(game_id)
 
@@ -255,6 +253,8 @@ class GameMaster:
         ai_char = await fs.get_ai_character(game_id)
         if ai_char and ai_char.alive and ai_char.voted_for:
             tally[ai_char.voted_for] = tally.get(ai_char.voted_for, 0) + 1
+            # Clear AI vote so it doesn't persist into the next round
+            await fs.update_game(game_id, {"ai_character.voted_for": None})
 
         if not tally:
             return {"result": "no_votes", "eliminated": None, "tally": {}, "tied": []}
@@ -304,6 +304,7 @@ class GameMaster:
         eliminated_role = None
         needs_hunter_revenge = False
         hunter_character = None
+        found = was_traitor  # traitor always "found"
 
         if was_traitor:
             await fs.update_game(game_id, {"ai_character.alive": False})
@@ -311,33 +312,37 @@ class GameMaster:
         else:
             for p in players:
                 if p.character_name == character_name:
+                    found = True
                     eliminated_role = p.role.value if p.role else "villager"
                     if p.role == Role.HUNTER:
                         needs_hunter_revenge = True
                         hunter_character = character_name
                     break
-            await fs.eliminate_by_character(game_id, character_name)
+            if found:
+                await fs.eliminate_by_character(game_id, character_name)
+            else:
+                logger.warning(f"[{game_id}] eliminate_character: '{character_name}' not found — skipping")
 
-        await fs.clear_votes(game_id)
+        if found:
+            await fs.clear_votes(game_id)
 
-        from models.game import GameEvent
-        import uuid
-        game = await fs.get_game(game_id)
-        await fs.log_event(game_id, GameEvent(
-            id=str(uuid.uuid4()),
-            type="elimination",
-            round=game.round if game else 0,
-            phase=Phase.ELIMINATION,
-            target=character_name,
-            data={
-                "was_traitor": was_traitor,
-                "role": eliminated_role,
-                "by_vote": True,
-            },
-            visible_in_game=True,
-        ))
+            game = await fs.get_game(game_id)
+            await fs.log_event(game_id, GameEvent(
+                id=str(uuid.uuid4()),
+                type="elimination",
+                round=game.round if game else 0,
+                phase=Phase.ELIMINATION,
+                target=character_name,
+                data={
+                    "was_traitor": was_traitor,
+                    "role": eliminated_role,
+                    "by_vote": True,
+                },
+                visible_in_game=True,
+            ))
 
-        logger.info(f"[{game_id}] Eliminated {character_name} (role={eliminated_role}, traitor={was_traitor})")
+            logger.info(f"[{game_id}] Eliminated {character_name} (role={eliminated_role}, traitor={was_traitor})")
+
         return {
             "was_traitor": was_traitor,
             "role": eliminated_role,
@@ -431,8 +436,6 @@ class GameMaster:
             f"[{game_id}] Hunter {hunter_character} revenge kill: {target_character}"
         )
 
-        from models.game import GameEvent
-        import uuid
         fs = get_firestore_service()
         game = await fs.get_game(game_id)
         await fs.log_event(game_id, GameEvent(
