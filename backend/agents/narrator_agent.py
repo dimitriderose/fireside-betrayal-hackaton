@@ -85,6 +85,10 @@ TOOLS:
   during DAY_DISCUSSION. Call this when the AI character is addressed directly by name, or when
   the AI character should naturally contribute to the conversation. The AI character's name is
   visible in get_game_state. Voice the returned dialog as if it were the character speaking.
+- generate_vote_context: Returns ONLY public game events and alive character names for building
+  vote cards. Call this BEFORE calling advance_phase when transitioning to DAY_VOTE — generate
+  one neutral behavioral summary per alive character using the returned events, then call
+  advance_phase. Do not call generate_vote_context at any other time.
 
 SPECTATOR CLUES:
 - A SPECTATOR_CLUE signal may arrive during DAY_DISCUSSION from a player who was eliminated.
@@ -93,15 +97,16 @@ SPECTATOR CLUES:
   Do not interpret or explain the clue; let it hang in the air mysteriously.
 
 VOTE CONTEXT GENERATION:
-- When players are about to vote, call generate_vote_context to retrieve publicly observable
-  events. Use this data to generate a neutral 1-sentence behavioral summary for each alive
-  character that vote cards can display.
-- The tool returns ONLY publicly visible events — night action details are excluded.
-- Your behavioral summaries MUST be based solely on what happened publicly: accusations made,
-  votes cast, statements given, alibis offered.
-- NEVER include: who the Shapeshifter actually is, night action outcomes not yet revealed,
-  your own suspicions, or language that steers players toward or away from a specific character.
-- Summaries should be factual observations, not interpretations.
+- Before transitioning DAY_DISCUSSION→DAY_VOTE: call generate_vote_context first, then generate
+  summaries, then call advance_phase. The advance_phase response also pre-populates vote_context
+  as a convenience — use whichever is available.
+- Behavioral summaries MUST be based solely on what happened publicly: accusations made,
+  votes cast, statements given, alibis offered as recorded in public_events.
+- CRITICAL: Do NOT draw on your session memory or prior context when generating summaries.
+  Use ONLY the events returned by vote_context/generate_vote_context in this turn.
+- NEVER include: night action outcomes, your own suspicions about who the Shapeshifter is,
+  or language that steers players toward or away from any specific character.
+- Summaries are factual observations only.
   Good: "Claimed to be at the inn during the night. Voted against Garin in Round 1."
   Bad: "Seemed nervous when questioned — possibly hiding something."
 """
@@ -292,10 +297,23 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                     "Narrate a brief night scene, then call advance_phase again immediately."
                 )
 
-        # When entering DAY_VOTE: fire traitor vote selection
+        # When entering DAY_VOTE: fire traitor vote selection and proactively push
+        # vote context into the narrator's response so summaries are based on
+        # public events only — no reliance on the model calling the tool itself.
         elif next_phase == Phase.DAY_VOTE:
             from agents.traitor_agent import trigger_vote_selection
             asyncio.create_task(trigger_vote_selection(game_id))
+            try:
+                vote_ctx = await handle_generate_vote_context(game_id)
+                result["vote_context"] = vote_ctx
+                result["vote_context_instruction"] = (
+                    "Generate a neutral 1-sentence behavioral summary for each character "
+                    "in vote_context['alive_characters'] using ONLY the events in "
+                    "vote_context['public_events']. Do not use any information from your "
+                    "session memory or prior knowledge about character roles."
+                )
+            except Exception:
+                logger.warning("[%s] Failed to pre-fetch vote context", game_id)
 
         return result
     finally:
@@ -354,26 +372,33 @@ async def handle_generate_vote_context(game_id: str) -> Dict[str, Any]:
     """
     fs = get_firestore_service()
 
-    # Public events only — night actions are logged with visible_in_game=False
+    # Public events only — night actions are logged with visible_in_game=False.
+    # The visible_only=True filter is the sole security boundary here; there are
+    # no additional private fields on GameEvent that need stripping.
     public_events = await fs.get_events(game_id, visible_only=True)
 
-    # Strip any private fields that should never reach the narrator
-    sanitized_events = []
-    for event in public_events:
-        e = event.model_dump()
-        e.pop("traitor_reasoning", None)
-        e.pop("ai_strategy", None)
-        # Convert non-serialisable types for the model
-        e["timestamp"] = e["timestamp"].isoformat() if e.get("timestamp") else None
-        e["phase"] = e["phase"].value if hasattr(e.get("phase"), "value") else str(e.get("phase", ""))
-        sanitized_events.append(e)
+    # model_dump(mode="json") serialises enums to their string values and
+    # datetimes to ISO-8601 strings — no manual conversion required.
+    sanitized_events = [e.model_dump(mode="json") for e in public_events]
 
-    alive_players = await fs.get_alive_players(game_id)
+    game, alive_players = await asyncio.gather(
+        fs.get_game(game_id),
+        fs.get_alive_players(game_id),
+    )
+
+    if not game:
+        return {"error": "Game not found"}
+
     alive_characters = [p.character_name for p in alive_players]
+    # Include the AI character when alive — vote cards need a summary for every character
+    # that will appear on the ballot, including the Shapeshifter.
+    if game.ai_character and game.ai_character.alive:
+        alive_characters.append(game.ai_character.name)
 
     return {
         "public_events": sanitized_events,
         "alive_characters": alive_characters,
+        "note": "Summaries must be based ONLY on public_events above, not session memory.",
     }
 
 
