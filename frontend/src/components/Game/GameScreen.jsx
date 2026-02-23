@@ -687,6 +687,9 @@ export default function GameScreen() {
   const [startError, setStartError] = useState(null)
   const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
   const [sceneImage, setSceneImage] = useState(null)
+  const [dayHintDismissed, setDayHintDismissed] = useState(
+    () => localStorage.getItem('dayHintSeen') === '1'
+  )
 
   // Auto-scroll story log to bottom on new messages
   useEffect(() => {
@@ -977,6 +980,44 @@ export default function GameScreen() {
             aiCharacter={aiCharacter}
             myCharacterName={characterName}
           />
+        )}
+
+        {/* Day-phase hint — one-time contextual tip for first-timers (§ UX-day-hint) */}
+        {phase === 'day_discussion' && !isEliminated && !dayHintDismissed && (
+          <div
+            className="container"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '8px 16px',
+              background: 'var(--bg-elevated)',
+              borderTop: '1px solid var(--border)',
+              gap: 8,
+            }}
+          >
+            <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+              💬 Speak naturally — tap a reaction to highlight your point
+            </span>
+            <button
+              onClick={() => {
+                localStorage.setItem('dayHintSeen', '1')
+                setDayHintDismissed(true)
+              }}
+              aria-label="Dismiss hint"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-dim)',
+                cursor: 'pointer',
+                fontSize: '0.875rem',
+                padding: '4px 6px',
+                flexShrink: 0,
+              }}
+            >
+              ✕
+            </button>
+          </div>
         )}
 
         {/* Chat bar + quick reactions */}
