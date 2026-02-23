@@ -83,7 +83,8 @@ class AICharacter(BaseModel):
     intro: str
     role: Role = Role.SHAPESHIFTER
     alive: bool = True
-    backstory: str = ""
+    backstory: str = ""          # Behavioural roleplay hint (maps from personality_hook)
+    personality_hook: str = ""   # Stored directly for API response consistency
     suspicion_level: float = 0.5  # 0.0 = invisible, 1.0 = obvious
     voted_for: Optional[str] = None  # AI's vote during DAY_VOTE phase
 
