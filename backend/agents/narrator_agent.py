@@ -718,10 +718,15 @@ class NarratorSession:
                             "[%s] Narrator session handle refreshed", self.game_id
                         )
 
-                # PCM audio → broadcast to all players
+                # PCM audio → broadcast to all players + record for highlight reel (§12.3.15)
                 if response.data:
                     b64 = pcm_to_base64(response.data)
                     await ws_manager.broadcast_audio(self.game_id, b64)
+                    try:
+                        from agents.audio_recorder import get_recorder
+                        get_recorder(self.game_id).append_audio(response.data)
+                    except Exception:
+                        pass
 
                 # Text transcript → show in UI
                 if response.text:
@@ -882,6 +887,14 @@ class NarratorManager:
                 )
 
         prompt = build_phase_prompt(event_type, payload)
+        # Start a new audio segment so narration is grouped by phase event (§12.3.15)
+        try:
+            from agents.audio_recorder import get_recorder, _segment_description
+            desc = _segment_description(event_type, payload)
+            round_num = payload.get("round", 0)
+            get_recorder(game_id).start_segment(event_type, desc, round_num)
+        except Exception:
+            pass
         await session.send(prompt)
         logger.debug("[%s] Narrator event queued: %s", game_id, event_type)
 

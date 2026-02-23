@@ -164,6 +164,11 @@ export function useWebSocket(gameId, playerId) {
         dispatch({ type: 'CLUE_SENT' })
         break
 
+      case 'highlight_reel':
+        // msg: { type, segments: [{ event_type, description, round, audio_b64 }] } §12.3.15
+        dispatch({ type: 'SET_HIGHLIGHT_REEL', segments: msg.segments ?? [] })
+        break
+
       case 'error':
         // msg: { type, message, code }
         dispatch({ type: 'SET_ERROR', error: msg.message })

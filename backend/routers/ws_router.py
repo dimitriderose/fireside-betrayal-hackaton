@@ -1452,5 +1452,15 @@ async def _end_game(
     except Exception:
         logger.warning("[%s] Could not schedule strategy logging", game_id, exc_info=True)
 
+    # Broadcast narrator highlight reel (§12.3.15) then free in-memory audio
+    try:
+        from agents.audio_recorder import get_recorder, clear_recorder
+        reel = get_recorder(game_id).get_highlight_reel()
+        if reel:
+            await manager.broadcast(game_id, {"type": "highlight_reel", "segments": reel})
+        clear_recorder(game_id)
+    except Exception:
+        logger.warning("[%s] Could not broadcast highlight reel", game_id, exc_info=True)
+
     # Schedule narrator teardown after 30s epilogue window — non-blocking
     asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))

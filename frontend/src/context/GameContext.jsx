@@ -25,6 +25,7 @@ const initialState = {
   nightActionSubmitted: false, // true after seer/healer submits night action
   hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
   clueSent: false,             // true after eliminated player submits spectator clue this round
+  highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
   error: null,
 }
 
@@ -139,6 +140,8 @@ function gameReducer(state, action) {
         voteMap: {},
         myVote: null,
       }
+    case 'SET_HIGHLIGHT_REEL':
+      return { ...state, highlightReel: action.segments ?? [] }
     case 'SET_CONNECTED':
       return { ...state, connected: action.connected }
     case 'SET_ERROR':
