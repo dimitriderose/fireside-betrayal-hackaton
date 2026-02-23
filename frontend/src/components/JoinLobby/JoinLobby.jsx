@@ -120,7 +120,7 @@ export default function JoinLobby() {
         sessionStorage.setItem('playerName', trimmedName)
         sessionStorage.setItem('gameId', gameId)
         sessionStorage.setItem('isHost', String(isHost))
-      } catch (e) { console.warn('sessionStorage unavailable:', e) }
+      } catch (storageErr) { console.warn('sessionStorage unavailable:', storageErr) }
       navigate(`/game/${gameId}`)
     } catch (err) {
       setError(err.message)

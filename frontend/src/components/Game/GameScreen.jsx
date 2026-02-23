@@ -634,19 +634,23 @@ function RoleCard({ roleInfo, characterName, role }) {
 }
 
 
+const NARRATOR_SILENCE_MS = 15_000
+
 function NarratorBar({ isPlaying, volume, setVolume, storyLog }) {
   const [silent, setSilent] = useState(false)
   const lastLogLen = useRef(storyLog?.length ?? 0)
+  const logLen = storyLog?.length ?? 0
 
   useEffect(() => {
-    // Reset silence timer whenever audio plays or a new story message arrives
-    if (isPlaying || (storyLog?.length ?? 0) > lastLogLen.current) {
-      lastLogLen.current = storyLog?.length ?? 0
+    if (isPlaying || logLen > lastLogLen.current) {
+      lastLogLen.current = logLen
       setSilent(false)
     }
-    const id = setTimeout(() => { if (!isPlaying) setSilent(true) }, 15000)
+    if (isPlaying) return   // no timer needed while audio is active
+    if (logLen === 0) return // narrator hasn't spoken yet — don't show "thinking"
+    const id = setTimeout(() => setSilent(true), NARRATOR_SILENCE_MS)
     return () => clearTimeout(id)
-  }, [isPlaying, storyLog?.length])
+  }, [isPlaying, logLen])
 
   const label = isPlaying
     ? '♪ Narrator'
@@ -672,7 +676,7 @@ function NarratorBar({ isPlaying, volume, setVolume, storyLog }) {
           color: isPlaying ? 'var(--accent)' : silent ? 'var(--warning, #f59e0b)' : 'var(--text-dim)',
           textTransform: 'uppercase',
           letterSpacing: '0.1em',
-          minWidth: 60,
+          minWidth: 130,
         }}
       >
         {label}
