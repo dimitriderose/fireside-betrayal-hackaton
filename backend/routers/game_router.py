@@ -152,16 +152,11 @@ async def start_game(
         f"Game {game_id} started with {len(assignment['assignments'])} players. "
         f"Characters in play: {assignment['character_cast']}."
     )
-    ai = assignment["ai_character"]
     return {
         "status": "started",
         "game_id": game_id,
         "character_cast": assignment["character_cast"],
-        "ai_character": {
-            "name": ai["name"],
-            "intro": ai["intro"],
-            "personality_hook": ai["personality_hook"],
-        },
+        "ai_character": None,  # identity never exposed via HTTP responses
     }
 
 
