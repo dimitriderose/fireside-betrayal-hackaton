@@ -2,6 +2,44 @@ import { useState } from 'react'
 import { useNavigate, Navigate } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 
+function ShareButton({ winner, reveals }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleShare = async () => {
+    const outcome = winner === 'villagers' ? 'The Village Triumphs! 🌅' : 'The Shapeshifter Wins! 🐺'
+    const traitor = reveals.find(r => r.role === 'shapeshifter')
+    const traitorLine = traitor ? `The Shapeshifter was ${traitor.characterName} (${traitor.playerName}).` : ''
+    const summary = `🔥 Fireside: Betrayal\n${outcome}\n${traitorLine}\nPlay at thornwood.app`
+
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: 'Fireside: Betrayal', text: summary })
+        return
+      } catch {
+        // User cancelled or API not supported — fall through to clipboard
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(summary)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2500)
+    } catch {
+      // clipboard not available
+    }
+  }
+
+  return (
+    <button
+      className="btn btn-ghost btn-lg"
+      onClick={handleShare}
+      style={{ marginLeft: 8 }}
+    >
+      {copied ? '✅ Copied!' : '📤 Share this game'}
+    </button>
+  )
+}
+
 const ROLE_ICONS = {
   villager: '🧑‍🌾',
   seer: '🔮',
@@ -92,10 +130,12 @@ function InteractiveTimeline({ rounds }) {
 
   // Determine key moment: round where AI was closest to being caught.
   // Heuristic: round with the most secret events (hidden night actions reveal AI activity).
+  // Uses strict '>' to avoid marking any round as key when all rounds have 0 secret events.
   const keyRound = rounds.reduce((best, r) => {
     const secretCount = (r.events ?? []).filter(e => !e.visible).length
+    if (secretCount === 0) return best
     const bestCount = (best?.events ?? []).filter(e => !e.visible).length
-    return secretCount >= bestCount ? r : best
+    return secretCount > bestCount ? r : best
   }, null)?.round
 
   const visibleRounds = selectedRound
@@ -384,10 +424,13 @@ export default function GameOver() {
           </div>
         )}
 
-        {/* Play Again */}
-        <button className="btn btn-primary btn-lg" onClick={handlePlayAgain}>
-          🔥 Play Again
-        </button>
+        {/* Play Again + Share */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-primary btn-lg" onClick={handlePlayAgain}>
+            🔥 Play Again
+          </button>
+          <ShareButton winner={winner} reveals={reveals} />
+        </div>
       </div>
     </div>
   )
