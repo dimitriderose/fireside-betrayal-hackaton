@@ -16,8 +16,9 @@ Max stored segments: 10 (ring-buffer style, oldest dropped first).
 """
 import base64
 import logging
-import struct
 from typing import Any, Dict, List, Optional
+
+from utils.audio import pcm_to_wav as _pcm_to_wav  # re-exported for internal use
 
 logger = logging.getLogger(__name__)
 
@@ -37,23 +38,6 @@ _PRIORITY = {
     "day_discussion": 5,
     "game_started": 6,
 }
-
-
-def _pcm_to_wav(pcm_data: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
-    """Wrap raw 16-bit LE mono PCM bytes in a minimal RIFF/WAV container."""
-    num_channels = 1
-    bits_per_sample = 16
-    byte_rate = sample_rate * num_channels * bits_per_sample // 8
-    block_align = num_channels * bits_per_sample // 8
-    data_size = len(pcm_data)
-    header = struct.pack(
-        "<4sI4s4sIHHIIHH4sI",
-        b"RIFF", 36 + data_size, b"WAVE",
-        b"fmt ", 16, 1, num_channels, sample_rate,
-        byte_rate, block_align, bits_per_sample,
-        b"data", data_size,
-    )
-    return header + pcm_data
 
 
 def segment_description(event_type: str, data: Dict[str, Any]) -> str:

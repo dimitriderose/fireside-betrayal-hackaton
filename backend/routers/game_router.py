@@ -45,7 +45,7 @@ async def _generate_preview_audio(preset: str) -> Optional[str]:
     Returns base64-encoded WAV audio, or None on failure (falls back gracefully in the UI).
     """
     from agents.narrator_agent import NARRATOR_PRESETS, get_preset_voice
-    from agents.audio_recorder import _pcm_to_wav
+    from utils.audio import pcm_to_wav
     from config import settings
 
     try:
@@ -94,7 +94,7 @@ async def _generate_preview_audio(preset: str) -> Optional[str]:
             if "wav" in mime.lower():
                 return base64.b64encode(raw).decode()
             # Assume raw PCM (L16, 24 kHz, mono) — wrap in WAV container
-            return base64.b64encode(_pcm_to_wav(raw)).decode()
+            return base64.b64encode(pcm_to_wav(raw)).decode()
     except Exception as exc:
         logger.error("[preview] Audio generation failed for preset '%s': %s", preset, exc)
     return None
