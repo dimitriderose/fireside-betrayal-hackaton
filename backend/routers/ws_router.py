@@ -194,6 +194,48 @@ _resolving_votes: Set[str] = set()
 # (acceptable for hackathon: if the server restarts mid-game, the clue limit resets).
 _spectator_clues_sent: Set[str] = set()
 
+
+# ── Hand-raise queue (§12.3.8 — large group conversation structure) ────────────
+
+class HandRaiseQueue:
+    """
+    Tracks players who want to speak, in order of hand-raise.
+    Active during DAY_DISCUSSION; most useful for large groups (7+ players).
+    Cleared at the start of each new DAY_DISCUSSION round.
+    """
+
+    def __init__(self):
+        self.queue: List[str] = []  # character names in raise-hand order
+
+    def raise_hand(self, character_name: str) -> bool:
+        """Add character to queue. Returns True if newly added, False if already queued."""
+        if character_name not in self.queue:
+            self.queue.append(character_name)
+            return True
+        return False
+
+    def drain(self) -> None:
+        """Clear the queue (called on phase transition to new DAY_DISCUSSION round)."""
+        self.queue.clear()
+
+
+# Per-game hand-raise queues — keyed by game_id, in-process only.
+_hand_queues: Dict[str, HandRaiseQueue] = {}
+
+
+def get_hand_queue(game_id: str) -> HandRaiseQueue:
+    """Return (or create) the HandRaiseQueue for this game."""
+    if game_id not in _hand_queues:
+        _hand_queues[game_id] = HandRaiseQueue()
+    return _hand_queues[game_id]
+
+
+def drain_hand_queue(game_id: str) -> None:
+    """Reset the HandRaiseQueue for a new DAY_DISCUSSION round."""
+    queue = _hand_queues.get(game_id)
+    if queue:
+        queue.drain()
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
@@ -526,6 +568,9 @@ async def _handle_message(
 
     elif msg_type == "spectator_clue":
         await _on_spectator_clue(game_id, player_id, data, fs)
+
+    elif msg_type == "raise_hand":
+        await _on_raise_hand(game_id, player_id, data, fs)
 
     else:
         await manager.send_to(game_id, player_id, {
@@ -1142,6 +1187,58 @@ async def _on_spectator_clue(
     logger.info("[%s] Spectator clue from %s (round %d): '%s'", game_id, character_name, game.round, word)
 
 
+async def _on_raise_hand(
+    game_id: str, player_id: str, data: Dict, fs
+) -> None:
+    """
+    Player signals they want to speak (✋ raise hand).
+    Tracked in order during DAY_DISCUSSION. Narrator acknowledges in queue order.
+    Most meaningful for large groups (7+ players); harmless for smaller groups.
+    """
+    game = await fs.get_game(game_id)
+    if not game or game.phase != Phase.DAY_DISCUSSION:
+        return
+
+    player = await fs.get_player(game_id, player_id)
+    if not player or not player.alive:
+        return
+
+    character_name = player.character_name
+    if not character_name:
+        return
+
+    hand_queue = get_hand_queue(game_id)
+    newly_added = hand_queue.raise_hand(character_name)
+
+    if newly_added:
+        # Broadcast queue update so all clients can show waiting speakers
+        await manager.broadcast(game_id, {
+            "type": "hand_raised",
+            "characterName": character_name,
+            "queueLength": len(hand_queue.queue),
+        })
+        # Notify narrator so it can acknowledge the hand raise narratively
+        try:
+            await narrator_manager.send_phase_event(game_id, "hand_raised", {
+                "character": character_name,
+                "queue": hand_queue.queue[:],
+            })
+        except Exception:
+            logger.error("[%s] Failed to notify narrator of hand_raised for %s", game_id, character_name, exc_info=True)
+    else:
+        # Already queued — tell the player their queue position
+        try:
+            pos = hand_queue.queue.index(character_name) + 1
+        except ValueError:
+            pos = 0  # queue was drained concurrently
+        await manager.send_to(game_id, player_id, {
+            "type": "hand_raise_ack",
+            "characterName": character_name,
+            "queuePosition": pos,
+            "alreadyQueued": True,
+        })
+
+
 def _build_timeline(events: list) -> list:
     """
     Group game events by round for the post-game reveal timeline.
@@ -1218,7 +1315,8 @@ async def _end_game(
         "winner": winner,
         "reason": reason,
     })
-    # Release per-game tracker memory now that the game is over
+    # Release per-game tracker and hand queue memory now that the game is over
     _trackers.pop(game_id, None)
+    _hand_queues.pop(game_id, None)
     # Schedule narrator teardown after 30s epilogue window — non-blocking
     asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))
