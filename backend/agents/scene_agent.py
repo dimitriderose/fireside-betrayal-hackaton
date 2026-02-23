@@ -94,7 +94,7 @@ async def generate_scene_image(scene_key: str) -> Optional[str]:
             f"Style: {_STYLE}"
         )
 
-        response = await asyncio.get_event_loop().run_in_executor(
+        response = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: client.models.generate_content(
                 model="gemini-2.0-flash-preview-image-generation",
@@ -110,8 +110,14 @@ async def generate_scene_image(scene_key: str) -> Optional[str]:
                 image_bytes = part.inline_data.data
                 # data may already be bytes or base64 string depending on SDK version
                 if isinstance(image_bytes, bytes):
-                    return base64.b64encode(image_bytes).decode("utf-8")
-                return image_bytes  # already base64
+                    encoded = base64.b64encode(image_bytes).decode("utf-8")
+                else:
+                    encoded = image_bytes  # already base64
+                # Guard: drop images over 1.5 MB encoded to avoid stalling WebSocket
+                if len(encoded) > 1_500_000:
+                    logger.warning("Scene image too large (%d bytes), skipping", len(encoded))
+                    return None
+                return encoded
 
     except Exception:
         logger.warning("Scene image generation failed for '%s'", scene_key, exc_info=True)
