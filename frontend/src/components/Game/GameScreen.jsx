@@ -634,7 +634,26 @@ function RoleCard({ roleInfo, characterName, role }) {
 }
 
 
-function NarratorBar({ isPlaying, volume, setVolume }) {
+function NarratorBar({ isPlaying, volume, setVolume, storyLog }) {
+  const [silent, setSilent] = useState(false)
+  const lastLogLen = useRef(storyLog?.length ?? 0)
+
+  useEffect(() => {
+    // Reset silence timer whenever audio plays or a new story message arrives
+    if (isPlaying || (storyLog?.length ?? 0) > lastLogLen.current) {
+      lastLogLen.current = storyLog?.length ?? 0
+      setSilent(false)
+    }
+    const id = setTimeout(() => { if (!isPlaying) setSilent(true) }, 15000)
+    return () => clearTimeout(id)
+  }, [isPlaying, storyLog?.length])
+
+  const label = isPlaying
+    ? '♪ Narrator'
+    : silent
+      ? '… Narrator thinking'
+      : '· Narrator'
+
   return (
     <div
       className="container"
@@ -650,13 +669,13 @@ function NarratorBar({ isPlaying, volume, setVolume }) {
       <span
         style={{
           fontSize: '0.6875rem',
-          color: isPlaying ? 'var(--accent)' : 'var(--text-dim)',
+          color: isPlaying ? 'var(--accent)' : silent ? 'var(--warning, #f59e0b)' : 'var(--text-dim)',
           textTransform: 'uppercase',
           letterSpacing: '0.1em',
           minWidth: 60,
         }}
       >
-        {isPlaying ? '♪ Narrator' : '· Narrator'}
+        {label}
       </span>
       <input
         type="range"
@@ -902,7 +921,7 @@ export default function GameScreen() {
 
       {/* ── Narrator audio bar ── */}
       {showNarratorBar && (
-        <NarratorBar isPlaying={isPlaying} volume={volume} setVolume={setVolume} />
+        <NarratorBar isPlaying={isPlaying} volume={volume} setVolume={setVolume} storyLog={storyLog} />
       )}
 
       {/* ── Main content ── */}

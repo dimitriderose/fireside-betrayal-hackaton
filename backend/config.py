@@ -11,12 +11,14 @@ class Settings(BaseSettings):
     traitor_model: str = "gemini-2.5-flash"
     narrator_preview_model: str = "gemini-2.5-flash-preview-tts"  # TTS via generate_content
     narrator_voice: str = "Charon"
-    # Production allowed origins (add Cloud Run URL here in deployment)
+    # CORS origins — set ALLOWED_ORIGINS env var for production (comma-separated)
     allowed_origins: List[str] = [
         "http://localhost:5173",
         "http://localhost:3000",
         "http://127.0.0.1:5173",
     ]
+    # Extra production origin (e.g. Cloud Run URL); appended to allowed_origins
+    extra_origin: str = ""
     debug: bool = False
 
     # Pydantic v2 style (replaces deprecated inner class Config)

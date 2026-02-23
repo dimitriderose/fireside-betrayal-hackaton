@@ -120,7 +120,7 @@ export default function JoinLobby() {
         sessionStorage.setItem('playerName', trimmedName)
         sessionStorage.setItem('gameId', gameId)
         sessionStorage.setItem('isHost', String(isHost))
-      } catch { /* sessionStorage unavailable (e.g. cross-origin iframe) */ }
+      } catch (e) { console.warn('sessionStorage unavailable:', e) }
       navigate(`/game/${gameId}`)
     } catch (err) {
       setError(err.message)
