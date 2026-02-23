@@ -391,7 +391,7 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             all_players = await fs.get_all_players(game_id)
             night_role_count = sum(
                 1 for p in all_players
-                if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK}
+                if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD}
             )
             result["night_role_players_count"] = night_role_count
             if night_role_count == 0:
