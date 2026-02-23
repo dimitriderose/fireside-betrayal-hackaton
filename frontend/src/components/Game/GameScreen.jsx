@@ -669,7 +669,7 @@ export default function GameScreen() {
   const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
   const [sceneImage, setSceneImage] = useState(null)
   const [dayHintDismissed, setDayHintDismissed] = useState(
-    () => sessionStorage.getItem('dayHintSeen') === '1'
+    () => localStorage.getItem('dayHintSeen') === '1'
   )
 
   // Auto-scroll story log to bottom on new messages
@@ -964,7 +964,7 @@ export default function GameScreen() {
         )}
 
         {/* Day-phase hint — one-time contextual tip for first-timers (§ UX-day-hint) */}
-        {phase === 'day_discussion' && !dayHintDismissed && (
+        {phase === 'day_discussion' && !isEliminated && !dayHintDismissed && (
           <div
             className="container"
             style={{
@@ -982,7 +982,7 @@ export default function GameScreen() {
             </span>
             <button
               onClick={() => {
-                sessionStorage.setItem('dayHintSeen', '1')
+                localStorage.setItem('dayHintSeen', '1')
                 setDayHintDismissed(true)
               }}
               aria-label="Dismiss hint"
