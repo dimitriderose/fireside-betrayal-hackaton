@@ -28,6 +28,15 @@ class GameMaster:
     All methods read/write Firestore via FirestoreService.
     """
 
+    # ── Small-game difficulty adjustment (§12.3.9) ────────────────────────────
+
+    # For 3-4 player games the AI has less room to hide, so Hard and Normal are
+    # automatically softened one step. 5+ players: no adjustment.
+    SMALL_GAME_DIFFICULTY_ADJUSTMENT: Dict[int, Dict[str, str]] = {
+        3: {"easy": "easy", "normal": "easy", "hard": "normal"},
+        4: {"easy": "easy", "normal": "easy", "hard": "normal"},
+    }
+
     # ── Minimum satisfying game length ────────────────────────────────────────
 
     # Minimum rounds before a shapeshifter win can be declared.
@@ -453,12 +462,42 @@ class GameMaster:
 
         return None  # Game continues
 
-    def get_lobby_summary(self, n: int) -> str:
+    def get_effective_difficulty(self, player_count: int, selected_difficulty: str) -> str:
         """
-        Generate a human-readable lobby summary string shown to the host before game start.
-        n = total character count including the AI (human players + 1).
-        Includes role breakdown and expected game duration.
+        Return the difficulty that will actually be used for a game.
+
+        For 3-4 player games the AI has fewer humans to hide behind, so Hard/Normal
+        are automatically lowered one step (see SMALL_GAME_DIFFICULTY_ADJUSTMENT).
+        For 5+ players the selected difficulty is returned unchanged.
+
+        Args:
+            player_count:        Number of *human* players (not counting the AI).
+            selected_difficulty: The difficulty value chosen by the host
+                                 (e.g. "easy", "normal", "hard").
+
+        Returns:
+            The effective difficulty string.
         """
+        adjustment_map = self.SMALL_GAME_DIFFICULTY_ADJUSTMENT.get(player_count)
+        if adjustment_map is None:
+            return selected_difficulty  # 5+ players — no adjustment
+        return adjustment_map.get(selected_difficulty, selected_difficulty)
+
+    def get_lobby_summary(self, n: int, selected_difficulty: str = "normal") -> Dict[str, Any]:
+        """
+        Generate a lobby summary dict shown to the host before game start.
+
+        Args:
+            n:                   Total character count including the AI (human players + 1).
+            selected_difficulty: The difficulty chosen by the host.
+
+        Returns a dict with:
+            "summary"             – Human-readable string with role breakdown + duration.
+            "effective_difficulty"– The difficulty that will be applied after any adjustment.
+            "difficulty_notice"   – Non-empty warning string when an adjustment is made,
+                                    empty string otherwise.
+        """
+        n_human = n - 1  # exclude the AI slot
         distribution = ROLE_DISTRIBUTION.get(n, [])
         role_counts: Dict[str, int] = {}
         for role in distribution:
@@ -468,12 +507,29 @@ class GameMaster:
         villagers = role_counts.get(Role.VILLAGER.value, 0)
         duration = self.EXPECTED_DURATION_DISPLAY.get(n, "20–30 minutes")
 
-        return (
+        summary = (
             f"In this game: {specials} special role{'s' if specials != 1 else ''}, "
             f"{villagers} villager{'s' if villagers != 1 else ''}, "
             f"1 AI hidden among you. "
             f"Expected duration: {duration}"
         )
+
+        effective_difficulty = self.get_effective_difficulty(n_human, selected_difficulty)
+
+        if effective_difficulty != selected_difficulty:
+            difficulty_notice = (
+                f"With only {n_human} players, "
+                f"{selected_difficulty.capitalize()} difficulty is adjusted to "
+                f"{effective_difficulty.capitalize()} — the AI has less room to hide."
+            )
+        else:
+            difficulty_notice = ""
+
+        return {
+            "summary": summary,
+            "effective_difficulty": effective_difficulty,
+            "difficulty_notice": difficulty_notice,
+        }
 
     # ── Role assignment (delegated to this module as a prep utility) ──────────
 
