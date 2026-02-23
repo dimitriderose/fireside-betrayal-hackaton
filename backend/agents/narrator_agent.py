@@ -304,7 +304,7 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                 from routers.ws_router import reset_tracker as _reset_tracker
                 _reset_tracker(game_id)
             except Exception:
-                logger.debug("[%s] Could not reset conversation tracker", game_id)
+                logger.warning("[%s] Could not reset conversation tracker — stale pacing data may bleed into new round", game_id, exc_info=True)
 
         # When entering NIGHT: fire traitor night selection + inform narrator about role-players
         if next_phase == Phase.NIGHT:
@@ -739,6 +739,9 @@ class NarratorManager:
         if not session:
             return
         if phase == Phase.DAY_DISCUSSION.value:
+            # Sanitize free-form player input so bracket tags can't spoof structured signals
+            safe_text = text.replace("[", "(").replace("]", ")")
+            safe_speaker = speaker.replace("[", "(").replace("]", ")")
             context_parts = []
             if pacing:
                 context_parts.append(f"[PACING: {pacing}]")
@@ -748,11 +751,11 @@ class NarratorManager:
                 )
                 if signals_str:
                     context_parts.append(f"[AFFECTIVE: {signals_str}]")
-            prefix = " ".join(context_parts)
+            prefix = "\n".join(context_parts)
             if prefix:
-                await session.send(f'{prefix}\n[PLAYER] {speaker} says: "{text}"')
+                await session.send(f'{prefix}\n[PLAYER] {safe_speaker} says: "{safe_text}"')
             else:
-                await session.send(f'[PLAYER] {speaker} says: "{text}"')
+                await session.send(f'[PLAYER] {safe_speaker} says: "{safe_text}"')
 
     async def send_phase_event(
         self,
