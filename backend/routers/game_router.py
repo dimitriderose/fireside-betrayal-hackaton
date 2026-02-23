@@ -2,16 +2,18 @@
 Game HTTP endpoints.
 
 Routes:
-  POST /api/games                    — Create game + register host as first player
-  POST /api/games/{game_id}/join     — Player joins the lobby
-  GET  /api/games/{game_id}          — Public game state (roles hidden)
-  POST /api/games/{game_id}/start    — Host starts game (triggers role assignment)
-  GET  /api/games/{game_id}/events   — Event log (visible only, or all post-game)
+  POST /api/games                         — Create game + register host as first player
+  POST /api/games/{game_id}/join          — Player joins the lobby
+  GET  /api/games/{game_id}               — Public game state (roles hidden)
+  POST /api/games/{game_id}/start         — Host starts game (triggers role assignment)
+  GET  /api/games/{game_id}/events        — Event log (visible only, or all post-game)
+  GET  /api/narrator/preview/{preset}     — Short narrator audio sample for a preset
 """
 import asyncio
+import base64
 import uuid
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -30,6 +32,92 @@ from routers.ws_router import manager as ws_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["games"])
+
+# ── Narrator preview cache (§ UX-narrator-preview) ────────────────────────────
+# In-memory: keys are preset IDs, values are base64-encoded WAV audio.
+# Populated on first request per preset; survives for the lifetime of the process.
+_preview_cache: Dict[str, str] = {}
+
+
+async def _generate_preview_audio(preset: str) -> Optional[str]:
+    """
+    Generate a ~3-second narrator sample for the given preset via Gemini TTS.
+    Returns base64-encoded WAV audio, or None on failure (falls back gracefully in the UI).
+    """
+    from agents.narrator_agent import NARRATOR_PRESETS, get_preset_voice
+    from agents.audio_recorder import _pcm_to_wav
+    from config import settings
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        logger.warning("[preview] google-genai not installed — preview unavailable")
+        return None
+
+    if not settings.gemini_api_key:
+        logger.warning("[preview] GEMINI_API_KEY not set — preview unavailable")
+        return None
+
+    config = NARRATOR_PRESETS[preset]
+    voice = get_preset_voice(preset)
+    client = genai.Client(api_key=settings.gemini_api_key)
+    sample_text = "The fire dims. Someone among you is not what they seem."
+
+    try:
+        response = await client.aio.models.generate_content(
+            model=settings.traitor_model,
+            contents=sample_text,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                            voice_name=voice,
+                        )
+                    )
+                ),
+                system_instruction=config["prompt_prefix"],
+            ),
+        )
+        candidates = response.candidates or []
+        if not candidates:
+            return None
+        for part in candidates[0].content.parts:
+            idata = getattr(part, "inline_data", None)
+            if not idata or not idata.data:
+                continue
+            raw = idata.data
+            if isinstance(raw, str):
+                raw = base64.b64decode(raw)
+            mime = getattr(idata, "mime_type", "") or ""
+            if "wav" in mime.lower():
+                return base64.b64encode(raw).decode()
+            # Assume raw PCM (L16, 24 kHz, mono) — wrap in WAV container
+            return base64.b64encode(_pcm_to_wav(raw)).decode()
+    except Exception as exc:
+        logger.error("[preview] Audio generation failed for preset '%s': %s", preset, exc)
+    return None
+
+
+@router.get("/narrator/preview/{preset}")
+async def narrator_preview(preset: str):
+    """
+    Return a short narrator audio sample for the given preset.
+    Response is cached in memory after the first call.
+    """
+    from agents.narrator_agent import NARRATOR_PRESETS
+    if preset not in NARRATOR_PRESETS:
+        raise HTTPException(status_code=404, detail=f"Unknown narrator preset: {preset}")
+    if preset not in _preview_cache:
+        audio_b64 = await _generate_preview_audio(preset)
+        if audio_b64 is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Audio preview temporarily unavailable. Check GEMINI_API_KEY.",
+            )
+        _preview_cache[preset] = audio_b64
+    return {"audio_b64": _preview_cache[preset]}
 
 
 @router.post("/games", response_model=CreateGameResponse, status_code=201)
