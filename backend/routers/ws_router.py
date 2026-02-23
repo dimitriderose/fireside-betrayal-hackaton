@@ -1472,6 +1472,12 @@ async def _delayed_narrator_stop(game_id: str, delay: int = 30) -> None:
     """Fire-and-forget: give the narrator time to deliver its epilogue, then stop."""
     await asyncio.sleep(delay)
     await narrator_manager.stop_game(game_id)
+    # Free in-memory audio now that the session is fully stopped (§12.3.15)
+    try:
+        from agents.audio_recorder import clear_recorder
+        clear_recorder(game_id)
+    except Exception:
+        pass
 
 
 async def _end_game(
@@ -1552,6 +1558,16 @@ async def _end_game(
         ))
     except Exception:
         logger.warning("[%s] Could not schedule strategy logging", game_id, exc_info=True)
+
+    # Broadcast narrator highlight reel (§12.3.15)
+    # clear_recorder is deferred to _delayed_narrator_stop (after epilogue finishes)
+    try:
+        from agents.audio_recorder import get_recorder
+        reel = get_recorder(game_id).get_highlight_reel()
+        if reel:
+            await manager.broadcast(game_id, {"type": "highlight_reel", "segments": reel})
+    except Exception:
+        logger.warning("[%s] Could not broadcast highlight reel", game_id, exc_info=True)
 
     # Schedule narrator teardown after 30s epilogue window — non-blocking
     asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))

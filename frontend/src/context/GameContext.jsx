@@ -26,6 +26,7 @@ const initialState = {
   hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
   clueSent: false,             // true after eliminated player submits spectator clue this round
   inPersonMode: false,         // §12.3.16: camera counts raised hands during vote
+  highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
   error: null,
 }
 
@@ -142,6 +143,8 @@ function gameReducer(state, action) {
       }
     case 'SET_IN_PERSON_MODE':
       return { ...state, inPersonMode: action.inPersonMode }
+    case 'SET_HIGHLIGHT_REEL':
+      return { ...state, highlightReel: action.segments ?? [] }
     case 'SET_CONNECTED':
       return { ...state, connected: action.connected }
     case 'SET_ERROR':

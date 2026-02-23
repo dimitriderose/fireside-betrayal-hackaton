@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate, Navigate } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 
@@ -299,10 +299,120 @@ function InteractiveTimeline({ rounds }) {
   )
 }
 
+// ── Narrator Highlight Reel (§12.3.15) ─────────────────────────────────────────
+
+function HighlightReel({ segments }) {
+  const [playingIdx, setPlayingIdx] = useState(null)
+  const audioRef = useRef(null)
+
+  // Stop audio on unmount (e.g. when "Play Again" is clicked mid-playback)
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+    }
+  }, [])
+
+  if (!segments?.length) return null
+
+  const handlePlay = (idx) => {
+    // Stop current playback if any
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    if (playingIdx === idx) {
+      setPlayingIdx(null)
+      return
+    }
+    const seg = segments[idx]
+    const audio = new Audio(`data:audio/wav;base64,${seg.audio_b64}`)
+    audioRef.current = audio
+    setPlayingIdx(idx)
+    audio.play().catch(() => {})
+    audio.onended = () => {
+      setPlayingIdx(null)
+      audioRef.current = null
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 32 }}>
+      <h3
+        style={{
+          marginBottom: 4,
+          fontSize: '0.8125rem',
+          color: 'var(--text-muted)',
+          textTransform: 'uppercase',
+          letterSpacing: '0.1em',
+        }}
+      >
+        Narrator's Highlight Reel
+      </h3>
+      <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: 16 }}>
+        The five most dramatic moments, as told by the narrator.
+      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {segments.map((seg, idx) => {
+          const isPlaying = playingIdx === idx
+          return (
+            <div
+              key={idx}
+              className="card fade-in"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '10px 14px',
+                border: `1px solid ${isPlaying ? 'var(--accent)' : 'var(--border)'}`,
+                background: isPlaying ? 'var(--accent-glow)' : 'var(--bg-card)',
+                transition: 'all var(--transition)',
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text)' }}>
+                  {seg.description}
+                </div>
+                {seg.round > 0 && (
+                  <div style={{ fontSize: '0.6875rem', color: 'var(--text-dim)', marginTop: 2 }}>
+                    Round {seg.round}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => handlePlay(idx)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 36,
+                  height: 36,
+                  borderRadius: '50%',
+                  border: `1px solid ${isPlaying ? 'var(--accent)' : 'var(--border)'}`,
+                  background: isPlaying ? 'var(--accent)' : 'var(--bg-elevated)',
+                  color: isPlaying ? '#fff' : 'var(--text-muted)',
+                  cursor: 'pointer',
+                  fontSize: '0.875rem',
+                  flexShrink: 0,
+                }}
+              >
+                {isPlaying ? '⏹' : '▶'}
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+
 export default function GameOver() {
   const navigate = useNavigate()
   const { state, dispatch } = useGame()
-  const { winner, reveals, strategyLog, characterName: myCharacterName } = state
+  const { winner, reveals, strategyLog, highlightReel, characterName: myCharacterName } = state
 
   // Guard against direct URL navigation or page refresh (no game state in context)
   if (!winner) return <Navigate to="/" replace />
@@ -445,6 +555,9 @@ export default function GameOver() {
             <p style={{ color: 'var(--text-dim)' }}>The village's secrets remain…</p>
           </div>
         )}
+
+        {/* Narrator Highlight Reel (§12.3.15) */}
+        <HighlightReel segments={highlightReel} />
 
         {/* Post-game interactive timeline (§12.3.13) */}
         {strategyLog.length > 0 && (
