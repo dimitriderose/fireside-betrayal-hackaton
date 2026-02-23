@@ -17,6 +17,8 @@ class Role(str, Enum):
     HUNTER = "hunter"
     DRUNK = "drunk"
     SHAPESHIFTER = "shapeshifter"
+    BODYGUARD = "bodyguard"  # Absorbs shapeshifter kill targeting their protected player
+    TANNER = "tanner"        # Solo win condition: get voted out by the village
 
 
 class Phase(str, Enum):
@@ -47,8 +49,8 @@ ROLE_DISTRIBUTION: Dict[int, List[str]] = {
     4: ["villager", "villager", "seer", "shapeshifter"],
     5: ["villager", "villager", "seer", "healer", "shapeshifter"],
     6: ["villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
-    7: ["villager", "villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
-    8: ["villager", "villager", "villager", "seer", "healer", "hunter", "drunk", "shapeshifter"],
+    7: ["villager", "villager", "seer", "healer", "hunter", "bodyguard", "shapeshifter"],
+    8: ["villager", "villager", "seer", "healer", "hunter", "bodyguard", "tanner", "shapeshifter"],
 }
 
 

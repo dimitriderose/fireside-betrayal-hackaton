@@ -792,6 +792,20 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
         eliminated = tally_result["eliminated"]
         elim_result = await game_master.eliminate_character(game_id, eliminated)
 
+        # Tanner solo win: voted out by the village is exactly what the Tanner wants
+        if elim_result.get("role") == Role.TANNER.value:
+            await manager.broadcast_elimination(
+                game_id,
+                character_name=eliminated,
+                was_traitor=False,
+                role=Role.TANNER.value,
+                needs_hunter_revenge=False,
+                tally=tally_result.get("tally", {}),
+            )
+            await _end_game(game_id, "tanner", "The Tanner outsmarted the village — voted out exactly as planned!", fs)
+            return
+
+
         await manager.broadcast_elimination(
             game_id,
             character_name=eliminated,
@@ -866,7 +880,7 @@ async def _on_night_action(
     if not player or not player.alive:
         return
 
-    if player.role not in {Role.SEER, Role.HEALER, Role.DRUNK}:
+    if player.role not in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD}:
         await manager.send_to(game_id, player_id, {
             "type": "error",
             "message": "Your role has no night action",
@@ -898,10 +912,10 @@ async def _on_night_action(
         })
         return
 
-    if player.role == Role.HEALER and target == player.character_name:
+    if player.role in {Role.HEALER, Role.BODYGUARD} and target == player.character_name:
         await manager.send_to(game_id, player_id, {
             "type": "error",
-            "message": "The Healer cannot protect themselves",
+            "message": f"The {player.role.value.capitalize()} cannot protect themselves",
             "code": "INVALID_SELF_TARGET",
         })
         return
@@ -917,7 +931,7 @@ async def _on_night_action(
     all_players_fresh = await fs.get_all_players(game_id)
     night_role_players = [
         p for p in all_players_fresh
-        if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK}
+        if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD}
     ]
     all_acted = all(p.night_action for p in night_role_players)
     if all_acted:
@@ -935,9 +949,8 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
     killed = night_result.get("killed")
 
     if killed:
-        # eliminate_character logs the event and returns metadata.
-        # resolve_night already called fs.eliminate_by_character() so the DB update
-        # is idempotent; by_vote=False ensures the event log is correct.
+        # eliminate_character handles the DB write, clears votes, and logs the
+        # elimination event. by_vote=False marks it as a night kill.
         elim_result = await game_master.eliminate_character(game_id, killed, by_vote=False)
 
         await manager.broadcast_elimination(

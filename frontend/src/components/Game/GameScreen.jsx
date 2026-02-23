@@ -31,6 +31,8 @@ const ROLE_INFO = {
   hunter:       { icon: '🏹', label: 'Hunter',        action: null,        actionLabel: null },
   drunk:        { icon: '🍺', label: 'Seer',          action: 'investigate', actionLabel: 'Investigate' },
   shapeshifter: { icon: '🐺', label: 'Shapeshifter',  action: null,        actionLabel: null },
+  bodyguard:    { icon: '🛡️', label: 'Bodyguard',     action: 'protect',     actionLabel: 'Protect' },
+  tanner:       { icon: '🪓', label: 'Tanner',        action: null,        actionLabel: null },
 }
 
 const ROLE_DESC = {
@@ -40,6 +42,8 @@ const ROLE_DESC = {
   hunter:       'If you are eliminated, you may take one character with you as your dying act.',
   drunk:        'You believe you are the Seer — but fate has twisted your gift.',
   shapeshifter: 'You are the hidden evil. Deceive the village and survive.',
+  bodyguard:    'Each night protect one character. If the Shapeshifter targets them, you die instead.',
+  tanner:       'Your goal is to be voted out by the village. Convince them you are the Shapeshifter.',
 }
 
 const SOURCE_STYLE = {

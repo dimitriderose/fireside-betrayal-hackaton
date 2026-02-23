@@ -47,6 +47,8 @@ const ROLE_ICONS = {
   hunter: '🏹',
   drunk: '🍺',
   shapeshifter: '🐺',
+  bodyguard: '🛡️',
+  tanner: '🪓',
 }
 
 // Timeline event type → { icon, label(actor, target, data) }
@@ -82,6 +84,11 @@ const EVENT_RENDERERS = {
     icon: '🏹',
     text: `${e.actor ?? 'Unknown'} took ${e.target ?? 'Unknown'} with them as their dying act.`,
     hidden: false,
+  }),
+  bodyguard_sacrifice: (e) => ({
+    icon: '🛡️',
+    text: `${e.actor ?? 'Unknown'} threw themselves in front of the attack, dying to protect ${e.target ?? 'Unknown'}.`,
+    hidden: true,
   }),
 }
 
@@ -298,37 +305,48 @@ export default function GameOver() {
   }
 
   const villagersWon = winner === 'villagers'
+  const tannerWon = winner === 'tanner'
+
+  const heroEmoji = villagersWon ? '🌅' : tannerWon ? '🪓' : '🐺'
+  const heroTitle = villagersWon ? 'The Village Triumphs' : tannerWon ? 'The Tanner\'s Gambit' : 'The Shapeshifter Wins'
+  const heroSubtitle = villagersWon
+    ? 'The darkness is lifted from Thornwood.'
+    : tannerWon
+    ? 'The Tanner played the village like a fiddle — voted out on purpose.'
+    : 'Thornwood falls to shadow and deception.'
+  const heroColor = villagersWon ? 'var(--success)' : tannerWon ? 'var(--text-muted)' : 'var(--danger)'
+  const heroGradient = villagersWon
+    ? 'linear-gradient(180deg, rgba(22,163,74,0.15) 0%, transparent 100%)'
+    : tannerWon
+    ? 'linear-gradient(180deg, rgba(120,120,120,0.1) 0%, transparent 100%)'
+    : 'linear-gradient(180deg, rgba(220,38,38,0.15) 0%, transparent 100%)'
 
   return (
     <div className="page">
       {/* Hero */}
       <div
         style={{
-          background: villagersWon
-            ? 'linear-gradient(180deg, rgba(22,163,74,0.15) 0%, transparent 100%)'
-            : 'linear-gradient(180deg, rgba(220,38,38,0.15) 0%, transparent 100%)',
+          background: heroGradient,
           paddingTop: 48,
           paddingBottom: 32,
           textAlign: 'center',
         }}
       >
         <div style={{ fontSize: '3.5rem', marginBottom: 12 }}>
-          {villagersWon ? '🌅' : '🐺'}
+          {heroEmoji}
         </div>
         <h1
           style={{
             fontFamily: 'var(--font-heading)',
             fontSize: '1.75rem',
-            color: villagersWon ? 'var(--success)' : 'var(--danger)',
+            color: heroColor,
             marginBottom: 8,
           }}
         >
-          {villagersWon ? 'The Village Triumphs' : 'The Shapeshifter Wins'}
+          {heroTitle}
         </h1>
         <p style={{ fontSize: '0.9375rem', fontStyle: 'italic', color: 'var(--text-muted)' }}>
-          {villagersWon
-            ? 'The darkness is lifted from Thornwood.'
-            : 'Thornwood falls to shadow and deception.'}
+          {heroSubtitle}
         </p>
       </div>
 

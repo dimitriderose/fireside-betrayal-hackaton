@@ -139,6 +139,7 @@ class GameMaster:
             "protected": None,
             "seer_result": None,
             "hunter_triggered": False,
+            "bodyguard_sacrifice": False,  # True when bodyguard absorbed the kill
         }
 
         # ── Step 1: Shapeshifter kill target (set by TraitorAgent or default) ──
@@ -168,15 +169,36 @@ class GameMaster:
             protected_target = night_actions[healer_id]
             result["protected"] = protected_target
 
-        # ── Step 3: Apply kill (unless healer blocked it) ─────────────────────
+        # ── Step 2b: Bodyguard protection ────────────────────────────────────
+        # Bodyguard absorbs a shapeshifter kill targeting their protected player;
+        # the bodyguard dies in their place. Healer cannot prevent bodyguard sacrifice.
+        bodyguard_id = role_map.get(Role.BODYGUARD.value)
+        bodyguard_target: Optional[str] = None
+        if bodyguard_id and bodyguard_id in night_actions:
+            bodyguard_target = night_actions[bodyguard_id]
+
+        # ── Step 3: Apply kill (healer → bodyguard → direct hit) ──────────────
+        # Priority: Healer block takes precedence when both Healer and Bodyguard
+        # protect the same target (target lives, bodyguard is spared).
+        # Bodyguard only sacrifices when Healer is NOT also protecting that target.
+        # Actual DB elimination is deferred to the caller via eliminate_character().
         if shapeshifter_target:
             if shapeshifter_target == protected_target:
+                # Healer blocks: nobody dies
                 logger.info(f"[{game_id}] Kill on {shapeshifter_target} blocked by Healer")
+            elif shapeshifter_target == bodyguard_target:
+                # Bodyguard absorbs: target lives, bodyguard dies (DB write by caller)
+                bodyguard_player = id_to_player.get(bodyguard_id)
+                if bodyguard_player:
+                    result["killed"] = bodyguard_player.character_name
+                    result["bodyguard_sacrifice"] = True
+                    logger.info(f"[{game_id}] Bodyguard {bodyguard_player.character_name} died protecting {shapeshifter_target}")
+                else:
+                    logger.warning(f"[{game_id}] Bodyguard player not found in id_to_player — sacrifice skipped")
             else:
                 result["killed"] = shapeshifter_target
                 victim = char_to_player.get(shapeshifter_target)
                 if victim:
-                    await fs.eliminate_by_character(game_id, shapeshifter_target)
                     if victim.role == Role.HUNTER:
                         result["hunter_triggered"] = True
                         logger.info(f"[{game_id}] Hunter {shapeshifter_target} was killed — revenge triggered")
@@ -232,7 +254,22 @@ class GameMaster:
                 phase=Phase.NIGHT,
                 actor=ai_char.name if ai_char else "shapeshifter",
                 target=shapeshifter_target,
-                data={"blocked": result["killed"] is None},
+                data={
+                    "blocked": shapeshifter_target != result.get("killed") and not result.get("bodyguard_sacrifice"),
+                    "bodyguard_sacrifice": result.get("bodyguard_sacrifice", False),
+                },
+                visible_in_game=False,
+            ))
+
+        if result.get("bodyguard_sacrifice") and bodyguard_id and bodyguard_id in id_to_player:
+            bodyguard_char = id_to_player[bodyguard_id].character_name
+            await fs.log_event(game_id, GameEvent(
+                id=str(uuid.uuid4()),
+                type="bodyguard_sacrifice",
+                round=game.round,
+                phase=Phase.NIGHT,
+                actor=bodyguard_char,
+                target=shapeshifter_target,
                 visible_in_game=False,
             ))
 
