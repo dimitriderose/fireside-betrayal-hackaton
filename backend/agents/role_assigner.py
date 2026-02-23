@@ -1,5 +1,5 @@
 """
-Role Assignment Agent — Pure deterministic Python, no LLM (except character generation).
+Role Assignment Agent — deterministic role shuffling with optional LLM character generation.
 
 Responsibilities:
 - Shuffle and assign roles to human players based on player count + difficulty
@@ -9,9 +9,11 @@ Responsibilities:
 
 Called once by the game router when the host starts the game.
 """
+import asyncio
 import json
 import logging
 import random
+import re
 from typing import Any, Dict, List, Optional
 
 from config import settings
@@ -82,27 +84,30 @@ GENRE_SEEDS: Dict[str, Dict[str, Any]] = {
 }
 
 
-# ── Gemini client cache (shared with traitor agent pattern) ───────────────────
+# ── Gemini client cache (independent instance for character generation) ────────
+# NOTE: traitor_agent.py also maintains its own module-level client — they are
+# separate instances, not a shared cache. Both use the same api_key.
 _genai_client: Optional[Any] = None
-_genai_import_failed: bool = False
+_genai_unavailable: bool = False  # True when import fails or API key is absent
 
 
 async def _call_gemini_json(prompt: str) -> Optional[str]:
     """Return raw text from a single Gemini generate_content call, or None on failure."""
-    global _genai_client, _genai_import_failed
+    global _genai_client, _genai_unavailable
 
-    if _genai_import_failed:
+    if _genai_unavailable:
         return None
 
     if _genai_client is None:
         try:
             from google import genai
         except ImportError:
-            _genai_import_failed = True
+            _genai_unavailable = True
             logger.warning("[proc-chars] google-genai not installed — using fallback cast")
             return None
 
         if not settings.gemini_api_key:
+            _genai_unavailable = True  # prevent repeated re-entry on every game start
             logger.warning("[proc-chars] GEMINI_API_KEY not set — using fallback cast")
             return None
 
@@ -171,11 +176,11 @@ class RoleAssigner:
         raw = await _call_gemini_json(prompt)
 
         if raw:
-            # Strip optional markdown code fences
+            # Strip optional markdown code fences (handles ```json or ``` with any language tag)
             text = raw.strip()
             if text.startswith("```"):
-                text = text.split("\n", 1)[-1]
-                text = text.rsplit("```", 1)[0]
+                text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+                text = re.sub(r"\n?```$", "", text.strip())
             try:
                 characters: List[Dict[str, str]] = json.loads(text)
                 if (
@@ -185,6 +190,7 @@ class RoleAssigner:
                         isinstance(c, dict)
                         and c.get("name")
                         and c.get("intro")
+                        and c.get("personality_hook")
                         for c in characters[:n_total]
                     )
                 ):
@@ -192,7 +198,7 @@ class RoleAssigner:
                     return characters[:n_total]
                 else:
                     logger.warning(
-                        "[proc-chars] LLM returned %d characters (expected %d) — using fallback",
+                        "[proc-chars] LLM returned %d characters (expected %d) or missing required fields — using fallback",
                         len(characters) if isinstance(characters, list) else 0,
                         n_total,
                     )
@@ -200,9 +206,15 @@ class RoleAssigner:
                 logger.warning("[proc-chars] JSON parse failed: %s — using fallback", exc)
 
         # Fallback: return a shuffled slice of the static cast
-        cast = list(_FALLBACK_CAST)
-        random.shuffle(cast)
-        return cast[:n_total]
+        fallback = list(_FALLBACK_CAST)
+        random.shuffle(fallback)
+        result = fallback[:n_total]
+        if len(result) < n_total:
+            raise RuntimeError(
+                f"_FALLBACK_CAST has only {len(_FALLBACK_CAST)} entries but {n_total} are required. "
+                "Expand _FALLBACK_CAST to support larger player counts."
+            )
+        return result
 
     async def assign_roles(self, game_id: str) -> Dict[str, Any]:
         """
@@ -241,7 +253,7 @@ class RoleAssigner:
         if not game:
             raise ValueError(f"Game {game_id} not found")
 
-        players = await fs.get_all_players(game_id)
+        players = sorted(await fs.get_all_players(game_id), key=lambda p: p.joined_at)
         n_human = len(players)
 
         if n_human < self.MIN_HUMANS:
@@ -268,6 +280,10 @@ class RoleAssigner:
             roles[roles.index("drunk")] = "villager"
 
         # Remove the shapeshifter slot — it belongs to the AI, never a human
+        if "shapeshifter" not in roles:
+            raise ValueError(
+                f"ROLE_DISTRIBUTION[{n_total}] has no 'shapeshifter' entry — data integrity error."
+            )
         roles.remove("shapeshifter")
         # `roles` now has exactly n_human entries
         random.shuffle(roles)
@@ -278,18 +294,19 @@ class RoleAssigner:
         # cast[0 .. n_human-1] → human players
         # cast[n_human]        → AI character
 
-        # ── Assign roles and characters to human players ───────────────────────
+        # ── Assign roles and characters to human players (parallel writes) ─────
         assignments: List[Dict[str, Any]] = []
+        player_updates = []
         for i, player in enumerate(players):
             role = roles[i]
             character = cast[i]
             hook = character.get("personality_hook", "")
-            await fs.update_player(game_id, player.id, {
+            player_updates.append(fs.update_player(game_id, player.id, {
                 "role": role,
                 "character_name": character["name"],
                 "character_intro": character["intro"],
                 "personality_hook": hook,
-            })
+            }))
             assignments.append({
                 "player_id": player.id,
                 "player_name": player.name,
@@ -298,21 +315,26 @@ class RoleAssigner:
                 "character_intro": character["intro"],
                 "personality_hook": hook,
             })
+        await asyncio.gather(*player_updates)
 
         # ── Set up the AI character ────────────────────────────────────────────
         ai_slot = cast[n_human]
+        hook = ai_slot.get("personality_hook", "")
         ai_char = AICharacter(
             name=ai_slot["name"],
             intro=ai_slot["intro"],
             role=Role.SHAPESHIFTER,
             alive=True,
-            backstory=ai_slot.get("personality_hook", ""),
+            backstory=hook,
+            personality_hook=hook,
         )
-        await fs.set_ai_character(game_id, ai_char)
 
-        # ── Store the full cast on the game document ───────────────────────────
-        character_cast = [cast[i]["name"] for i in range(n_total)]
+        # ── Store AI character + full cast in a single Firestore write ─────────
+        # Merging into one update_game call eliminates the crash window between
+        # set_ai_character and the subsequent update_game call.
+        character_cast = [c["name"] for c in cast[:n_total]]
         await fs.update_game(game_id, {
+            "ai_character": ai_char.model_dump(),
             "character_cast": character_cast,
             "generated_characters": cast,
         })
@@ -329,7 +351,7 @@ class RoleAssigner:
             "ai_character": {
                 "name": ai_char.name,
                 "intro": ai_char.intro,
-                "personality_hook": ai_slot.get("personality_hook", ""),
+                "personality_hook": ai_char.personality_hook,
             },
             "character_cast": character_cast,
         }
