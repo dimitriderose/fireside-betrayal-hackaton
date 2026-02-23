@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate, Navigate } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 
@@ -304,6 +304,16 @@ function InteractiveTimeline({ rounds }) {
 function HighlightReel({ segments }) {
   const [playingIdx, setPlayingIdx] = useState(null)
   const audioRef = useRef(null)
+
+  // Stop audio on unmount (e.g. when "Play Again" is clicked mid-playback)
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current = null
+      }
+    }
+  }, [])
 
   if (!segments?.length) return null
 

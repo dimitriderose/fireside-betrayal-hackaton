@@ -33,8 +33,9 @@ _PRIORITY = {
     "game_over": 1,
     "night_resolved": 2,
     "night": 3,
-    "day_discussion": 4,
-    "game_started": 5,
+    "no_elimination": 4,   # deadlocked vote is more dramatic than routine discussion
+    "day_discussion": 5,
+    "game_started": 6,
 }
 
 
@@ -55,7 +56,7 @@ def _pcm_to_wav(pcm_data: bytes, sample_rate: int = SAMPLE_RATE) -> bytes:
     return header + pcm_data
 
 
-def _segment_description(event_type: str, data: Dict[str, Any]) -> str:
+def segment_description(event_type: str, data: Dict[str, Any]) -> str:
     """Human-readable segment label shown in the post-game timeline."""
     round_num = data.get("round", 0)
     round_str = f" (Round {round_num})" if round_num else ""
