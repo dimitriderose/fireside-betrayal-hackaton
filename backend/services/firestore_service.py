@@ -49,12 +49,14 @@ class FirestoreService:
         difficulty: str = "normal",
         random_alignment: bool = False,
         narrator_preset: str = "classic",
+        in_person_mode: bool = False,
     ) -> GameState:
         game = GameState(
             host_player_id=host_player_id,
             difficulty=difficulty,
             random_alignment=random_alignment,
             narrator_preset=narrator_preset,
+            in_person_mode=in_person_mode,
         )
         data = game.model_dump()
         data["created_at"] = data["created_at"].isoformat()

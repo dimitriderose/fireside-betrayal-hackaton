@@ -27,6 +27,7 @@ export default function JoinLobby() {
   const [difficulty, setDifficulty] = useState('normal')
   const [randomAlignment, setRandomAlignment] = useState(false)
   const [narratorPreset, setNarratorPreset] = useState('classic')
+  const [inPersonMode, setInPersonMode] = useState(false)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -43,7 +44,7 @@ export default function JoinLobby() {
         const res = await fetch('/api/games', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host_name: trimmedName, difficulty, random_alignment: randomAlignment, narrator_preset: narratorPreset }),
+          body: JSON.stringify({ host_name: trimmedName, difficulty, random_alignment: randomAlignment, narrator_preset: narratorPreset, in_person_mode: inPersonMode }),
         })
         if (!res.ok) {
           const body = await res.json().catch(() => ({}))
@@ -192,6 +193,27 @@ export default function JoinLobby() {
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* In-Person Mode (host only) §12.3.16 */}
+          {isHost && (
+            <div>
+              <label className="input-label">Vote Mode</label>
+              <button
+                type="button"
+                onClick={() => setInPersonMode(v => !v)}
+                className={`btn btn-sm ${inPersonMode ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ width: '100%', justifyContent: 'flex-start', gap: 10 }}
+              >
+                <span>{inPersonMode ? '🎥' : '📱'}</span>
+                {inPersonMode ? 'In-Person — camera counts raised hands' : 'Phone — tap to vote on your device'}
+              </button>
+              <p style={{ fontSize: '0.75rem', marginTop: 6 }}>
+                {inPersonMode
+                  ? 'During votes, the narrator will use the camera to count raised hands.'
+                  : 'Each player taps their phone to submit a vote.'}
+              </p>
             </div>
           )}
 
