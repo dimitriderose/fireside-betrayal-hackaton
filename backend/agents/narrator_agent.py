@@ -396,7 +396,7 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             result["night_role_players_count"] = night_role_count
             if night_role_count == 0:
                 result["note"] = (
-                    "No SEER/HEALER/DRUNK players are alive. "
+                    "No SEER/HEALER/DRUNK/BODYGUARD players are alive. "
                     "No night actions will be submitted. "
                     "Narrate a brief night scene, then call advance_phase again immediately."
                 )

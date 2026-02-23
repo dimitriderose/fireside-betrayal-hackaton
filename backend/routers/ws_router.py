@@ -593,9 +593,11 @@ async def _handle_message(
     fs,
 ) -> None:
     try:
-     await _dispatch_message(game_id, player_id, msg_type, data, fs)
+        await _dispatch_message(game_id, player_id, msg_type, data, fs)
+    except WebSocketDisconnect:
+        raise
     except Exception as exc:
-        logger.exception("[%s] Unhandled error in _handle_message (type=%s): %s", game_id, msg_type, exc)
+        logger.exception("[%s] Unhandled error in _handle_message (type=%s)", game_id, msg_type)
         try:
             await manager.send_to(game_id, player_id, {
                 "type": "error", "message": "Internal server error", "code": "SERVER_ERROR"
@@ -1431,11 +1433,6 @@ async def _on_in_person_vote_frame(
     hand_count = result["hand_count"]
     confidence = result["confidence"]
 
-    # Cap hand_count to number of alive players — guards against vision hallucinations
-    all_players_for_cap = await fs.get_all_players(game_id)
-    alive_cap = sum(1 for p in all_players_for_cap if p.alive)
-    hand_count = min(hand_count, alive_cap)
-
     if confidence == "low":
         # Fallback: notify host to use phone voting instead
         await manager.send_to(game_id, player_id, {
@@ -1445,6 +1442,14 @@ async def _on_in_person_vote_frame(
         })
         logger.info("[%s] Camera vote fallback for '%s' (low confidence)", game_id, character_name)
         return
+
+    # Cap hand_count to number of alive players (humans + AI) — guards against vision hallucinations
+    all_players_for_cap = await fs.get_all_players(game_id)
+    alive_cap = sum(1 for p in all_players_for_cap if p.alive)
+    ai_char_for_cap = await fs.get_ai_character(game_id)
+    if ai_char_for_cap and ai_char_for_cap.alive:
+        alive_cap += 1
+    hand_count = min(hand_count, alive_cap)
 
     # Broadcast the hand count to all clients as a vote result message
     await manager.broadcast(game_id, {
@@ -1587,9 +1592,12 @@ async def _end_game(
         "winner": winner,
         "reason": reason,
     })
-    # Release per-game tracker, hand queue, and difficulty adapter memory
+    # Release per-game tracker, hand queue, difficulty adapter, and vote timeout memory
     _trackers.pop(game_id, None)
     _hand_queues.pop(game_id, None)
+    timeout_task = _vote_timeout_tasks.pop(game_id, None)
+    if timeout_task and not timeout_task.done():
+        timeout_task.cancel()
     try:
         from agents.traitor_agent import clear_difficulty_adapter
         clear_difficulty_adapter(game_id)
