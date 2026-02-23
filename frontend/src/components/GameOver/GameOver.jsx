@@ -6,9 +6,17 @@ function ShareButton({ winner, reveals }) {
   const [copied, setCopied] = useState(false)
 
   const handleShare = async () => {
-    const outcome = winner === 'villagers' ? 'The Village Triumphs! 🌅' : 'The Shapeshifter Wins! 🐺'
-    const traitor = reveals.find(r => r.role === 'shapeshifter')
-    const traitorLine = traitor ? `The Shapeshifter was ${traitor.characterName} (${traitor.playerName}).` : ''
+    const loyalAIReveal = reveals.find(r => r.isAI && !r.isTraitor)
+    const loyalAIVotedOut = winner === 'shapeshifter' && !!loyalAIReveal
+    const outcome = winner === 'villagers'
+      ? 'The Village Triumphs! 🌅'
+      : loyalAIVotedOut
+      ? 'We betrayed our ally! 🤝'
+      : 'The Shapeshifter Wins! 🐺'
+    const traitor = reveals.find(r => r.isTraitor ?? r.role === 'shapeshifter')
+    const traitorLine = loyalAIReveal
+      ? `The AI (${loyalAIReveal.characterName}) was loyal — on the village's side all along!`
+      : traitor ? `The Shapeshifter was ${traitor.characterName} (${traitor.playerName}).` : ''
     const summary = `🔥 Fireside: Betrayal\n${outcome}\n${traitorLine}\nPlay at thornwood.app`
 
     if (navigator.share) {
@@ -306,13 +314,24 @@ export default function GameOver() {
 
   const villagersWon = winner === 'villagers'
   const tannerWon = winner === 'tanner'
+  // §12.3.10 Random Alignment: detect loyal AI from reveals
+  const loyalAI = reveals.find(r => r.isAI && !r.isTraitor)
+  const loyalAIVotedOut = winner === 'shapeshifter' && !!loyalAI
 
-  const heroEmoji = villagersWon ? '🌅' : tannerWon ? '🪓' : '🐺'
-  const heroTitle = villagersWon ? 'The Village Triumphs' : tannerWon ? 'The Tanner\'s Gambit' : 'The Shapeshifter Wins'
+  const heroEmoji = villagersWon ? '🌅' : tannerWon ? '🪓' : loyalAIVotedOut ? '🤝' : '🐺'
+  const heroTitle = villagersWon
+    ? 'The Village Triumphs'
+    : tannerWon
+    ? 'The Tanner\'s Gambit'
+    : loyalAIVotedOut
+    ? 'You Betrayed Your Ally'
+    : 'The Shapeshifter Wins'
   const heroSubtitle = villagersWon
     ? 'The darkness is lifted from Thornwood.'
     : tannerWon
     ? 'The Tanner played the village like a fiddle — voted out on purpose.'
+    : loyalAIVotedOut
+    ? `The village voted out ${loyalAI.characterName} — who was on your side the whole time.`
     : 'Thornwood falls to shadow and deception.'
   const heroColor = villagersWon ? 'var(--success)' : tannerWon ? 'var(--text-muted)' : 'var(--danger)'
   const heroGradient = villagersWon
@@ -361,13 +380,18 @@ export default function GameOver() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {reveals.map((r) => {
                 const isMe = r.characterName === myCharacterName
-                const isTraitor = r.role === 'shapeshifter'
+                const isTraitor = r.isTraitor ?? (r.role === 'shapeshifter')
+                const isLoyalAIChar = r.isAI && !r.isTraitor
+                const cardBorder = isTraitor ? 'var(--danger)'
+                  : isLoyalAIChar ? 'var(--success)'
+                  : isMe ? 'var(--border-accent)'
+                  : 'var(--border)'
                 return (
                   <div
                     key={r.characterName}
                     className="card fade-in"
                     style={{
-                      border: `1px solid ${isTraitor ? 'var(--danger)' : isMe ? 'var(--border-accent)' : 'var(--border)'}`,
+                      border: `1px solid ${cardBorder}`,
                       padding: '12px 16px',
                     }}
                   >
@@ -381,22 +405,23 @@ export default function GameOver() {
                             style={{
                               fontWeight: 600,
                               fontSize: '0.9375rem',
-                              color: isTraitor ? 'var(--danger)' : 'var(--text)',
+                              color: isTraitor ? 'var(--danger)' : isLoyalAIChar ? 'var(--success)' : 'var(--text)',
                             }}
                           >
                             {r.characterName}
                           </div>
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                             {r.playerName}
+                            {isLoyalAIChar && ' — was on your side'}
                           </div>
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
                         <span
-                          className={`badge ${isTraitor ? 'badge-danger' : 'badge-muted'}`}
+                          className={`badge ${isTraitor ? 'badge-danger' : isLoyalAIChar ? 'badge-success' : 'badge-muted'}`}
                           style={{ fontSize: '0.625rem' }}
                         >
-                          {r.role ? r.role.charAt(0).toUpperCase() + r.role.slice(1) : '?'}
+                          {isLoyalAIChar ? 'Loyal AI' : r.role ? r.role.charAt(0).toUpperCase() + r.role.slice(1) : '?'}
                         </span>
                         {isMe && (
                           <div

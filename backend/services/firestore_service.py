@@ -43,8 +43,10 @@ class FirestoreService:
 
     # ── Game CRUD ─────────────────────────────────────────────────────────────
 
-    async def create_game(self, host_player_id: str, difficulty: str = "normal") -> GameState:
-        game = GameState(host_player_id=host_player_id, difficulty=difficulty)
+    async def create_game(
+        self, host_player_id: str, difficulty: str = "normal", random_alignment: bool = False
+    ) -> GameState:
+        game = GameState(host_player_id=host_player_id, difficulty=difficulty, random_alignment=random_alignment)
         data = game.model_dump()
         data["created_at"] = data["created_at"].isoformat()
         data["session"]["started_at"] = None

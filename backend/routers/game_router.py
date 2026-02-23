@@ -40,6 +40,7 @@ async def create_game(body: CreateGameRequest):
     game = await fs.create_game(
         host_player_id=host_player_id,
         difficulty=body.difficulty.value,
+        random_alignment=body.random_alignment,
     )
     await fs.add_player(game.id, host_player_id, body.host_name)
     logger.info(f"Game {game.id} created by host {host_player_id} ({body.host_name})")

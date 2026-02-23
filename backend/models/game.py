@@ -89,6 +89,7 @@ class AICharacter(BaseModel):
     personality_hook: str = ""   # Stored directly for API response consistency
     suspicion_level: float = 0.5  # 0.0 = invisible, 1.0 = obvious
     voted_for: Optional[str] = None  # AI's vote during DAY_VOTE phase
+    is_traitor: bool = True      # False in random-alignment mode when AI drew a village role
 
 
 class GameSession(BaseModel):
@@ -108,6 +109,7 @@ class GameState(BaseModel):
     generated_characters: List[Dict[str, Any]] = []  # Full cast data: name, intro, personality_hook
     ai_character: Optional[AICharacter] = None
     story_context: str = ""  # Running narrative context for the Narrator Agent
+    random_alignment: bool = False  # §12.3.10: AI may draw a village role instead of shapeshifter
     session: GameSession = Field(default_factory=GameSession)
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -148,6 +150,7 @@ class WSMessage(BaseModel):
 class CreateGameRequest(BaseModel):
     difficulty: Difficulty = Difficulty.NORMAL
     host_name: str = "Host"
+    random_alignment: bool = False  # §12.3.10: AI may draw any role (including village)
 
 
 class CreateGameResponse(BaseModel):
