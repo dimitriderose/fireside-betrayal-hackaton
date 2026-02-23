@@ -1,34 +1,48 @@
 import { createContext, useContext, useReducer } from 'react'
 
-const initialState = {
-  playerId: sessionStorage.getItem('playerId') ?? null,
-  playerName: sessionStorage.getItem('playerName') ?? null,
-  gameId: sessionStorage.getItem('gameId') ?? null,
-  characterName: null,
-  role: null,           // villager | seer | healer | hunter | drunk | shapeshifter
-  abilities: [],
-  isHost: sessionStorage.getItem('isHost') === 'true',
-  phase: 'setup',       // setup | night | day_discussion | day_vote | elimination | game_over
-  round: 0,
-  difficulty: 'normal',
-  players: [],          // [{ id, characterName, alive, connected, ready }]
-  aiCharacter: null,    // { name: string, alive: boolean } | null
-  votes: {},            // { characterName: count } — vote tally from backend
-  voteMap: {},          // { characterName: votedFor | null } — who voted for whom
-  myVote: null,         // character name this player voted for (null = not voted yet)
-  storyLog: [],         // [{ id, speaker, text, source, phase, round, timestamp }]
-  winner: null,         // 'villagers' | 'shapeshifter'
-  reveals: [],          // [{ characterName, playerName, role }]
-  strategyLog: [],      // [{ round: int, events: [{ type, actor, target, data, visible }] }]
-  connected: false,
-  isEliminated: false,   // true when the local player's character has been eliminated
-  nightActionSubmitted: false, // true after seer/healer submits night action
-  hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
-  clueSent: false,             // true after eliminated player submits spectator clue this round
-  inPersonMode: false,         // §12.3.16: camera counts raised hands during vote
-  highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
-  error: null,
+const SESSION_KEYS = ['playerId', 'playerName', 'gameId', 'isHost']
+
+function safeGet(key) {
+  try { return sessionStorage.getItem(key) } catch { return null }
 }
+
+function clearSession() {
+  try { SESSION_KEYS.forEach(k => sessionStorage.removeItem(k)) } catch { /* ignore */ }
+}
+
+function createInitialState() {
+  return {
+    playerId: safeGet('playerId'),
+    playerName: safeGet('playerName'),
+    gameId: safeGet('gameId'),
+    characterName: null,
+    role: null,           // villager | seer | healer | hunter | drunk | bodyguard | tanner | shapeshifter
+    abilities: [],
+    isHost: safeGet('isHost') === 'true',
+    phase: 'setup',       // setup | night | day_discussion | day_vote | elimination | game_over
+    round: 0,
+    difficulty: 'normal',
+    players: [],          // [{ id, characterName, alive, connected, ready }]
+    aiCharacter: null,    // { name: string, alive: boolean } | null
+    votes: {},            // { characterName: count } — vote tally from backend
+    voteMap: {},          // { characterName: votedFor | null } — who voted for whom
+    myVote: null,         // character name this player voted for (null = not voted yet)
+    storyLog: [],         // [{ id, speaker, text, source, phase, round, timestamp }]
+    winner: null,         // 'villagers' | 'shapeshifter'
+    reveals: [],          // [{ characterName, playerName, role }]
+    strategyLog: [],      // [{ round: int, events: [{ type, actor, target, data, visible }] }]
+    connected: false,
+    isEliminated: false,   // true when the local player's character has been eliminated
+    nightActionSubmitted: false, // true after seer/healer submits night action
+    hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
+    clueSent: false,             // true after eliminated player submits spectator clue this round
+    inPersonMode: false,         // §12.3.16: camera counts raised hands during vote
+    highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
+    error: null,
+  }
+}
+
+const initialState = createInitialState()
 
 function gameReducer(state, action) {
   switch (action.type) {
@@ -128,12 +142,13 @@ function gameReducer(state, action) {
         myVote: null,
       }
     case 'GAME_OVER': {
-      sessionStorage.removeItem('playerId')
-      sessionStorage.removeItem('playerName')
-      sessionStorage.removeItem('gameId')
-      sessionStorage.removeItem('isHost')
+      clearSession()
       return {
         ...state,
+        playerId: null,
+        playerName: null,
+        gameId: null,
+        isHost: false,
         winner: action.winner,
         reveals: action.reveals ?? [],
         strategyLog: action.strategyLog ?? [],
@@ -154,18 +169,10 @@ function gameReducer(state, action) {
       return { ...state, connected: action.connected }
     case 'SET_ERROR':
       return { ...state, error: action.error }
-    case 'RESET':
-      sessionStorage.removeItem('playerId')
-      sessionStorage.removeItem('playerName')
-      sessionStorage.removeItem('gameId')
-      sessionStorage.removeItem('isHost')
-      return {
-        ...initialState,
-        playerId: null,
-        playerName: null,
-        gameId: null,
-        isHost: false,
-      }
+    case 'RESET': {
+      clearSession()
+      return createInitialState()
+    }
     default:
       return state
   }
