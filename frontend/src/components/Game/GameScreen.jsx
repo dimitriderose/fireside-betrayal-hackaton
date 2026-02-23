@@ -56,7 +56,7 @@ const SOURCE_STYLE = {
 
 // ── Sub-components ──────────────────────────────────────────────────────────────
 
-function LobbyPanel({ gameId, playerCount, isHost, onStart, startLoading, startError }) {
+function LobbyPanel({ gameId, playerCount, lobbySummary, isHost, onStart, startLoading, startError }) {
   const canStart = playerCount >= 2
 
   return (
@@ -138,6 +138,11 @@ function LobbyPanel({ gameId, playerCount, isHost, onStart, startLoading, startE
             </div>
           ))}
         </div>
+        {lobbySummary && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
+            {lobbySummary}
+          </p>
+        )}
       </div>
 
       {/* Start / Wait */}
@@ -260,11 +265,10 @@ function StoryLogPanel({ logRef, storyLog, myCharacterName }) {
 }
 
 
-function CharacterGridPanel({ players, aiCharacter, myCharacterName }) {
-  const all = [
-    ...players.map(p => ({ name: p.characterName, alive: p.alive, isAI: false })),
-    ...(aiCharacter ? [{ name: aiCharacter.name, alive: aiCharacter.alive, isAI: true }] : []),
-  ].filter(c => c.name)
+function CharacterGridPanel({ players, myCharacterName }) {
+  const all = players
+    .map(p => ({ name: p.characterName, alive: p.alive }))
+    .filter(c => c.name)
 
   if (all.length === 0) return null
 
@@ -686,6 +690,7 @@ export default function GameScreen() {
   const [startLoading, setStartLoading] = useState(false)
   const [startError, setStartError] = useState(null)
   const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
+  const [lobbySummary, setLobbySummary] = useState(null)
   const [sceneImage, setSceneImage] = useState(null)
   const [dayHintDismissed, setDayHintDismissed] = useState(
     () => localStorage.getItem('dayHintSeen') === '1'
@@ -714,6 +719,7 @@ export default function GameScreen() {
         if (res.ok) {
           const data = await res.json()
           setLobbyPlayerCount(data.player_count ?? 1)
+          setLobbySummary(data.lobby_summary ?? null)
         }
       } catch { /* ignore */ }
     }
@@ -901,6 +907,7 @@ export default function GameScreen() {
           <LobbyPanel
             gameId={gameId}
             playerCount={lobbyPlayerCount}
+            lobbySummary={lobbySummary}
             isHost={isHost}
             onStart={handleStartGame}
             startLoading={startLoading}
@@ -987,7 +994,6 @@ export default function GameScreen() {
         {showCharacterGrid && (
           <CharacterGridPanel
             players={players}
-            aiCharacter={aiCharacter}
             myCharacterName={characterName}
           />
         )}
