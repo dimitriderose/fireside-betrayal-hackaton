@@ -160,16 +160,34 @@ class DifficultyAdapter:
     def __init__(self, base_difficulty: str):
         self.base_difficulty = base_difficulty
         self.signals: List[str] = []
+        self._locked_fragment: str = ""   # snapshotted at round start
+        self._fragment_locked: bool = False
 
     def record_signal(self, signal: str) -> None:
         """Record a player performance signal."""
         self.signals.append(signal)
 
+    def lock_round_fragment(self) -> None:
+        """
+        Snapshot the current adjustment fragment for the upcoming round.
+        Call at each round boundary (after vote signals are recorded) so the
+        fragment stays stable for all agent calls within that round.
+        """
+        self._locked_fragment = self._compute_fragment()
+        self._fragment_locked = True
+
     def get_adjusted_prompt_fragment(self) -> str:
         """
-        Return an ADAPTIVE ADJUSTMENT prompt fragment based on observed skill.
-        Returns empty string if no adjustment is warranted.
+        Return the round-locked ADAPTIVE ADJUSTMENT fragment.
+        Returns the live-computed value if no snapshot has been taken yet
+        (e.g. first round before any votes).
         """
+        if self._fragment_locked:
+            return self._locked_fragment
+        return self._compute_fragment()
+
+    def _compute_fragment(self) -> str:
+        """Compute the adjustment fragment from current signals."""
         positive = {"correct_accusation", "caught_lie", "close_vote_against_ai"}
         negative = {"wrong_elimination", "ai_unquestioned", "unanimous_wrong_vote"}
 
