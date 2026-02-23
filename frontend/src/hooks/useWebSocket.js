@@ -20,8 +20,15 @@ export function useWebSocket(gameId, playerId) {
     // incoming messages from the server are sent as flat objects.
     switch (msg.type) {
       case 'connected':
-        // msg: { type, playerId, characterName, gameState: { phase, round, players, aiCharacter } }
+        // msg: { type, playerId, characterName, role, alive, gameState: { phase, round, players, aiCharacter } }
         dispatch({ type: 'SET_PLAYER', playerId: msg.playerId, characterName: msg.characterName })
+        if (msg.role) {
+          dispatch({ type: 'SET_ROLE', characterName: msg.characterName, role: msg.role })
+        }
+        if (msg.alive === false) {
+          // Re-derive isEliminated by dispatching a synthetic elimination for ourselves
+          dispatch({ type: 'ELIMINATION', character: msg.characterName })
+        }
         if (msg.gameState) {
           if (msg.gameState.phase) {
             dispatch({ type: 'PHASE_CHANGE', phase: msg.gameState.phase, round: msg.gameState.round ?? 0 })

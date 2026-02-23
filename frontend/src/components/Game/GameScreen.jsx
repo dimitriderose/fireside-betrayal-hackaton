@@ -138,9 +138,14 @@ function LobbyPanel({ gameId, playerCount, lobbySummary, isHost, onStart, startL
             </div>
           ))}
         </div>
-        {lobbySummary && (
+        {lobbySummary?.summary && (
           <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 8 }}>
-            {lobbySummary}
+            {lobbySummary.summary}
+          </p>
+        )}
+        {lobbySummary?.difficulty_notice && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--warning, #f59e0b)', marginTop: 4 }}>
+            {lobbySummary.difficulty_notice}
           </p>
         )}
       </div>
@@ -337,6 +342,7 @@ function NightActionPanel({ role, candidates, onAction }) {
             <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
               {role === 'seer' && 'Investigate one character — are they the Shapeshifter?'}
               {role === 'healer' && 'Protect one character from elimination tonight.'}
+              {role === 'bodyguard' && 'Protect one character. If the Shapeshifter targets them, you die instead.'}
             </div>
           )}
         </div>

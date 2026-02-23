@@ -115,10 +115,12 @@ export default function JoinLobby() {
       }
       dispatch({ type: 'SET_PLAYER', playerId, playerName: trimmedName, isHost })
       dispatch({ type: 'SET_GAME', gameId, difficulty })
-      sessionStorage.setItem('playerId', playerId)
-      sessionStorage.setItem('playerName', trimmedName)
-      sessionStorage.setItem('gameId', gameId)
-      sessionStorage.setItem('isHost', String(isHost))
+      try {
+        sessionStorage.setItem('playerId', playerId)
+        sessionStorage.setItem('playerName', trimmedName)
+        sessionStorage.setItem('gameId', gameId)
+        sessionStorage.setItem('isHost', String(isHost))
+      } catch { /* sessionStorage unavailable (e.g. cross-origin iframe) */ }
       navigate(`/game/${gameId}`)
     } catch (err) {
       setError(err.message)

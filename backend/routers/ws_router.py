@@ -524,6 +524,8 @@ async def websocket_endpoint(
         "type": "connected",
         "playerId": playerId,
         "characterName": player.character_name,
+        "role": player.role.value if player.role else None,
+        "alive": player.alive,
         "gameState": {
             "phase": game.phase.value,
             "round": game.round,
