@@ -479,6 +479,45 @@ export default function GameOver() {
         </p>
       </div>
 
+      {/* AI Teaser — pull-quote from the timeline to drive scroll-through */}
+      {(() => {
+        const allEvents = strategyLog.flatMap(r => r.events ?? [])
+        const firstSecret = allEvents.find(e => !e.visible && EVENT_RENDERERS[e.type])
+        const fallbackHighlight = highlightReel?.[0]
+        const teaserText = firstSecret
+          ? EVENT_RENDERERS[firstSecret.type](firstSecret).text
+          : fallbackHighlight?.description ?? null
+        if (!teaserText) return null
+        return (
+          <div
+            style={{
+              borderLeft: '3px solid var(--danger)',
+              margin: '0 auto',
+              maxWidth: 480,
+              padding: '12px 20px',
+              background: 'rgba(220,38,38,0.06)',
+            }}
+          >
+            <div style={{ fontSize: '0.625rem', color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 6 }}>
+              🔴 What the village didn't see
+            </div>
+            <p style={{ fontStyle: 'italic', fontSize: '0.875rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+              "{teaserText}"
+            </p>
+            <a
+              href="#timeline"
+              onClick={e => {
+                e.preventDefault()
+                document.getElementById('timeline')?.scrollIntoView({ behavior: 'smooth' })
+              }}
+              style={{ display: 'inline-block', marginTop: 10, fontSize: '0.75rem', color: 'var(--accent)', textDecoration: 'none' }}
+            >
+              ↓ See what the AI was really thinking
+            </a>
+          </div>
+        )
+      })()}
+
       <div className="container" style={{ paddingBottom: 40 }}>
 
         {/* Character Reveals */}
@@ -561,7 +600,7 @@ export default function GameOver() {
 
         {/* Post-game interactive timeline (§12.3.13) */}
         {strategyLog.length > 0 && (
-          <div style={{ marginBottom: 32 }}>
+          <div id="timeline" style={{ marginBottom: 32 }}>
             <h3
               style={{
                 marginBottom: 4,
