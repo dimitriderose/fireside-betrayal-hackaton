@@ -1,3 +1,4 @@
+import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 const STEPS = [
@@ -64,6 +65,33 @@ const SHAPESHIFTER = {
 
 export default function Landing() {
   const navigate = useNavigate()
+  const [narPlaying, setNarPlaying] = useState(false)
+  const [narLoading, setNarLoading] = useState(false)
+  const narAudioRef = useRef(null)
+
+  const handleNarratorPreview = async () => {
+    if (narPlaying) {
+      narAudioRef.current?.pause()
+      narAudioRef.current = null
+      setNarPlaying(false)
+      return
+    }
+    setNarLoading(true)
+    try {
+      const res = await fetch('/api/narrator/preview/classic')
+      if (!res.ok) return
+      const { audio_b64 } = await res.json()
+      const audio = new Audio(`data:audio/wav;base64,${audio_b64}`)
+      narAudioRef.current = audio
+      setNarPlaying(true)
+      audio.play().catch(() => {})
+      audio.onended = () => { setNarPlaying(false); narAudioRef.current = null }
+    } catch {
+      // preview unavailable
+    } finally {
+      setNarLoading(false)
+    }
+  }
 
   return (
     <div className="page">
@@ -109,6 +137,15 @@ export default function Landing() {
         >
           The voice-first social deduction game where the narrator is also your enemy.
         </p>
+
+        <button
+          onClick={handleNarratorPreview}
+          disabled={narLoading}
+          className="btn btn-ghost btn-sm"
+          style={{ marginBottom: 24, fontSize: '0.8125rem' }}
+        >
+          {narLoading ? '...' : narPlaying ? '⏹ Stop' : '▶ Hear the narrator'}
+        </button>
 
         <div
           className="container"

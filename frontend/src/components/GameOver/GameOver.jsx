@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useNavigate, Navigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 
 function ShareButton({ winner, reveals }) {
@@ -411,11 +411,41 @@ function HighlightReel({ segments }) {
 
 export default function GameOver() {
   const navigate = useNavigate()
+  const { gameId: routeGameId } = useParams()
   const { state, dispatch } = useGame()
   const { winner, reveals, strategyLog, highlightReel, characterName: myCharacterName } = state
+  const [loading, setLoading] = useState(false)
 
-  // Guard against direct URL navigation or page refresh (no game state in context)
-  if (!winner) return <Navigate to="/" replace />
+  // REST fallback: if no winner in context (direct nav / refresh), fetch from API
+  useEffect(() => {
+    if (winner || loading) return
+    if (!routeGameId) { navigate('/', { replace: true }); return }
+    setLoading(true)
+    fetch(`/api/games/${routeGameId}/result`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.winner) {
+          dispatch({
+            type: 'GAME_OVER',
+            winner: data.winner,
+            reveals: data.reveals ?? [],
+            strategyLog: data.timeline ?? [],
+          })
+        } else {
+          navigate('/', { replace: true })
+        }
+      })
+      .catch(() => navigate('/', { replace: true }))
+      .finally(() => setLoading(false))
+  }, [winner, routeGameId, loading, dispatch, navigate])
+
+  if (!winner) {
+    return (
+      <div className="page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Loading game results…</p>
+      </div>
+    )
+  }
 
   const handlePlayAgain = () => {
     dispatch({ type: 'RESET' })

@@ -1544,6 +1544,7 @@ async def _end_game(
     game_id: str, winner: str, reason: str, fs
 ) -> None:
     await fs.set_status(game_id, GameStatus.FINISHED.value)
+    await fs.update_game(game_id, {"winner": winner})
     all_players = await fs.get_all_players(game_id)
     ai_char = await fs.get_ai_character(game_id)
 

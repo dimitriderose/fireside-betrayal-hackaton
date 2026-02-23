@@ -119,6 +119,7 @@ class GameState(BaseModel):
     random_alignment: bool = False  # §12.3.10: AI may draw a village role instead of shapeshifter
     narrator_preset: NarratorPreset = NarratorPreset.CLASSIC  # §12.3.17
     in_person_mode: bool = False  # §12.3.16: camera counts raised hands during vote
+    winner: Optional[str] = None  # 'villagers' | 'shapeshifter' | 'tanner' — set on game end
     session: GameSession = Field(default_factory=GameSession)
     created_at: datetime = Field(default_factory=_utcnow)
 

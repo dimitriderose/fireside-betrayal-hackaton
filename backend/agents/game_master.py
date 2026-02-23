@@ -576,10 +576,15 @@ class GameMaster:
         else:
             difficulty_notice = ""
 
+        min_player_warning = ""
+        if n_human < 4:
+            min_player_warning = "Games work best with 4+ players. You can still start with fewer."
+
         return {
             "summary": summary,
             "effective_difficulty": effective_difficulty,
             "difficulty_notice": difficulty_notice,
+            "min_player_warning": min_player_warning,
         }
 
     # ── Role assignment (delegated to this module as a prep utility) ──────────

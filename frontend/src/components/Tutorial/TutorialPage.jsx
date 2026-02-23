@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 // ── Scripted mock data ────────────────────────────────────────────────────────
@@ -102,11 +102,39 @@ function HighlightPrompt({ text }) {
 
 function StepRoleCard({ onComplete }) {
   const [revealed, setRevealed] = useState(false)
+  const [narPlaying, setNarPlaying] = useState(false)
+  const [narLoading, setNarLoading] = useState(false)
+  const narAudioRef = useRef(null)
 
   const handleTap = () => {
     if (!revealed) {
       setRevealed(true)
       setTimeout(onComplete, 1200)
+    }
+  }
+
+  const handleNarratorPreview = async (e) => {
+    e.stopPropagation()
+    if (narPlaying) {
+      narAudioRef.current?.pause()
+      narAudioRef.current = null
+      setNarPlaying(false)
+      return
+    }
+    setNarLoading(true)
+    try {
+      const res = await fetch('/api/narrator/preview/classic')
+      if (!res.ok) return
+      const { audio_b64 } = await res.json()
+      const audio = new Audio(`data:audio/wav;base64,${audio_b64}`)
+      narAudioRef.current = audio
+      setNarPlaying(true)
+      audio.play().catch(() => {})
+      audio.onended = () => { setNarPlaying(false); narAudioRef.current = null }
+    } catch {
+      // preview unavailable
+    } finally {
+      setNarLoading(false)
     }
   }
 
@@ -141,6 +169,14 @@ function StepRoleCard({ onComplete }) {
           </div>
         )}
       </div>
+      <button
+        onClick={handleNarratorPreview}
+        disabled={narLoading}
+        className="btn btn-ghost btn-sm"
+        style={{ width: '100%', marginTop: 10, fontSize: '0.8125rem' }}
+      >
+        {narLoading ? '...' : narPlaying ? '⏹ Stop' : '▶ Hear the narrator'}
+      </button>
     </div>
   )
 }

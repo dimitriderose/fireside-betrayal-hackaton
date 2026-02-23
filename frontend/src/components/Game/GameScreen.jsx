@@ -148,6 +148,11 @@ function LobbyPanel({ gameId, playerCount, lobbySummary, isHost, onStart, startL
             {lobbySummary.difficulty_notice}
           </p>
         )}
+        {isHost && lobbySummary?.min_player_warning && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--warning, #f59e0b)', marginTop: 4 }}>
+            {lobbySummary.min_player_warning}
+          </p>
+        )}
       </div>
 
       {/* Start / Wait */}

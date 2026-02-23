@@ -7,6 +7,7 @@ Routes:
   GET  /api/games/{game_id}               — Public game state (roles hidden)
   POST /api/games/{game_id}/start         — Host starts game (triggers role assignment)
   GET  /api/games/{game_id}/events        — Event log (visible only, or all post-game)
+  GET  /api/games/{game_id}/result        — Post-game result (winner, reveals, timeline)
   GET  /api/narrator/preview/{preset}     — Short narrator audio sample for a preset
 """
 import asyncio
@@ -294,5 +295,66 @@ async def get_events(
             }
             for e in events
         ],
+    }
+
+
+@router.get("/games/{game_id}/result")
+async def get_result(game_id: str):
+    """
+    Post-game result: winner, character reveals, and timeline.
+    Only available after the game has finished.
+    Used by GameOver page when navigating directly via URL (no WS state).
+    """
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if game.status != GameStatus.FINISHED:
+        raise HTTPException(status_code=403, detail="Game has not finished yet")
+
+    all_players = await fs.get_all_players(game_id)
+    ai_char = game.ai_character
+
+    reveals = [
+        {
+            "characterName": p.character_name,
+            "playerName": p.name,
+            "role": p.role.value if p.role else "villager",
+            "alive": p.alive,
+        }
+        for p in all_players
+    ]
+    if ai_char:
+        ai_reveal_role = "shapeshifter" if getattr(ai_char, "is_traitor", True) else ai_char.role.value
+        reveals.append({
+            "characterName": ai_char.name,
+            "playerName": "AI",
+            "role": ai_reveal_role,
+            "alive": ai_char.alive,
+            "isAI": True,
+            "isTraitor": getattr(ai_char, "is_traitor", True),
+        })
+
+    # Build timeline from all events (including hidden)
+    all_events = await fs.get_events(game_id, visible_only=False)
+    by_round: Dict[int, list] = {}
+    for ev in all_events:
+        r = ev.round or 0
+        if r == 0:
+            continue
+        by_round.setdefault(r, []).append({
+            "id": ev.id,
+            "type": ev.type,
+            "actor": ev.actor,
+            "target": ev.target,
+            "data": ev.data or {},
+            "visible": ev.visible_in_game,
+        })
+    timeline = [{"round": r, "events": evs} for r, evs in sorted(by_round.items())]
+
+    return {
+        "winner": game.winner,
+        "reveals": reveals,
+        "timeline": timeline,
     }
 
