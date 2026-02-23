@@ -942,7 +942,7 @@ export default function GameScreen() {
       </div>
 
       {/* ── Role strip (sticky bottom drawer, §12.3.6) ── */}
-      {role && phase !== 'setup' && (
+      {role && phase !== 'setup' && phase !== 'game_over' && (
         <RoleStrip role={role} characterName={characterName} />
       )}
     </div>
