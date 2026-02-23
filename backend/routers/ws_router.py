@@ -364,9 +364,8 @@ class ConnectionManager:
         self, game_id: str, phase: Phase, round: Optional[int] = None
     ) -> None:
         if round is None:
-            from services import firestore_service as _fs
-            game = await _fs.get_game(game_id)
-            round = game.round if game else 0
+            _game = await get_firestore_service().get_game(game_id)
+            round = _game.round if _game else 0
         await self.broadcast(game_id, {
             "type": "phase_change",
             "phase": phase.value,
