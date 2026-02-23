@@ -120,7 +120,7 @@ function LobbyPanel({ gameId, playerCount, isHost, onStart, startLoading, startE
                   height: 36,
                   borderRadius: '50%',
                   background: i < playerCount ? 'var(--accent-glow)' : 'var(--bg-elevated)',
-                  border: `1px solid ${i === 0 ? 'var(--border-accent)' : i < playerCount ? 'var(--border-accent)' : 'var(--border)'}`,
+                  border: `1px solid ${i < playerCount ? 'var(--border-accent)' : 'var(--border)'}`,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -131,7 +131,7 @@ function LobbyPanel({ gameId, playerCount, isHost, onStart, startLoading, startE
                 {i === 0 ? '👑' : i < playerCount ? '●' : '○'}
               </div>
               {i === 0 && (
-                <span style={{ fontSize: '0.5rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                <span style={{ fontSize: '0.6875rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                   host
                 </span>
               )}
