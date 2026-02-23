@@ -189,6 +189,14 @@ async def get_events(
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
+    # Enforce post-game-only access for hidden events — prevents mid-game
+    # callers from reading night_target/kill events that reveal AI alignment.
+    if not visible_only and game.status != GameStatus.FINISHED:
+        raise HTTPException(
+            status_code=403,
+            detail="Full event log is only available after the game has ended.",
+        )
+
     events = await fs.get_events(game_id, visible_only=visible_only)
     return {
         "game_id": game_id,

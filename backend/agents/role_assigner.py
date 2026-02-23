@@ -372,10 +372,13 @@ class RoleAssigner:
         ai_role_label = "Shapeshifter" if ai_is_traitor else f"{ai_drawn_role} (Loyal)"
         logger.info(
             "[%s] Roles assigned to %d humans (difficulty=%s, effective=%s). "
-            "Roles: %s. AI character: %s (%s).",
+            "Roles: %s. AI character: %s.",
             game_id, n_human, game.difficulty.value, effective_difficulty,
-            [a["role"] for a in assignments], ai_char.name, ai_role_label,
+            [a["role"] for a in assignments], ai_char.name,
         )
+        # AI alignment logged at DEBUG only — avoids leaking is_traitor to
+        # server consoles that may be visible during live demos.
+        logger.debug("[%s] AI alignment: %s", game_id, ai_role_label)
 
         return {
             "assignments": assignments,
