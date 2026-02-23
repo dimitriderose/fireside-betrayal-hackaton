@@ -124,15 +124,107 @@ def _format_state(ctx: Dict[str, Any]) -> str:
     )
 
 
-def _build_system(ai_char, diff_key: str, game_state: str) -> str:
+def _build_system(ai_char, diff_key: str, game_state: str, game_id: Optional[str] = None) -> str:
     info = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])
-    return _BASE_SYSTEM.format(
+    base = _BASE_SYSTEM.format(
         name=ai_char.name if ai_char else "The Shapeshifter",
         intro=ai_char.intro if ai_char else "",
         backstory=(ai_char.backstory or ai_char.intro) if ai_char else "A mysterious villager.",
         behavior=info["behavior"],
         game_state=game_state,
     )
+    # Append adaptive difficulty fragment if available
+    if game_id:
+        adapter = _difficulty_adapters.get(game_id)
+        if adapter:
+            fragment = adapter.get_adjusted_prompt_fragment()
+            if fragment:
+                base += f"\n\n{fragment}"
+    return base
+
+
+# ── Dynamic difficulty adapter (§12.3.12) ─────────────────────────────────────
+
+class DifficultyAdapter:
+    """
+    Mid-game difficulty adjustment based on observed player performance signals.
+    One instance per active game; prompt fragment is appended to the traitor
+    system prompt at the start of each new round.
+
+    Positive signals (players performing well):
+      correct_accusation, caught_lie, close_vote_against_ai
+    Negative signals (players struggling):
+      wrong_elimination, ai_unquestioned, unanimous_wrong_vote
+    """
+
+    def __init__(self, base_difficulty: str):
+        self.base_difficulty = base_difficulty
+        self.signals: List[str] = []
+        self._locked_fragment: str = ""   # snapshotted at round start
+        self._fragment_locked: bool = False
+
+    def record_signal(self, signal: str) -> None:
+        """Record a player performance signal."""
+        self.signals.append(signal)
+
+    def lock_round_fragment(self) -> None:
+        """
+        Snapshot the current adjustment fragment for the upcoming round.
+        Call at each round boundary (after vote signals are recorded) so the
+        fragment stays stable for all agent calls within that round.
+        """
+        self._locked_fragment = self._compute_fragment()
+        self._fragment_locked = True
+
+    def get_adjusted_prompt_fragment(self) -> str:
+        """
+        Return the round-locked ADAPTIVE ADJUSTMENT fragment.
+        Returns the live-computed value if no snapshot has been taken yet
+        (e.g. first round before any votes).
+        """
+        if self._fragment_locked:
+            return self._locked_fragment
+        return self._compute_fragment()
+
+    def _compute_fragment(self) -> str:
+        """Compute the adjustment fragment from current signals."""
+        positive = {"correct_accusation", "caught_lie", "close_vote_against_ai"}
+        negative = {"wrong_elimination", "ai_unquestioned", "unanimous_wrong_vote"}
+
+        pos_count = sum(1 for s in self.signals if s in positive)
+        neg_count = sum(1 for s in self.signals if s in negative)
+
+        if pos_count > neg_count + 2:
+            # Players are skilled — escalate deception
+            return (
+                "ADAPTIVE ADJUSTMENT: Players are sharp. Increase deception complexity. "
+                "Use multi-round setups. Plant false evidence early to use later. "
+                "Form a voting alliance with one player to create trust, then betray."
+            )
+        elif neg_count > pos_count + 2:
+            # Players are struggling — ease off
+            return (
+                "ADAPTIVE ADJUSTMENT: Players are struggling. Make one deliberate mistake. "
+                "Hesitate slightly when lying. Give players a fair chance to catch you. "
+                "Do NOT throw the game — just reduce your deception by one tier."
+            )
+        return ""  # No adjustment needed
+
+
+# Per-game difficulty adapters — keyed by game_id.
+_difficulty_adapters: Dict[str, "DifficultyAdapter"] = {}
+
+
+def get_difficulty_adapter(game_id: str, base_difficulty: str) -> DifficultyAdapter:
+    """Return (or create) the DifficultyAdapter for this game."""
+    if game_id not in _difficulty_adapters:
+        _difficulty_adapters[game_id] = DifficultyAdapter(base_difficulty)
+    return _difficulty_adapters[game_id]
+
+
+def clear_difficulty_adapter(game_id: str) -> None:
+    """Remove the DifficultyAdapter when a game ends."""
+    _difficulty_adapters.pop(game_id, None)
 
 
 # Module-level Gemini client cache — created once on first use.
@@ -208,7 +300,7 @@ class TraitorAgent:
         diff_key = ctx["game"].difficulty.value
         temperature = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])["temperature"]
 
-        system = _build_system(ai, diff_key, _format_state(ctx))
+        system = _build_system(ai, diff_key, _format_state(ctx), game_id)
         prompt = (
             f"The following occurred during village discussion:\n{context}\n\n"
             f"Respond as {ai.name} in 1-3 sentences, staying in character."
@@ -241,7 +333,7 @@ class TraitorAgent:
         temperature = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])["temperature"]
 
         alive_names = [p.character_name for p in alive_players]
-        system = _build_system(ai, diff_key, _format_state(ctx))
+        system = _build_system(ai, diff_key, _format_state(ctx), game_id)
         prompt = (
             f"NIGHT PHASE — you must choose one villager to eliminate.\n"
             f"Alive villagers (potential targets): {', '.join(alive_names)}\n\n"
@@ -297,7 +389,7 @@ class TraitorAgent:
         temperature = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])["temperature"]
 
         alive_names = [p.character_name for p in alive_players]
-        system = _build_system(ai, diff_key, _format_state(ctx))
+        system = _build_system(ai, diff_key, _format_state(ctx), game_id)
         prompt = (
             f"DAY VOTE PHASE — choose one villager to vote to eliminate.\n"
             f"Options: {', '.join(alive_names)}\n\n"

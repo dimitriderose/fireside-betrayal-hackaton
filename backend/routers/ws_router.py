@@ -801,6 +801,36 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             tally=tally_result["tally"],
         )
 
+        # Record dynamic difficulty signals based on vote outcome (§12.3.12)
+        try:
+            from agents.traitor_agent import get_difficulty_adapter
+            game_for_adapter = await fs.get_game(game_id)
+            if game_for_adapter:
+                adapter = get_difficulty_adapter(game_id, game_for_adapter.difficulty.value)
+                tally_vals = tally_result.get("tally", {})
+                if elim_result["was_traitor"]:
+                    adapter.record_signal("correct_accusation")
+                else:
+                    adapter.record_signal("wrong_elimination")
+                    # Unanimous wrong vote is especially damaging for players
+                    votes_with_value = [v for v in tally_vals.values() if v > 0]
+                    if len(votes_with_value) == 1:
+                        adapter.record_signal("unanimous_wrong_vote")
+                    ai_char_for_vote = await fs.get_ai_character(game_id)
+                    if ai_char_for_vote:
+                        ai_votes = tally_vals.get(ai_char_for_vote.name, 0)
+                        top_votes = max(tally_vals.values(), default=0)
+                        if ai_votes > 0 and top_votes - ai_votes <= 1:
+                            # AI narrowly avoided elimination
+                            adapter.record_signal("close_vote_against_ai")
+                        elif ai_votes == 0:
+                            # AI received zero votes — players not suspicious of them
+                            adapter.record_signal("ai_unquestioned")
+                # Snapshot the fragment at this round boundary for use next round
+                adapter.lock_round_fragment()
+        except Exception:
+            logger.warning("[%s] Could not record difficulty adaptation signal", game_id, exc_info=True)
+
         win = await game_master.check_win_condition(game_id)
         if win:
             await _end_game(game_id, win["winner"], win["reason"], fs)
@@ -941,6 +971,23 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
                 "isShapeshifter": is_shapeshifter,
                 "text": result_text,
             })
+
+    # Record caught_lie signal if Seer (non-drunk) correctly identified the Shapeshifter
+    try:
+        from agents.traitor_agent import get_difficulty_adapter
+        game_for_signal = await fs.get_game(game_id)
+        if game_for_signal:
+            night_events = await fs.get_events(game_id, round=game_for_signal.round)
+            for ev in night_events:
+                if (ev.type == "night_investigation"
+                        and not ev.data.get("is_drunk")
+                        and ev.data.get("result") is True):
+                    # A non-drunk Seer correctly identified the Shapeshifter
+                    adapter = get_difficulty_adapter(game_id, game_for_signal.difficulty.value)
+                    adapter.record_signal("caught_lie")
+                    break  # count at most once per round
+    except Exception:
+        logger.warning("[%s] Could not check seer result for caught_lie signal", game_id, exc_info=True)
 
     # Tell narrator what happened — it will narrate then call advance_phase
     await narrator_manager.send_phase_event(game_id, "night_resolved", {
@@ -1315,8 +1362,13 @@ async def _end_game(
         "winner": winner,
         "reason": reason,
     })
-    # Release per-game tracker and hand queue memory now that the game is over
+    # Release per-game tracker, hand queue, and difficulty adapter memory
     _trackers.pop(game_id, None)
     _hand_queues.pop(game_id, None)
+    try:
+        from agents.traitor_agent import clear_difficulty_adapter
+        clear_difficulty_adapter(game_id)
+    except Exception:
+        pass
     # Schedule narrator teardown after 30s epilogue window — non-blocking
     asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))
