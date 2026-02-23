@@ -110,25 +110,31 @@ function LobbyPanel({ gameId, playerCount, isHost, onStart, startLoading, startE
           </span>
         </div>
 
-        {/* Player dots */}
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {/* Player dots — first slot always represents the host */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           {Array.from({ length: Math.max(playerCount, 2) }).map((_, i) => (
-            <div
-              key={i}
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: '50%',
-                background: i < playerCount ? 'var(--accent-glow)' : 'var(--bg-elevated)',
-                border: `1px solid ${i < playerCount ? 'var(--border-accent)' : 'var(--border)'}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '0.75rem',
-                color: i < playerCount ? 'var(--accent)' : 'var(--text-dim)',
-              }}
-            >
-              {i < playerCount ? '●' : '○'}
+            <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: '50%',
+                  background: i < playerCount ? 'var(--accent-glow)' : 'var(--bg-elevated)',
+                  border: `1px solid ${i < playerCount ? 'var(--border-accent)' : 'var(--border)'}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '0.75rem',
+                  color: i < playerCount ? 'var(--accent)' : 'var(--text-dim)',
+                }}
+              >
+                {i === 0 ? '👑' : i < playerCount ? '●' : '○'}
+              </div>
+              {i === 0 && (
+                <span style={{ fontSize: '0.6875rem', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                  host
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -137,6 +143,17 @@ function LobbyPanel({ gameId, playerCount, isHost, onStart, startLoading, startE
       {/* Start / Wait */}
       {isHost ? (
         <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+            <span
+              className="badge badge-accent"
+              style={{ fontSize: '0.6875rem', padding: '3px 10px' }}
+            >
+              👑 You are the host
+            </span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>
+              Start when everyone's ready
+            </span>
+          </div>
           <button
             className="btn btn-primary btn-lg"
             onClick={onStart}
@@ -173,7 +190,9 @@ function LobbyPanel({ gameId, playerCount, isHost, onStart, startLoading, startE
               margin: '0 auto 12px',
             }}
           />
-          Waiting for the host to start…
+          <span>Waiting for the </span>
+          <span style={{ color: 'var(--accent)' }}>👑 host</span>
+          <span> to start…</span>
         </div>
       )}
     </div>
