@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from config import settings
 from models.game import Role, Difficulty, AICharacter, ROLE_DISTRIBUTION
 from services.firestore_service import get_firestore_service
+from agents.game_master import game_master
 
 logger = logging.getLogger(__name__)
 
@@ -275,8 +276,11 @@ class RoleAssigner:
         # ── Build human role list ──────────────────────────────────────────────
         roles: List[str] = list(ROLE_DISTRIBUTION[n_total])
 
+        # Resolve effective difficulty (may be auto-adjusted for small games per §12.3.9)
+        effective_difficulty = game_master.get_effective_difficulty(n_human, game.difficulty.value)
+
         # Apply difficulty: replace Drunk with Villager on Easy
-        if game.difficulty == Difficulty.EASY and "drunk" in roles:
+        if effective_difficulty == Difficulty.EASY.value and "drunk" in roles:
             roles[roles.index("drunk")] = "villager"
 
         # Remove the shapeshifter slot — it belongs to the AI, never a human
@@ -340,9 +344,9 @@ class RoleAssigner:
         })
 
         logger.info(
-            "[%s] Roles assigned to %d humans (difficulty=%s). "
+            "[%s] Roles assigned to %d humans (difficulty=%s, effective=%s). "
             "Roles: %s. AI character: %s (Shapeshifter).",
-            game_id, n_human, game.difficulty.value,
+            game_id, n_human, game.difficulty.value, effective_difficulty,
             [a["role"] for a in assignments], ai_char.name,
         )
 
