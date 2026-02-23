@@ -359,6 +359,9 @@ class ConnectionManager:
                 "characterIntro": a["character_intro"],
                 "description": ROLE_DESCRIPTIONS.get(a["role"], ""),
             })
+        # §12.3.14: Fire scene image for opening night
+        from agents.scene_agent import trigger_scene_image
+        asyncio.create_task(trigger_scene_image(game_id, "game_started"))
 
     async def broadcast_phase_change(
         self, game_id: str, phase: Phase, round: Optional[int] = None
@@ -371,6 +374,15 @@ class ConnectionManager:
             "phase": phase.value,
             "round": round,
         })
+        # §12.3.14: Trigger atmospheric scene image for the new phase
+        _scene_map = {
+            Phase.NIGHT: "night",
+            Phase.DAY_DISCUSSION: "day_discussion",
+            Phase.ELIMINATION: "elimination",
+        }
+        if phase in _scene_map:
+            from agents.scene_agent import trigger_scene_image
+            asyncio.create_task(trigger_scene_image(game_id, _scene_map[phase]))
 
     async def broadcast_elimination(
         self,
@@ -436,6 +448,16 @@ class ConnectionManager:
             "type": "audio",
             "data": pcm_base64,
             "sampleRate": 24000,
+        })
+
+    async def broadcast_scene_image(
+        self, game_id: str, image_b64: str, scene_key: str
+    ) -> None:
+        """Broadcast a base64-encoded PNG scene illustration (§12.3.14)."""
+        await self.broadcast(game_id, {
+            "type": "scene_image",
+            "data": image_b64,
+            "sceneKey": scene_key,
         })
 
 
@@ -1391,6 +1413,15 @@ async def _end_game(
         timeline=timeline,
     )
     logger.info(f"[{game_id}] Game over — winner: {winner}")
+
+    # §12.3.14: Atmospheric scene for game-over screen
+    _go_scene = {
+        "villagers": "game_over_villagers",
+        "shapeshifter": "game_over_shapeshifter",
+        "tanner": "game_over_tanner",
+    }
+    from agents.scene_agent import trigger_scene_image
+    asyncio.create_task(trigger_scene_image(game_id, _go_scene.get(winner, "game_over_shapeshifter")))
 
     await narrator_manager.send_phase_event(game_id, "game_over", {
         "winner": winner,

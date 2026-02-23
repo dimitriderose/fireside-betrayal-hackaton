@@ -71,6 +71,11 @@ export function useWebSocket(gameId, playerId) {
         window.dispatchEvent(new CustomEvent('narrator-audio', { detail: msg.data }))
         break
 
+      case 'scene_image':
+        // msg: { type, data: base64png, sceneKey } — §12.3.14
+        window.dispatchEvent(new CustomEvent('narrator-scene', { detail: { data: msg.data, sceneKey: msg.sceneKey } }))
+        break
+
       case 'transcript':
         // msg: { type, speaker, text, source, [phase], [round] }
         dispatch({

@@ -670,6 +670,7 @@ export default function GameScreen() {
   const [startLoading, setStartLoading] = useState(false)
   const [startError, setStartError] = useState(null)
   const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
+  const [sceneImage, setSceneImage] = useState(null)
 
   // Auto-scroll story log to bottom on new messages
   useEffect(() => {
@@ -701,6 +702,16 @@ export default function GameScreen() {
     const id = setInterval(poll, 2000)
     return () => clearInterval(id)
   }, [phase, gameId])
+
+  // Scene image: listen for narrator-scene custom events (§12.3.14)
+  useEffect(() => {
+    const handler = (e) => setSceneImage(e.detail.data)
+    window.addEventListener('narrator-scene', handler)
+    return () => window.removeEventListener('narrator-scene', handler)
+  }, [])
+
+  // Clear scene image on phase transition so stale art doesn't persist
+  useEffect(() => { setSceneImage(null) }, [phase])
 
   // Redirect if no playerId (navigated directly without joining)
   if (!playerId) {
@@ -866,6 +877,20 @@ export default function GameScreen() {
             startLoading={startLoading}
             startError={startError}
           />
+        )}
+
+        {/* Scene image (§12.3.14) — atmospheric illustration sent on phase transitions */}
+        {sceneImage && phase !== 'setup' && (
+          <div
+            className="fade-in"
+            style={{ margin: '0 16px 8px', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}
+          >
+            <img
+              src={`data:image/png;base64,${sceneImage}`}
+              alt=""
+              style={{ width: '100%', display: 'block', opacity: 0.85 }}
+            />
+          </div>
         )}
 
         {/* Story log */}
