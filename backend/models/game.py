@@ -36,6 +36,13 @@ class Difficulty(str, Enum):
     HARD = "hard"
 
 
+class NarratorPreset(str, Enum):
+    CLASSIC = "classic"    # Deep, dramatic fantasy narrator (default)
+    CAMPFIRE = "campfire"  # Warm, folksy campfire storyteller
+    HORROR = "horror"      # Slow, unsettling dread
+    COMEDY = "comedy"      # Wry, self-aware, fourth-wall humor
+
+
 class GameStatus(str, Enum):
     LOBBY = "lobby"         # waiting for players to join and ready up
     IN_PROGRESS = "in_progress"
@@ -110,6 +117,7 @@ class GameState(BaseModel):
     ai_character: Optional[AICharacter] = None
     story_context: str = ""  # Running narrative context for the Narrator Agent
     random_alignment: bool = False  # §12.3.10: AI may draw a village role instead of shapeshifter
+    narrator_preset: NarratorPreset = NarratorPreset.CLASSIC  # §12.3.17
     session: GameSession = Field(default_factory=GameSession)
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -151,6 +159,7 @@ class CreateGameRequest(BaseModel):
     difficulty: Difficulty = Difficulty.NORMAL
     host_name: str = "Host"
     random_alignment: bool = False  # §12.3.10: AI may draw any role (including village)
+    narrator_preset: NarratorPreset = NarratorPreset.CLASSIC  # §12.3.17
 
 
 class CreateGameResponse(BaseModel):

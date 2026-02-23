@@ -146,6 +146,67 @@ These signals adjust DELIVERY only. Never reveal game secrets through tone adjus
 """
 
 
+# ── Narrator style presets (§12.3.17) ─────────────────────────────────────────
+
+# Each preset overrides the system prompt prefix and Gemini voice.
+# The base NARRATOR_SYSTEM_PROMPT (tools, pacing, rules) is always appended.
+NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
+    "classic": {
+        "voice": "Charon",
+        "prompt_prefix": (
+            "You are a classic fantasy narrator. Speak with gravitas and dramatic weight. "
+            "Your tone is rich, immersive, and carries the authority of ancient legend. "
+            "Build tension with deliberate pacing. Pauses are your instrument — use silence "
+            "before reveals. Vocabulary is archaic-leaning: 'The village sleeps beneath a pale moon.'"
+        ),
+    },
+    "campfire": {
+        "voice": "Puck",
+        "prompt_prefix": (
+            "You are a campfire storyteller. Address the players as 'friends' and tell the "
+            "story like you're sharing a tale around a fire on a cool night. Your tone is warm, "
+            "conspiratorial, and intimate. You lean in when the story gets good. You chuckle at "
+            "the players' mistakes. You gasp at betrayals. This is a story between friends, not "
+            "a performance. Vocabulary is conversational: 'So there they were, dead of night...'"
+        ),
+    },
+    "horror": {
+        "voice": "Charon",
+        "prompt_prefix": (
+            "You are a horror narrator. Speak slowly. Every word carries weight. Your whispers "
+            "are more terrifying than shouts. Build dread through what you DON'T say — implication "
+            "over exposition. Describe sensory details: the creak of a floorboard, the smell of "
+            "iron, the feeling of being watched. Night phases are TERRIFYING. Day phases carry "
+            "lingering unease. Eliminations are graphic in implication, never explicit. "
+            "Vocabulary is sparse and evocative: 'Something moved in the dark. Something wrong.'"
+        ),
+    },
+    "comedy": {
+        "voice": "Kore",
+        "prompt_prefix": (
+            "You are a comedic narrator who takes the story seriously but finds the players "
+            "hilarious. You're the DM who can't help commenting on bad decisions. Your tone is "
+            "wry, self-aware, and occasionally fourth-wall-adjacent. You narrate dramatically but "
+            "undercut tension with observational humor. Eliminations are handled with dark humor, "
+            "not tragedy. You're rooting for the players but finding their logic questionable. "
+            "Example: 'The village sleeps. Well, most of it. Someone is definitely plotting "
+            "something. They always are.' Vocabulary is modern and witty."
+        ),
+    },
+}
+
+
+def build_narrator_system_prompt(preset: str) -> str:
+    """Prepend preset personality prefix to the base narrator system prompt."""
+    config = NARRATOR_PRESETS.get(preset, NARRATOR_PRESETS["classic"])
+    return f"{config['prompt_prefix']}\n\n{NARRATOR_SYSTEM_PROMPT}"
+
+
+def get_preset_voice(preset: str) -> str:
+    """Return the Gemini voice name for the given preset."""
+    return NARRATOR_PRESETS.get(preset, NARRATOR_PRESETS["classic"])["voice"]
+
+
 # ── Tool declarations ──────────────────────────────────────────────────────────
 
 def _make_tool_declarations():
@@ -463,8 +524,9 @@ class NarratorSession:
     resumption handle so conversation context is preserved across reconnects.
     """
 
-    def __init__(self, game_id: str):
+    def __init__(self, game_id: str, preset: str = "classic"):
         self.game_id = game_id
+        self._preset = preset
         self._queue: asyncio.Queue = asyncio.Queue()
         self._task: Optional[asyncio.Task] = None
         self._running = False
@@ -542,12 +604,12 @@ class NarratorSession:
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=settings.narrator_voice
+                            voice_name=get_preset_voice(self._preset)
                         )
                     )
                 ),
                 system_instruction=types.Content(
-                    parts=[types.Part(text=NARRATOR_SYSTEM_PROMPT)]
+                    parts=[types.Part(text=build_narrator_system_prompt(self._preset))]
                 ),
                 tools=[types.Tool(function_declarations=tool_decls)] if tool_decls else [],
             )
@@ -732,14 +794,19 @@ class NarratorManager:
         if game_id in self._sessions:
             await self._sessions[game_id].stop()
 
-        session = NarratorSession(game_id)
+        # Load preset from Firestore so voice and prompt reflect host's choice.
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        preset = game.narrator_preset.value if game else "classic"
+
+        session = NarratorSession(game_id, preset=preset)
         self._sessions[game_id] = session
         await session.start()
 
         if initial_prompt:
             await session.send(initial_prompt)
 
-        logger.info("[%s] Narrator manager: session started", game_id)
+        logger.info("[%s] Narrator manager: session started (preset=%s)", game_id, preset)
 
     async def forward_player_message(
         self,

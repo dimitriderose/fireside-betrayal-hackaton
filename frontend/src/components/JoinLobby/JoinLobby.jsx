@@ -8,6 +8,13 @@ const DIFF_DESC = {
   hard:   'The Shapeshifter is cunning. Good luck.',
 }
 
+const PRESETS = [
+  { id: 'classic',  label: '⚔️ Classic',  desc: 'Deep, dramatic fantasy narrator' },
+  { id: 'campfire', label: '🔥 Campfire', desc: 'Warm storyteller among friends' },
+  { id: 'horror',   label: '🕯️ Horror',   desc: 'Slow, unsettling dread' },
+  { id: 'comedy',   label: '😏 Comedy',   desc: 'Wry, self-aware humor' },
+]
+
 export default function JoinLobby() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -19,6 +26,7 @@ export default function JoinLobby() {
   const [gameCode, setGameCode] = useState(urlGameCode ?? '')
   const [difficulty, setDifficulty] = useState('normal')
   const [randomAlignment, setRandomAlignment] = useState(false)
+  const [narratorPreset, setNarratorPreset] = useState('classic')
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -35,7 +43,7 @@ export default function JoinLobby() {
         const res = await fetch('/api/games', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host_name: trimmedName, difficulty, random_alignment: randomAlignment }),
+          body: JSON.stringify({ host_name: trimmedName, difficulty, random_alignment: randomAlignment, narrator_preset: narratorPreset }),
         })
         if (!res.ok) {
           const body = await res.json().catch(() => ({}))
@@ -161,6 +169,29 @@ export default function JoinLobby() {
                   ? 'There is a chance the AI is on the village\'s side. Can you tell?'
                   : 'The AI is always the Shapeshifter. Find and vote it out.'}
               </p>
+            </div>
+          )}
+
+          {/* Narrator Style (host only) §12.3.17 */}
+          {isHost && (
+            <div>
+              <label className="input-label">Narrator Style</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6 }}>
+                {PRESETS.map(p => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setNarratorPreset(p.id)}
+                    className={`btn btn-sm ${narratorPreset === p.id ? 'btn-primary' : 'btn-ghost'}`}
+                    style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px', height: 'auto' }}
+                  >
+                    <span>{p.label}</span>
+                    <span style={{ fontSize: '0.6875rem', color: narratorPreset === p.id ? 'rgba(255,255,255,0.75)' : 'var(--text-dim)', fontWeight: 400 }}>
+                      {p.desc}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
