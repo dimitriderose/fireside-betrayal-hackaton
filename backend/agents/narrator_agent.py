@@ -109,6 +109,28 @@ VOTE CONTEXT GENERATION:
 - Summaries are factual observations only.
   Good: "Claimed to be at the inn during the night. Voted against Garin in Round 1."
   Bad: "Seemed nervous when questioned — possibly hiding something."
+
+PACING INTELLIGENCE:
+Each player message during DAY_DISCUSSION arrives prefixed with a [PACING: ...] tag.
+React to the pacing signal as follows:
+- PACE_HOT: Do NOT interrupt. Let the debate breathe. Only respond if directly addressed.
+- PACE_NORMAL: Respond naturally when appropriate.
+- PACE_NUDGE: Gently prompt — "The morning wears on. Perhaps there is more to discuss?"
+- PACE_PUSH: Actively advance — "The sun climbs higher. Time presses — the village must decide."
+- PACE_CIRCULAR: Redirect — "The same names circle like vultures. Perhaps fresh eyes would help."
+
+AFFECTIVE TONE SIGNALS:
+Each player message may also arrive prefixed with [AFFECTIVE: ...] signals. Adjust your
+delivery (not your content) accordingly:
+- vote_tension=HIGH → Tense, slow, dramatic pauses. "The vote hangs by a thread..."
+  vote_tension=LOW → Decisive, swift. "The village speaks with one voice."
+- debate_intensity=HOT → Urgent, breathless. Match the energy of the room.
+  debate_intensity=CALM → Measured, contemplative. Build quiet tension.
+- late_game=True → Every word carries weight. Narrate with finality and gravity.
+- endgame_imminent=True → This could be the last round. Treat every action as momentous.
+- ai_heat=HOT → Maximum suspense. "All eyes turn to [character]..."
+  ai_heat=COLD → Build mystery. "But who among them carries the secret?"
+These signals adjust DELIVERY only. Never reveal game secrets through tone adjustments.
 """
 
 
@@ -275,6 +297,14 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             "result": "advanced",
             "new_phase": next_phase.value,
         }
+
+        # When entering DAY_DISCUSSION: reset the conversation tracker for fresh pacing data
+        if next_phase == Phase.DAY_DISCUSSION:
+            try:
+                from routers.ws_router import reset_tracker as _reset_tracker
+                _reset_tracker(game_id)
+            except Exception:
+                logger.warning("[%s] Could not reset conversation tracker — stale pacing data may bleed into new round", game_id, exc_info=True)
 
         # When entering NIGHT: fire traitor night selection + inform narrator about role-players
         if next_phase == Phase.NIGHT:
@@ -692,14 +722,40 @@ class NarratorManager:
         logger.info("[%s] Narrator manager: session started", game_id)
 
     async def forward_player_message(
-        self, game_id: str, speaker: str, text: str, phase: str
+        self,
+        game_id: str,
+        speaker: str,
+        text: str,
+        phase: str,
+        pacing: Optional[str] = None,
+        affective: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Pass a player's chat line to the narrator during DAY_DISCUSSION."""
+        """
+        Pass a player's chat line to the narrator during DAY_DISCUSSION.
+        Optionally prefixes the message with pacing and affective signals so the
+        narrator can adjust its delivery without reading private game state.
+        """
         session = self._sessions.get(game_id)
         if not session:
             return
         if phase == Phase.DAY_DISCUSSION.value:
-            await session.send(f'[PLAYER] {speaker} says: "{text}"')
+            # Sanitize free-form player input so bracket tags can't spoof structured signals
+            safe_text = text.replace("[", "(").replace("]", ")")
+            safe_speaker = speaker.replace("[", "(").replace("]", ")")
+            context_parts = []
+            if pacing:
+                context_parts.append(f"[PACING: {pacing}]")
+            if affective:
+                signals_str = ", ".join(
+                    f"{k}={v}" for k, v in affective.items() if v is not None
+                )
+                if signals_str:
+                    context_parts.append(f"[AFFECTIVE: {signals_str}]")
+            prefix = "\n".join(context_parts)
+            if prefix:
+                await session.send(f'{prefix}\n[PLAYER] {safe_speaker} says: "{safe_text}"')
+            else:
+                await session.send(f'[PLAYER] {safe_speaker} says: "{safe_text}"')
 
     async def send_phase_event(
         self,

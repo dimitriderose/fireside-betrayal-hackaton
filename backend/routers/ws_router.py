@@ -31,13 +31,157 @@ to keep the coordinator role in one place.
 import asyncio
 import json
 import logging
-from typing import Dict, Optional, Any, Set
+import time
+from typing import Dict, List, Optional, Any, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from models.game import Phase, Role, GameStatus, ChatMessage
 from services.firestore_service import get_firestore_service
 from agents.narrator_agent import narrator_manager
+
+
+# ── Conversation pacing tracker ───────────────────────────────────────────────
+
+class ConversationTracker:
+    """
+    Tracks message flow during DAY_DISCUSSION to inform narrator pacing.
+    One instance per active game, keyed in _trackers below.
+    reset_round() is called by the narrator agent when entering DAY_DISCUSSION.
+    """
+
+    def __init__(self):
+        self.messages: List[Dict[str, Any]] = []   # {player_id, character_name, timestamp, text}
+        self.last_message_time: float = 0.0
+        self.silence_prompted: Set[str] = set()    # player_ids already prompted this round
+        self.repeated_accusations: Dict[str, int] = {}  # character_name → accusation count
+        self.alive_characters: List[str] = []      # updated on each add_message call
+
+    def add_message(
+        self,
+        player_id: str,
+        character_name: str,
+        text: str,
+        alive_characters: Optional[List[str]] = None,
+    ) -> None:
+        if alive_characters is not None:
+            self.alive_characters = alive_characters
+
+        now = time.time()
+        self.messages.append({
+            "player_id": player_id,
+            "character_name": character_name,
+            "timestamp": now,
+            "text": text,
+        })
+        self.last_message_time = now
+
+        # Crude accusation tracking: message mentions a character name + "suspect"
+        for name in self.alive_characters:
+            if name.lower() in text.lower() and "suspect" in text.lower():
+                self.repeated_accusations[name] = self.repeated_accusations.get(name, 0) + 1
+
+    def get_pacing_signal(self) -> str:
+        """Return a pacing directive string for the narrator."""
+        now = time.time()
+        silence_duration = now - self.last_message_time if self.last_message_time else 0.0
+        recent_window = [m for m in self.messages if now - m["timestamp"] < 30]
+        msg_rate = len(recent_window)  # messages in last 30 seconds
+
+        if silence_duration > 45:
+            return "PACE_PUSH — Long silence. Intervene narratively to advance discussion."
+        elif silence_duration > 30:
+            return "PACE_NUDGE — Discussion stalling. Gentle narrative prompt."
+        elif msg_rate > 10:
+            return "PACE_HOT — Rapid debate. Let it breathe. Do NOT interrupt."
+        elif any(count > 3 for count in self.repeated_accusations.values()):
+            return "PACE_CIRCULAR — Same accusations repeating. Nudge toward voting."
+        else:
+            return "PACE_NORMAL — Healthy discussion flow. No intervention needed."
+
+    def reset_round(self) -> None:
+        self.messages.clear()
+        self.last_message_time = 0.0  # must reset so silence_duration starts from 0 for new round
+        self.silence_prompted.clear()
+        self.repeated_accusations.clear()
+        # alive_characters is refreshed from add_message on the first message of the round
+
+
+class AffectiveSignals:
+    """
+    Compute emotional context signals from game state for narrator tone adjustment.
+    These signals adjust the narrator's DELIVERY, not its CONTENT.
+    """
+
+    @staticmethod
+    def compute(
+        game_state: Dict[str, Any],
+        conversation_tracker: ConversationTracker,
+    ) -> Dict[str, Any]:
+        signals: Dict[str, Any] = {}
+
+        # 1. Vote closeness (only present after a round with a vote)
+        if game_state.get("last_vote_result"):
+            votes = game_state["last_vote_result"]
+            top_two = sorted(votes.values(), reverse=True)[:2]
+            if len(top_two) >= 2:
+                margin = top_two[0] - top_two[1]
+                signals["vote_tension"] = "HIGH" if margin <= 1 else "MEDIUM" if margin <= 2 else "LOW"
+            if votes:
+                # unanimous = only one candidate received any votes (not a split)
+                signals["unanimous"] = len([v for v in votes.values() if v > 0]) == 1
+
+        # 2. Debate intensity from pacing signal
+        pacing = conversation_tracker.get_pacing_signal()
+        signals["debate_intensity"] = "HOT" if "HOT" in pacing else "CALM"
+
+        # 3. Round progression toward endgame
+        current_round = game_state.get("round", 1)
+        total_players = game_state.get("total_players", 5)
+        signals["late_game"] = current_round >= (total_players - 2)
+
+        # 4. Elimination stakes
+        alive_count = sum(
+            1 for p in game_state.get("players", {}).values() if p.get("alive")
+        )
+        signals["endgame_imminent"] = alive_count <= 3
+
+        # 5. AI exposure risk — narrator uses for tone, never for content
+        ai_name = game_state.get("ai_character", {}).get("name") if game_state.get("ai_character") else None
+        accusations_against_ai = sum(
+            1
+            for m in conversation_tracker.messages
+            if ai_name
+            and ai_name.lower() in m.get("text", "").lower()
+            and "suspect" in m.get("text", "").lower()
+        )
+        signals["ai_heat"] = (
+            "HOT" if accusations_against_ai >= 3
+            else "WARM" if accusations_against_ai >= 1
+            else "COLD"
+        )
+
+        return signals
+
+
+# Per-game conversation trackers — keyed by game_id, in-process only.
+# Acceptable for the hackathon: resets on server restart (mid-game) which is rare.
+_trackers: Dict[str, ConversationTracker] = {}
+
+
+def get_tracker(game_id: str) -> ConversationTracker:
+    """Return (or create) the ConversationTracker for this game."""
+    if game_id not in _trackers:
+        _trackers[game_id] = ConversationTracker()
+    return _trackers[game_id]
+
+
+def reset_tracker(game_id: str) -> None:
+    """Reset the ConversationTracker for a new DAY_DISCUSSION round."""
+    tracker = _trackers.get(game_id)
+    if tracker:
+        tracker.reset_round()
+
 
 # Games whose vote tally is currently being resolved.
 # Guards against double-advance when two players vote simultaneously.
@@ -416,6 +560,10 @@ async def _on_chat(
     if not player:
         return
 
+    # Silently drop messages from finished games — narrator may already be torn down
+    if game and game.status == GameStatus.FINISHED:
+        return
+
     if game and game.status == GameStatus.IN_PROGRESS and not player.alive:
         await manager.send_to(game_id, player_id, {
             "type": "error",
@@ -445,10 +593,52 @@ async def _on_chat(
         round_num=game.round if game else None,
     )
 
+    # ── Pacing + affective signals (DAY_DISCUSSION only) ──────────────────────
+    pacing: Optional[str] = None
+    affective: Optional[Dict[str, Any]] = None
+
+    if game and game.phase == Phase.DAY_DISCUSSION:
+        # Fetch alive players, AI char, and vote tally for signals.
+        try:
+            alive_players, ai_char, last_vote_tally = await asyncio.gather(
+                fs.get_alive_players(game_id),
+                fs.get_ai_character(game_id),
+                fs.get_vote_tally(game_id),
+            )
+        except Exception:
+            logger.warning("[%s] Could not fetch data for pacing signals; skipping", game_id, exc_info=True)
+            alive_players, ai_char, last_vote_tally = [], None, {}
+
+        alive_chars = [p.character_name for p in alive_players]
+        if ai_char and ai_char.alive:
+            alive_chars.append(ai_char.name)
+
+        tracker = get_tracker(game_id)
+        tracker.add_message(player_id, speaker, text, alive_chars)
+        pacing = tracker.get_pacing_signal()
+
+        game_state_dict: Dict[str, Any] = {
+            "round": game.round,
+            "total_players": len(game.character_cast),
+            "players": {p.character_name: {"alive": True} for p in alive_players},
+            "ai_character": {"name": ai_char.name if ai_char and ai_char.alive else None},
+            "last_vote_result": last_vote_tally or {},
+        }
+        if ai_char and ai_char.alive:
+            game_state_dict["players"][ai_char.name] = {"alive": True}
+
+        affective = AffectiveSignals.compute(game_state_dict, tracker)
+
+    # Sanitize player text before embedding in narrator prompt to prevent
+    # bracket-tag injection (narrator prompt uses [TAG:...] structured signals).
+    safe_text = text.replace("[", "(").replace("]", ")")
+
     # Forward chat to narrator during DAY_DISCUSSION so it can react
-    if game:
+    if game and game.phase == Phase.DAY_DISCUSSION:
         await narrator_manager.forward_player_message(
-            game_id, speaker, text, game.phase.value
+            game_id, speaker, safe_text, game.phase.value,
+            pacing=pacing,
+            affective=affective,
         )
 
 
@@ -835,8 +1025,43 @@ async def _on_quick_reaction(
         round_num=game.round,
     )
 
-    # Forward to narrator so it can react narratively
-    await narrator_manager.forward_player_message(game_id, speaker, text, game.phase.value)
+    # ── Pacing + affective signals (same path as _on_chat) ────────────────────
+    try:
+        alive_players, ai_char, last_vote_tally = await asyncio.gather(
+            fs.get_alive_players(game_id),
+            fs.get_ai_character(game_id),
+            fs.get_vote_tally(game_id),
+        )
+    except Exception:
+        logger.warning("[%s] Could not fetch data for quick_reaction signals; skipping", game_id, exc_info=True)
+        alive_players, ai_char, last_vote_tally = [], None, {}
+
+    alive_chars = [p.character_name for p in alive_players]
+    if ai_char and ai_char.alive:
+        alive_chars.append(ai_char.name)
+
+    tracker = get_tracker(game_id)
+    tracker.add_message(player_id, speaker, text, alive_chars)
+    pacing = tracker.get_pacing_signal()
+
+    game_state_dict: Dict[str, Any] = {
+        "round": game.round,
+        "total_players": len(game.character_cast),
+        "players": {p.character_name: {"alive": True} for p in alive_players},
+        "ai_character": {"name": ai_char.name if ai_char and ai_char.alive else None},
+        "last_vote_result": last_vote_tally or {},
+    }
+    if ai_char and ai_char.alive:
+        game_state_dict["players"][ai_char.name] = {"alive": True}
+
+    affective = AffectiveSignals.compute(game_state_dict, tracker)
+
+    # Forward to narrator with pacing + affective context
+    await narrator_manager.forward_player_message(
+        game_id, speaker, text, game.phase.value,
+        pacing=pacing,
+        affective=affective,
+    )
 
 
 async def _on_spectator_clue(
@@ -993,5 +1218,7 @@ async def _end_game(
         "winner": winner,
         "reason": reason,
     })
+    # Release per-game tracker memory now that the game is over
+    _trackers.pop(game_id, None)
     # Schedule narrator teardown after 30s epilogue window — non-blocking
     asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))
