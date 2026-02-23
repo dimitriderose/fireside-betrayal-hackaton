@@ -31,8 +31,14 @@ export default function JoinLobby() {
   const [loading, setLoading] = useState(false)
   const [previewState, setPreviewState] = useState({})  // { presetId: 'idle'|'loading'|'playing' }
   const previewAudioRef = useRef(null)
+  const previewAbortRef = useRef(null)  // AbortController for in-flight fetch
 
   const handlePreviewPlay = async (presetId) => {
+    // Cancel any in-flight fetch before starting a new one (prevents double-play race)
+    if (previewAbortRef.current) {
+      previewAbortRef.current.abort()
+      previewAbortRef.current = null
+    }
     // Stop current playback if any
     if (previewAudioRef.current) {
       previewAudioRef.current.pause()
@@ -43,11 +49,16 @@ export default function JoinLobby() {
       setPreviewState(prev => ({ ...prev, [presetId]: 'idle' }))
       return
     }
+    const controller = new AbortController()
+    previewAbortRef.current = controller
     setPreviewState(prev => ({ ...prev, [presetId]: 'loading' }))
     try {
-      const res = await fetch(`/api/narrator/preview/${presetId}`)
+      const res = await fetch(`/api/narrator/preview/${presetId}`, { signal: controller.signal })
       if (!res.ok) throw new Error('preview unavailable')
       const { audio_b64 } = await res.json()
+      // Only proceed if this request is still the active one (not superseded)
+      if (previewAbortRef.current !== controller) return
+      previewAbortRef.current = null
       const audio = new Audio(`data:audio/wav;base64,${audio_b64}`)
       previewAudioRef.current = audio
       setPreviewState(prev => ({ ...prev, [presetId]: 'playing' }))

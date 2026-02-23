@@ -66,7 +66,7 @@ async def _generate_preview_audio(preset: str) -> Optional[str]:
 
     try:
         response = await client.aio.models.generate_content(
-            model=settings.traitor_model,
+            model=settings.narrator_preview_model,
             contents=sample_text,
             config=types.GenerateContentConfig(
                 response_modalities=["AUDIO"],

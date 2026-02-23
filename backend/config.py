@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     firestore_emulator_host: Optional[str] = None
     narrator_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
     traitor_model: str = "gemini-2.5-flash"
+    narrator_preview_model: str = "gemini-2.5-flash-preview-tts"  # TTS via generate_content
     narrator_voice: str = "Charon"
     # Production allowed origins (add Cloud Run URL here in deployment)
     allowed_origins: List[str] = [
