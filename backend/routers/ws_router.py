@@ -189,10 +189,25 @@ def reset_tracker(game_id: str) -> None:
 # the membership test and the add(), so no interleaving is possible.
 _resolving_votes: Set[str] = set()
 
+# Vote timeout tasks — one per active day_vote phase.
+# Cancelled when votes resolve normally; fires _resolve_vote_and_advance after 90s
+# to prevent a game hanging indefinitely if a player disconnects mid-vote.
+_vote_timeout_tasks: Dict[str, asyncio.Task] = {}
+
 # Tracks which (game_id, player_id) pairs have already submitted a spectator clue.
 # Prevents double-submission without touching Firestore — resets on server restart
 # (acceptable for hackathon: if the server restarts mid-game, the clue limit resets).
 _spectator_clues_sent: Set[str] = set()
+
+
+async def _vote_timeout(game_id: str, fs, delay: int = 90) -> None:
+    """Auto-advance day_vote phase after `delay` seconds if not already resolved."""
+    await asyncio.sleep(delay)
+    _vote_timeout_tasks.pop(game_id, None)
+    game = await fs.get_game(game_id)
+    if game and game.phase == Phase.DAY_VOTE:
+        logger.info("[%s] Vote timeout fired — auto-advancing phase", game_id)
+        await _resolve_vote_and_advance(game_id, fs)
 
 
 # ── Hand-raise queue (§12.3.8 — large group conversation structure) ────────────
@@ -374,6 +389,16 @@ class ConnectionManager:
             "phase": phase.value,
             "round": round,
         })
+        # Schedule vote timeout when entering day_vote (cancels on normal resolution)
+        if phase == Phase.DAY_VOTE:
+            existing = _vote_timeout_tasks.pop(game_id, None)
+            if existing and not existing.done():
+                existing.cancel()
+            fs_ref = get_firestore_service()
+            _vote_timeout_tasks[game_id] = asyncio.create_task(
+                _vote_timeout(game_id, fs_ref)
+            )
+
         # §12.3.14: Trigger atmospheric scene image for the new phase
         _scene_map = {
             Phase.NIGHT: "night",
@@ -561,6 +586,27 @@ async def websocket_endpoint(
 # ── Message dispatcher ─────────────────────────────────────────────────────────
 
 async def _handle_message(
+    game_id: str,
+    player_id: str,
+    msg_type: str,
+    data: Dict,
+    fs,
+) -> None:
+    try:
+        await _dispatch_message(game_id, player_id, msg_type, data, fs)
+    except WebSocketDisconnect:
+        raise
+    except Exception as exc:
+        logger.exception("[%s] Unhandled error in _handle_message (type=%s)", game_id, msg_type)
+        try:
+            await manager.send_to(game_id, player_id, {
+                "type": "error", "message": "Internal server error", "code": "SERVER_ERROR"
+            })
+        except Exception:
+            pass
+
+
+async def _dispatch_message(
     game_id: str,
     player_id: str,
     msg_type: str,
@@ -798,6 +844,10 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
     if game_id in _resolving_votes:
         return
     _resolving_votes.add(game_id)
+    # Cancel any pending vote timeout — we're resolving now
+    timeout_task = _vote_timeout_tasks.pop(game_id, None)
+    if timeout_task and not timeout_task.done():
+        timeout_task.cancel()
     try:
         from agents.game_master import game_master
 
@@ -1393,6 +1443,14 @@ async def _on_in_person_vote_frame(
         logger.info("[%s] Camera vote fallback for '%s' (low confidence)", game_id, character_name)
         return
 
+    # Cap hand_count to number of alive players (humans + AI) — guards against vision hallucinations
+    all_players_for_cap = await fs.get_all_players(game_id)
+    alive_cap = sum(1 for p in all_players_for_cap if p.alive)
+    ai_char_for_cap = await fs.get_ai_character(game_id)
+    if ai_char_for_cap and ai_char_for_cap.alive:
+        alive_cap += 1
+    hand_count = min(hand_count, alive_cap)
+
     # Broadcast the hand count to all clients as a vote result message
     await manager.broadcast(game_id, {
         "type": "camera_vote_result",
@@ -1534,9 +1592,12 @@ async def _end_game(
         "winner": winner,
         "reason": reason,
     })
-    # Release per-game tracker, hand queue, and difficulty adapter memory
+    # Release per-game tracker, hand queue, difficulty adapter, and vote timeout memory
     _trackers.pop(game_id, None)
     _hand_queues.pop(game_id, None)
+    timeout_task = _vote_timeout_tasks.pop(game_id, None)
+    if timeout_task and not timeout_task.done():
+        timeout_task.cancel()
     try:
         from agents.traitor_agent import clear_difficulty_adapter
         clear_difficulty_adapter(game_id)

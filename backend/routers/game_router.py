@@ -147,6 +147,10 @@ async def join_game(game_id: str, body: JoinGameRequest):
     if game.status != GameStatus.LOBBY:
         raise HTTPException(status_code=409, detail="Game already in progress or finished")
 
+    existing_players = await fs.get_all_players(game_id)
+    if len(existing_players) >= 8:
+        raise HTTPException(status_code=409, detail="Game is full (maximum 7 players)")
+
     player_id = str(uuid.uuid4())
     await fs.add_player(game_id, player_id, body.player_name)
     logger.info(f"Player {player_id} ({body.player_name}) joined game {game_id}")
