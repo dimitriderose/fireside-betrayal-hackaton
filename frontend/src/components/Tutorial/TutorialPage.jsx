@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 // ── Scripted mock data ────────────────────────────────────────────────────────
@@ -196,8 +196,8 @@ function StepNight({ onComplete }) {
 function StepDiscussion({ onComplete }) {
   const [reacted, setReacted] = useState(false)
   const [messages, setMessages] = useState([
-    { speaker: 'Elder Sylva', text: 'Something feels wrong in Thornwood tonight...', source: 'ai_character' },
-    { speaker: 'Blacksmith Garin', text: 'I was at the forge. Ask the miller if you doubt me.', source: 'ai_character' },
+    { id: 'm1', speaker: 'Elder Sylva', text: 'Something feels wrong in Thornwood tonight...', source: 'ai_character' },
+    { id: 'm2', speaker: 'Blacksmith Garin', text: 'I was at the forge. Ask the miller if you doubt me.', source: 'ai_character' },
   ])
 
   const handleReaction = (type, target) => {
@@ -206,15 +206,15 @@ function StepDiscussion({ onComplete }) {
     const text = type === 'suspect'
       ? `Herbalist Mira eyes ${target} with suspicion.`
       : `Herbalist Mira nods in agreement with ${target}.`
-    setMessages(prev => [...prev, { speaker: 'Herbalist Mira', text, source: 'player' }])
+    setMessages(prev => [...prev, { id: `m${prev.length + 1}`, speaker: 'Herbalist Mira', text, source: 'player' }])
     setTimeout(onComplete, 1500)
   }
 
   return (
     <div style={{ padding: '0 16px' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10, maxHeight: 140, overflowY: 'auto' }}>
-        {messages.map((m, i) => (
-          <div key={i} style={{ display: 'flex', gap: 8 }}>
+        {messages.map((m) => (
+          <div key={m.id} style={{ display: 'flex', gap: 8 }}>
             <span style={{
               fontSize: '0.75rem',
               fontWeight: 600,
@@ -365,10 +365,7 @@ export default function TutorialPage() {
       </div>
 
       <div className="fade-in" key={step}>
-        {step < STEPS.length - 1
-          ? current.panel(handleComplete)
-          : current.panel(handleComplete, handleDone)
-        }
+        {current.panel(handleComplete, handleDone)}
       </div>
     </div>
   )
