@@ -41,6 +41,9 @@ export function useWebSocket(gameId, playerId) {
           if (msg.gameState.aiCharacter) {
             dispatch({ type: 'SET_AI_CHARACTER', aiCharacter: msg.gameState.aiCharacter })
           }
+          if (msg.gameState.inPersonMode !== undefined) {
+            dispatch({ type: 'SET_IN_PERSON_MODE', inPersonMode: msg.gameState.inPersonMode })
+          }
         }
         break
 
@@ -162,6 +165,21 @@ export function useWebSocket(gameId, playerId) {
       case 'clue_accepted':
         // msg: { type, word } — server confirms clue was delivered to narrator
         dispatch({ type: 'CLUE_SENT' })
+        break
+
+      case 'camera_vote_result':
+        // msg: { type, characterName, handCount, confidence } — §12.3.16
+        // Relay to VotePanel via DOM event to avoid prop drilling
+        window.dispatchEvent(new CustomEvent('camera-vote-result', {
+          detail: { characterName: msg.characterName, handCount: msg.handCount, confidence: msg.confidence },
+        }))
+        break
+
+      case 'camera_vote_fallback':
+        // msg: { type, characterName, reason } — vision failed, fallback to phone voting
+        window.dispatchEvent(new CustomEvent('camera-vote-fallback', {
+          detail: { characterName: msg.characterName, reason: msg.reason },
+        }))
         break
 
       case 'error':

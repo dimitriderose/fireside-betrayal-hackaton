@@ -118,6 +118,7 @@ class GameState(BaseModel):
     story_context: str = ""  # Running narrative context for the Narrator Agent
     random_alignment: bool = False  # §12.3.10: AI may draw a village role instead of shapeshifter
     narrator_preset: NarratorPreset = NarratorPreset.CLASSIC  # §12.3.17
+    in_person_mode: bool = False  # §12.3.16: camera counts raised hands during vote
     session: GameSession = Field(default_factory=GameSession)
     created_at: datetime = Field(default_factory=_utcnow)
 
@@ -160,6 +161,7 @@ class CreateGameRequest(BaseModel):
     host_name: str = "Host"
     random_alignment: bool = False  # §12.3.10: AI may draw any role (including village)
     narrator_preset: NarratorPreset = NarratorPreset.CLASSIC  # §12.3.17
+    in_person_mode: bool = False  # §12.3.16: camera counts raised hands during vote
 
 
 class CreateGameResponse(BaseModel):

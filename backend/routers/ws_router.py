@@ -509,6 +509,7 @@ async def websocket_endpoint(
                 {"name": ai_char.name, "alive": ai_char.alive}
                 if ai_char else None
             ),
+            "inPersonMode": game.in_person_mode,  # §12.3.16
         },
     })
 
@@ -592,6 +593,9 @@ async def _handle_message(
 
     elif msg_type == "raise_hand":
         await _on_raise_hand(game_id, player_id, data, fs)
+
+    elif msg_type == "in_person_vote_frame":
+        await _on_in_person_vote_frame(game_id, player_id, data, fs)
 
     else:
         await manager.send_to(game_id, player_id, {
@@ -1336,6 +1340,103 @@ async def _on_raise_hand(
             "queuePosition": pos,
             "alreadyQueued": True,
         })
+
+
+async def _on_in_person_vote_frame(
+    game_id: str, player_id: str, data: Dict, fs
+) -> None:
+    """
+    Host submits a camera frame for hand-count voting (§12.3.16).
+    data: { characterName: str, imageData: str (base64 JPEG) }
+
+    - Calls Gemini vision to count raised hands.
+    - If confidence is high/medium, broadcasts the count as a vote_count_result
+      and records votes proportionally.
+    - If confidence is low, falls back to phone voting (notifies the client).
+    """
+    game = await fs.get_game(game_id)
+    if not game or game.phase != Phase.DAY_VOTE or not game.in_person_mode:
+        return
+
+    # Only the host may submit camera frames
+    player = await fs.get_player(game_id, player_id)
+    if not player or player.id != game.host_player_id:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Only the host can submit camera vote frames.",
+            "code": "NOT_HOST",
+        })
+        return
+
+    character_name = data.get("characterName", "").strip()
+    image_b64 = data.get("imageData", "")
+
+    if not character_name or not image_b64:
+        return
+
+    try:
+        from agents.camera_vote import count_raised_hands
+        result = await count_raised_hands(image_b64)
+    except Exception:
+        result = {"hand_count": 0, "confidence": "low"}
+
+    hand_count = result["hand_count"]
+    confidence = result["confidence"]
+
+    if confidence == "low":
+        # Fallback: notify host to use phone voting instead
+        await manager.send_to(game_id, player_id, {
+            "type": "camera_vote_fallback",
+            "characterName": character_name,
+            "reason": "Camera image unclear — please use phone voting for this round.",
+        })
+        logger.info("[%s] Camera vote fallback for '%s' (low confidence)", game_id, character_name)
+        return
+
+    # Broadcast the hand count to all clients as a vote result message
+    await manager.broadcast(game_id, {
+        "type": "camera_vote_result",
+        "characterName": character_name,
+        "handCount": hand_count,
+        "confidence": confidence,
+    })
+
+    # Persist votes to Firestore so phase-advance logic can trigger.
+    # Assign camera hands to the first N unvoted alive players (arbitrary
+    # but deterministic — in-person mode the exact voter identity is unknown).
+    all_players = await fs.get_all_players(game_id)
+    unvoted = [p for p in all_players if p.alive and p.voted_for is None]
+    assigned = 0
+    for p in unvoted:
+        if assigned >= hand_count:
+            break
+        await fs.cast_vote(game_id, p.id, character_name)
+        assigned += 1
+
+    # Broadcast updated tally
+    all_players = await fs.get_all_players(game_id)
+    votes_map = {
+        p.character_name: p.voted_for
+        for p in all_players
+        if p.alive and p.character_name
+    }
+    tally = await fs.get_vote_tally(game_id)
+    await manager.broadcast(game_id, {
+        "type": "vote_update",
+        "votes": votes_map,
+        "tally": tally,
+    })
+
+    logger.info(
+        "[%s] Camera vote for '%s': %d hands (confidence=%s), assigned %d votes",
+        game_id, character_name, hand_count, confidence, assigned,
+    )
+
+    # Auto-advance if all alive humans have now voted
+    voted_count = sum(1 for p in all_players if p.alive and p.voted_for)
+    alive_count = sum(1 for p in all_players if p.alive)
+    if voted_count >= alive_count and game_id not in _resolving_votes:
+        await _resolve_vote_and_advance(game_id, fs)
 
 
 def _build_timeline(events: list) -> list:
