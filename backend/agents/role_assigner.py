@@ -290,6 +290,30 @@ class RoleAssigner:
             )
         roles.remove("shapeshifter")
         # `roles` now has exactly n_human entries
+
+        # ── §12.3.10 Random Alignment: AI may draw any role ───────────────────
+        ai_is_traitor = True
+        ai_drawn_role = "shapeshifter"
+
+        if game.random_alignment:
+            # Shuffle the full pool (human roles + shapeshifter slot) and let AI draw one
+            full_pool = roles + ["shapeshifter"]
+            random.shuffle(full_pool)
+            ai_drawn_role = full_pool.pop()
+            ai_is_traitor = (ai_drawn_role == "shapeshifter")
+
+            if ai_is_traitor:
+                # AI drew shapeshifter — standard game; remaining pool is human roles
+                roles = full_pool
+            else:
+                # AI drew a village role — no shapeshifter in game.
+                # full_pool (after pop) still has n_human entries for the humans.
+                roles = full_pool
+                logger.info(
+                    "[%s] Random alignment: AI drew '%s' — loyal AI, no shapeshifter this game.",
+                    game_id, ai_drawn_role,
+                )
+
         random.shuffle(roles)
 
         # ── Generate character cast (LLM with static fallback) ─────────────────
@@ -324,13 +348,15 @@ class RoleAssigner:
         # ── Set up the AI character ────────────────────────────────────────────
         ai_slot = cast[n_human]
         hook = ai_slot.get("personality_hook", "")
+        ai_role = Role(ai_drawn_role) if ai_drawn_role != "shapeshifter" else Role.SHAPESHIFTER
         ai_char = AICharacter(
             name=ai_slot["name"],
             intro=ai_slot["intro"],
-            role=Role.SHAPESHIFTER,
+            role=ai_role,
             alive=True,
             backstory=hook,
             personality_hook=hook,
+            is_traitor=ai_is_traitor,
         )
 
         # ── Store AI character + full cast in a single Firestore write ─────────
@@ -343,11 +369,12 @@ class RoleAssigner:
             "generated_characters": cast,
         })
 
+        ai_role_label = "Shapeshifter" if ai_is_traitor else f"{ai_drawn_role} (Loyal)"
         logger.info(
             "[%s] Roles assigned to %d humans (difficulty=%s, effective=%s). "
-            "Roles: %s. AI character: %s (Shapeshifter).",
+            "Roles: %s. AI character: %s (%s).",
             game_id, n_human, game.difficulty.value, effective_difficulty,
-            [a["role"] for a in assignments], ai_char.name,
+            [a["role"] for a in assignments], ai_char.name, ai_role_label,
         )
 
         return {
@@ -356,6 +383,8 @@ class RoleAssigner:
                 "name": ai_char.name,
                 "intro": ai_char.intro,
                 "personality_hook": ai_char.personality_hook,
+                "is_traitor": ai_is_traitor,
+                "role": ai_drawn_role,
             },
             "character_cast": character_cast,
         }

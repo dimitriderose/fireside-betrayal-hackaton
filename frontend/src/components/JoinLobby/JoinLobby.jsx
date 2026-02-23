@@ -18,6 +18,7 @@ export default function JoinLobby() {
   const [name, setName] = useState('')
   const [gameCode, setGameCode] = useState(urlGameCode ?? '')
   const [difficulty, setDifficulty] = useState('normal')
+  const [randomAlignment, setRandomAlignment] = useState(false)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -34,7 +35,7 @@ export default function JoinLobby() {
         const res = await fetch('/api/games', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ host_name: trimmedName, difficulty }),
+          body: JSON.stringify({ host_name: trimmedName, difficulty, random_alignment: randomAlignment }),
         })
         if (!res.ok) {
           const body = await res.json().catch(() => ({}))
@@ -139,6 +140,27 @@ export default function JoinLobby() {
                 ))}
               </div>
               <p style={{ fontSize: '0.75rem' }}>{DIFF_DESC[difficulty]}</p>
+            </div>
+          )}
+
+          {/* Random Alignment (host only) §12.3.10 */}
+          {isHost && (
+            <div>
+              <label className="input-label">AI Alignment</label>
+              <button
+                type="button"
+                onClick={() => setRandomAlignment(v => !v)}
+                className={`btn btn-sm ${randomAlignment ? 'btn-primary' : 'btn-ghost'}`}
+                style={{ width: '100%', justifyContent: 'flex-start', gap: 10 }}
+              >
+                <span>{randomAlignment ? '🎲' : '🐺'}</span>
+                {randomAlignment ? 'Random — AI may be loyal or traitor' : 'Classic — AI is always the Shapeshifter'}
+              </button>
+              <p style={{ fontSize: '0.75rem', marginTop: 6 }}>
+                {randomAlignment
+                  ? 'There is a chance the AI is on the village\'s side. Can you tell?'
+                  : 'The AI is always the Shapeshifter. Find and vote it out.'}
+              </p>
             </div>
           )}
 

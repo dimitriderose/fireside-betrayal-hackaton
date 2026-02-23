@@ -805,6 +805,24 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             await _end_game(game_id, "tanner", "The Tanner outsmarted the village — voted out exactly as planned!", fs)
             return
 
+        # §12.3.10 Loyal AI voted out — village eliminated their own ally
+        if elim_result.get("is_loyal_ai"):
+            await manager.broadcast_elimination(
+                game_id,
+                character_name=eliminated,
+                was_traitor=False,
+                role=elim_result["role"],
+                needs_hunter_revenge=False,
+                tally=tally_result.get("tally", {}),
+            )
+            await _end_game(
+                game_id,
+                "shapeshifter",
+                f"The village voted out {eliminated} — their innocent ally. "
+                "The AI was on your side the whole time. Trust no one.",
+                fs,
+            )
+            return
 
         await manager.broadcast_elimination(
             game_id,
@@ -1351,11 +1369,15 @@ async def _end_game(
         for p in all_players
     ]
     if ai_char:
+        # Use actual role for loyal AI (§12.3.10); shapeshifter if traitor
+        ai_reveal_role = "shapeshifter" if getattr(ai_char, "is_traitor", True) else ai_char.role.value
         reveals.append({
             "characterName": ai_char.name,
             "playerName": "AI",
-            "role": "shapeshifter",
+            "role": ai_reveal_role,
             "alive": ai_char.alive,
+            "isAI": True,
+            "isTraitor": getattr(ai_char, "is_traitor", True),
         })
 
     # Build post-game reveal timeline from all events (including hidden ones)

@@ -369,10 +369,17 @@ async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, 
     and broadcast it as a transcript so text clients also see it.
     Returns {character_name, dialog} to the narrator for voicing.
     """
-    from agents.traitor_agent import traitor_agent
+    from agents.traitor_agent import traitor_agent, loyal_agent
     from routers.ws_router import manager as ws_manager
 
-    result = await traitor_agent.generate_dialog(game_id, context)
+    # Route to loyal or traitor agent based on AI alignment (§12.3.10)
+    fs_check = get_firestore_service()
+    game_check = await fs_check.get_game(game_id)
+    ai_check = game_check.ai_character if game_check else None
+    if ai_check and not ai_check.is_traitor:
+        result = await loyal_agent.generate_dialog(game_id, context)
+    else:
+        result = await traitor_agent.generate_dialog(game_id, context)
     # Persist to Firestore so handle_get_game_state can see AI dialog in recent_speakers.
     # This is needed for characters_not_yet_spoken to correctly exclude the AI character
     # after it has spoken (otherwise it would always appear as silent).

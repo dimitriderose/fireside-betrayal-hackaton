@@ -143,8 +143,9 @@ class GameMaster:
         }
 
         # ── Step 1: Shapeshifter kill target (set by TraitorAgent or default) ──
+        # Loyal AI (§12.3.10 random alignment) does not kill — skip this step.
         shapeshifter_target: Optional[str] = None
-        if ai_char and ai_char.alive:
+        if ai_char and ai_char.alive and getattr(ai_char, "is_traitor", True):
             # TraitorAgent sets the target via a game event of type "night_target".
             # visible_only=False is explicit: night_target events are hidden (visible_in_game=False).
             events = await fs.get_events(game_id, round=game.round, visible_only=False)
@@ -382,16 +383,23 @@ class GameMaster:
         players = await fs.get_all_players(game_id)
         ai_char = await fs.get_ai_character(game_id)
 
-        was_traitor = bool(ai_char and ai_char.name == character_name)
+        is_ai_character = bool(ai_char and ai_char.name == character_name)
+        # was_traitor reflects AI's actual alignment (False for loyal AI, §12.3.10)
+        was_traitor = is_ai_character and getattr(ai_char, "is_traitor", True)
         eliminated_role = None
         needs_hunter_revenge = False
         hunter_character = None
         found = False
+        is_loyal_ai = is_ai_character and not was_traitor
 
-        if was_traitor:
+        if is_ai_character:
             found = True
             await fs.update_game(game_id, {"ai_character.alive": False})
-            eliminated_role = "shapeshifter"
+            if was_traitor:
+                eliminated_role = "shapeshifter"
+            else:
+                # Loyal AI: reveal their actual village role
+                eliminated_role = ai_char.role.value if ai_char.role else "villager"
         else:
             for p in players:
                 if p.character_name == character_name:
@@ -431,6 +439,7 @@ class GameMaster:
             "role": eliminated_role,
             "needs_hunter_revenge": needs_hunter_revenge,
             "hunter_character": hunter_character,
+            "is_loyal_ai": is_loyal_ai,
         }
 
     # ── Win condition check ───────────────────────────────────────────────────
@@ -461,6 +470,11 @@ class GameMaster:
 
         ai_char = game.ai_character
         if not ai_char or not ai_char.alive:
+            if not getattr(ai_char, "is_traitor", True):
+                # Loyal AI was voted out — handled upstream in _resolve_vote_and_advance
+                # before check_win_condition is called, so this branch should not trigger.
+                # If it does reach here (e.g. night kill of loyal AI), return no winner.
+                return None
             # Shapeshifter eliminated — villagers win immediately, no round floor.
             return {
                 "winner": "villagers",
