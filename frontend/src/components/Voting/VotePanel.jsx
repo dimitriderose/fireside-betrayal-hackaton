@@ -231,7 +231,6 @@ export default function VotePanel({ sendMessage }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {candidates.map(charName => {
               const isSelected = myVote === charName
-              const isAI = aiName === charName
               const count = votes[charName] ?? 0
               const isSelf = charName === myCharacterName
 
@@ -276,11 +275,6 @@ export default function VotePanel({ sendMessage }) {
                     {isSelf && !isSelected && (
                       <span className="badge badge-muted" style={{ fontSize: '0.625rem' }}>
                         You
-                      </span>
-                    )}
-                    {isAI && !isSelected && (
-                      <span className="badge badge-muted" style={{ fontSize: '0.625rem' }}>
-                        NPC
                       </span>
                     )}
                   </div>

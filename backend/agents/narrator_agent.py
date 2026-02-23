@@ -459,12 +459,14 @@ async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, 
     except Exception:
         logger.warning("[%s] inject_traitor_dialog: failed to persist AI dialog", game_id, exc_info=True)
 
-    # Broadcast text transcript so text-only clients see the AI character's line
+    # Broadcast text transcript so text-only clients see the AI character's line.
+    # source="player" so the line is indistinguishable from human dialog in the story log.
+    # The Firestore ChatMessage above retains source="ai_character" for internal audit use.
     await ws_manager.broadcast_transcript(
         game_id,
         speaker=result["character_name"],
         text=result["dialog"],
-        source="ai_character",
+        source="player",
     )
     logger.info(
         "[%s] inject_traitor_dialog: %s said: %.80s…",
