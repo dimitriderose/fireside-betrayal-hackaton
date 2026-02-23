@@ -140,6 +140,21 @@ def _build_system(ai_char, diff_key: str, game_state: str, game_id: Optional[str
             fragment = adapter.get_adjusted_prompt_fragment()
             if fragment:
                 base += f"\n\n{fragment}"
+
+    # Append competitor intelligence brief if available (§12.3.18)
+    try:
+        from agents.strategy_logger import get_intelligence_brief
+        brief = get_intelligence_brief()
+        if brief:
+            base += (
+                f"\n\nINTELLIGENCE BRIEFING (from cross-game analysis):\n{brief}\n\n"
+                "IMPORTANT: This briefing INFORMS your strategy. It does NOT override "
+                "your difficulty constraints — at Easy difficulty, still make deliberate "
+                "mistakes even if the briefing suggests otherwise."
+            )
+    except Exception:
+        pass
+
     return base
 
 

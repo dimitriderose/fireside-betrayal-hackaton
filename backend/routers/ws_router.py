@@ -1435,5 +1435,22 @@ async def _end_game(
         clear_difficulty_adapter(game_id)
     except Exception:
         pass
+
+    # Log strategy data for competitor intelligence (§12.3.18) — fire-and-forget
+    try:
+        from agents.strategy_logger import log_game_strategy
+        game_state = await fs.get_game(game_id)
+        asyncio.create_task(log_game_strategy(
+            game_id=game_id,
+            winner=winner,
+            all_events=all_events,
+            ai_character_name=ai_char.name if ai_char else None,
+            difficulty=game_state.difficulty.value if game_state else "normal",
+            player_count=len(all_players),
+            final_round=game_state.round if game_state else 0,
+        ))
+    except Exception:
+        logger.warning("[%s] Could not schedule strategy logging", game_id, exc_info=True)
+
     # Schedule narrator teardown after 30s epilogue window — non-blocking
     asyncio.create_task(_delayed_narrator_stop(game_id, delay=30))

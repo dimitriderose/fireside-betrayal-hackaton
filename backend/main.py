@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🔥 Fireside: Betrayal backend starting up...")
+    # Pre-load competitor intelligence brief from Firestore (§12.3.18)
+    try:
+        from agents.strategy_logger import load_brief_from_firestore
+        await load_brief_from_firestore()
+    except Exception:
+        logger.warning("Could not pre-load intelligence brief", exc_info=True)
     yield
     logger.info("Backend shutting down.")
 
