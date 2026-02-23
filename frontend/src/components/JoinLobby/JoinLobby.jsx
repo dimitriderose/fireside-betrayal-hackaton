@@ -25,7 +25,7 @@ export default function JoinLobby() {
   const [name, setName] = useState('')
   const [gameCode, setGameCode] = useState(urlGameCode ?? '')
   const [difficulty, setDifficulty] = useState('normal')
-  const [randomAlignment, setRandomAlignment] = useState(false)
+  const [randomAlignment, setRandomAlignment] = useState(true)
   const [narratorPreset, setNarratorPreset] = useState('classic')
   const [inPersonMode, setInPersonMode] = useState(false)
   const [error, setError] = useState(null)
@@ -140,7 +140,7 @@ export default function JoinLobby() {
                   <button
                     key={d}
                     type="button"
-                    onClick={() => setDifficulty(d)}
+                    onClick={() => { setDifficulty(d); setRandomAlignment(d !== 'easy') }}
                     className={`btn btn-sm ${difficulty === d ? 'btn-primary' : 'btn-ghost'}`}
                     style={{ flex: 1 }}
                   >
