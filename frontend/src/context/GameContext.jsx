@@ -1,13 +1,13 @@
 import { createContext, useContext, useReducer } from 'react'
 
 const initialState = {
-  playerId: null,
-  playerName: null,
-  gameId: null,
+  playerId: sessionStorage.getItem('playerId') ?? null,
+  playerName: sessionStorage.getItem('playerName') ?? null,
+  gameId: sessionStorage.getItem('gameId') ?? null,
   characterName: null,
   role: null,           // villager | seer | healer | hunter | drunk | shapeshifter
   abilities: [],
-  isHost: false,
+  isHost: sessionStorage.getItem('isHost') === 'true',
   phase: 'setup',       // setup | night | day_discussion | day_vote | elimination | game_over
   round: 0,
   difficulty: 'normal',
@@ -127,7 +127,11 @@ function gameReducer(state, action) {
         voteMap: {},
         myVote: null,
       }
-    case 'GAME_OVER':
+    case 'GAME_OVER': {
+      sessionStorage.removeItem('playerId')
+      sessionStorage.removeItem('playerName')
+      sessionStorage.removeItem('gameId')
+      sessionStorage.removeItem('isHost')
       return {
         ...state,
         winner: action.winner,
@@ -141,6 +145,7 @@ function gameReducer(state, action) {
         voteMap: {},
         myVote: null,
       }
+    }
     case 'SET_IN_PERSON_MODE':
       return { ...state, inPersonMode: action.inPersonMode }
     case 'SET_HIGHLIGHT_REEL':
@@ -150,7 +155,17 @@ function gameReducer(state, action) {
     case 'SET_ERROR':
       return { ...state, error: action.error }
     case 'RESET':
-      return initialState
+      sessionStorage.removeItem('playerId')
+      sessionStorage.removeItem('playerName')
+      sessionStorage.removeItem('gameId')
+      sessionStorage.removeItem('isHost')
+      return {
+        ...initialState,
+        playerId: null,
+        playerName: null,
+        gameId: null,
+        isHost: false,
+      }
     default:
       return state
   }
