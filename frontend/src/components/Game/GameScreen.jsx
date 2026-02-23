@@ -4,6 +4,7 @@ import { useGame } from '../../context/GameContext.jsx'
 import { useWebSocket } from '../../hooks/useWebSocket.js'
 import { useAudioPlayer } from '../../hooks/useAudioPlayer.js'
 import VotePanel from '../Voting/VotePanel.jsx'
+import RoleStrip from './RoleStrip.jsx'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -940,9 +941,9 @@ export default function GameScreen() {
         )}
       </div>
 
-      {/* ── Role card (sticky bottom drawer) ── */}
-      {roleInfo && phase !== 'setup' && (
-        <RoleCard roleInfo={roleInfo} characterName={characterName} role={role} />
+      {/* ── Role strip (sticky bottom drawer, §12.3.6) ── */}
+      {role && phase !== 'setup' && (
+        <RoleStrip role={role} characterName={characterName} />
       )}
     </div>
   )

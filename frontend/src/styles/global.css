@@ -293,3 +293,85 @@ a:hover { text-decoration: underline; }
 .mb-4  { margin-bottom: 16px; }
 .p-4   { padding: 16px; }
 .hidden { display: none; }
+
+/* ===== Role Strip (§12.3.6) ===== */
+.role-strip {
+  background: #1a1209;
+  border-top: 1px solid rgba(251, 191, 36, 0.35);
+  padding: 10px 16px;
+  cursor: pointer;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  transition: padding var(--transition);
+}
+
+.role-strip.role-strip-expanded {
+  padding-bottom: 14px;
+}
+
+.role-strip-trigger {
+  background: none;
+  border: none;
+  padding: 0;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.role-strip-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.role-strip-icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.role-strip-names {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+
+.role-strip-character {
+  font-family: var(--font-heading);
+  font-size: 0.8125rem;
+  color: #fbbf24;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.role-strip-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.role-strip-chevron {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.role-reminder-panel {
+  max-width: 420px;
+  margin: 10px auto 0;
+  padding: 10px 0 2px;
+  border-top: 1px solid rgba(251, 191, 36, 0.15);
+}
+
+.role-reminder-text {
+  font-size: 0.875rem;
+  color: #fbbf24;
+  font-style: italic;
+  line-height: 1.55;
+  margin: 0;
+}
