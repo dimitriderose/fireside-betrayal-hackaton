@@ -414,13 +414,13 @@ export default function GameOver() {
   const { gameId: routeGameId } = useParams()
   const { state, dispatch } = useGame()
   const { winner, reveals, strategyLog, highlightReel, characterName: myCharacterName } = state
-  const [loading, setLoading] = useState(false)
+  const fetchedRef = useRef(false)
 
   // REST fallback: if no winner in context (direct nav / refresh), fetch from API
   useEffect(() => {
-    if (winner || loading) return
+    if (winner || fetchedRef.current) return
     if (!routeGameId) { navigate('/', { replace: true }); return }
-    setLoading(true)
+    fetchedRef.current = true
     fetch(`/api/games/${routeGameId}/result`)
       .then(r => r.ok ? r.json() : null)
       .then(data => {
@@ -436,8 +436,7 @@ export default function GameOver() {
         }
       })
       .catch(() => navigate('/', { replace: true }))
-      .finally(() => setLoading(false))
-  }, [winner, routeGameId, loading, dispatch, navigate])
+  }, [winner, routeGameId, dispatch, navigate])
 
   if (!winner) {
     return (

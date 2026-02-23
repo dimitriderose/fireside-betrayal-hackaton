@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 // ── Scripted mock data ────────────────────────────────────────────────────────
@@ -105,6 +105,10 @@ function StepRoleCard({ onComplete }) {
   const [narPlaying, setNarPlaying] = useState(false)
   const [narLoading, setNarLoading] = useState(false)
   const narAudioRef = useRef(null)
+
+  useEffect(() => {
+    return () => { narAudioRef.current?.pause(); narAudioRef.current = null }
+  }, [])
 
   const handleTap = () => {
     if (!revealed) {

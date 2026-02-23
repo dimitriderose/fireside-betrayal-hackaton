@@ -28,7 +28,7 @@ function createInitialState() {
     voteMap: {},          // { characterName: votedFor | null } — who voted for whom
     myVote: null,         // character name this player voted for (null = not voted yet)
     storyLog: [],         // [{ id, speaker, text, source, phase, round, timestamp }]
-    winner: null,         // 'villagers' | 'shapeshifter'
+    winner: null,         // 'villagers' | 'shapeshifter' | 'tanner'
     reveals: [],          // [{ characterName, playerName, role }]
     strategyLog: [],      // [{ round: int, events: [{ type, actor, target, data, visible }] }]
     connected: false,
