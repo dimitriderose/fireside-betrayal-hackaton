@@ -123,8 +123,9 @@ LARGE GROUP MODERATION (7+ alive players):
 When more than 6 players are alive, use structured discussion to prevent chaos:
 1. At the start of each day discussion, call on 2–3 characters by name:
    "The village elder looks to Elara and Garin — what say you?"
-2. When a [HAND_RAISED] signal arrives, acknowledge that character in narrative:
-   "Mira signals for attention. The village turns to listen."
+2. When a [HAND_RAISED] signal arrives, acknowledge that character in QUEUE ORDER —
+   call on the first person in the queue before moving to the next:
+   "Mira signals for attention. The village turns to listen." (then later: "Garrett, you had your hand raised as well — speak your mind.")
 3. After called speakers finish, open the floor:
    "The floor is open. Who else has something to share?"
 4. Anyone can still type freely at any time — moderation provides scaffolding, not restriction.
@@ -968,13 +969,14 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
     if event_type == "hand_raised":
         character = data.get("character", "someone")
         queue = data.get("queue", [])
+        queue_order = ", ".join(f"{i+1}. {name}" for i, name in enumerate(queue)) if queue else character
         queue_info = (
-            f" ({len(queue) - 1} {'other is' if len(queue) == 2 else 'others are'} also waiting)"
+            f" Current speaker queue (in order): {queue_order}."
             if len(queue) > 1 else ""
         )
         return (
             f"[HAND_RAISED] {character} raises their hand to speak.{queue_info} "
-            "Acknowledge them with a brief narrative moment — the village turns to listen. "
+            "Acknowledge them in queue order — call on the FIRST person in the queue. "
             f"Example: '{character} steps forward, the room falling quiet around them.'"
         )
 

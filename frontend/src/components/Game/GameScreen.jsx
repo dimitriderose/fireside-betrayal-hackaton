@@ -528,7 +528,7 @@ function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction, onRais
           style={{ fontSize: '0.75rem', padding: '6px 10px' }}
           onClick={onRaiseHand}
         >
-          ✋ Speak
+          ✋ I want to speak
         </button>
       </div>
     </div>

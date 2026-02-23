@@ -1218,13 +1218,19 @@ async def _on_raise_hand(
             "queueLength": len(hand_queue.queue),
         })
         # Notify narrator so it can acknowledge the hand raise narratively
-        await narrator_manager.send_phase_event(game_id, "hand_raised", {
-            "character": character_name,
-            "queue": hand_queue.queue[:],
-        })
+        try:
+            await narrator_manager.send_phase_event(game_id, "hand_raised", {
+                "character": character_name,
+                "queue": hand_queue.queue[:],
+            })
+        except Exception:
+            logger.error("[%s] Failed to notify narrator of hand_raised for %s", game_id, character_name, exc_info=True)
     else:
         # Already queued — tell the player their queue position
-        pos = hand_queue.queue.index(character_name) + 1
+        try:
+            pos = hand_queue.queue.index(character_name) + 1
+        except ValueError:
+            pos = 0  # queue was drained concurrently
         await manager.send_to(game_id, player_id, {
             "type": "hand_raise_ack",
             "characterName": character_name,
