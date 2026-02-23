@@ -124,12 +124,17 @@ async def start_game(
     if game.status != GameStatus.LOBBY:
         raise HTTPException(status_code=409, detail="Game is not in lobby state")
 
+    # Lock against double-start: update status BEFORE assign_roles so a second
+    # concurrent request sees IN_PROGRESS and returns 409 rather than running
+    # a second role assignment that would clobber the first.
+    await fs.set_status(game_id, GameStatus.IN_PROGRESS.value)
+
     try:
         assignment = await role_assigner.assign_roles(game_id)
     except ValueError as exc:
+        # Restore lobby so the host can fix the issue and try again
+        await fs.set_status(game_id, GameStatus.LOBBY.value)
         raise HTTPException(status_code=400, detail=str(exc))
-
-    await fs.set_status(game_id, GameStatus.IN_PROGRESS.value)
     # Persist phase=NIGHT / round=1 to Firestore before broadcasting
     await game_master.advance_phase(game_id)
     # Fire traitor night selection for Round 1 in the background
