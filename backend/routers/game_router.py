@@ -96,7 +96,7 @@ async def get_game(game_id: str):
         # Hidden once the game is in progress to avoid leaking structural role info.
         # n = human players + 1 AI (AI is not in the players collection).
         "lobby_summary": (
-            game_master.get_lobby_summary(player_count + 1)
+            game_master.get_lobby_summary(player_count + 1, game.difficulty.value)
             if game.status == GameStatus.LOBBY
             else None
         ),
