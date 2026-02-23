@@ -1401,19 +1401,42 @@ async def _on_in_person_vote_frame(
         "confidence": confidence,
     })
 
-    # Record the hand count in the vote tally (each hand = 1 vote for this character)
-    # We store it as N individual votes by injecting synthetic vote_update entries
-    current_tally = {character_name: hand_count}
+    # Persist votes to Firestore so phase-advance logic can trigger.
+    # Assign camera hands to the first N unvoted alive players (arbitrary
+    # but deterministic — in-person mode the exact voter identity is unknown).
+    all_players = await fs.get_all_players(game_id)
+    unvoted = [p for p in all_players if p.alive and p.voted_for is None]
+    assigned = 0
+    for p in unvoted:
+        if assigned >= hand_count:
+            break
+        await fs.cast_vote(game_id, p.id, character_name)
+        assigned += 1
+
+    # Broadcast updated tally
+    all_players = await fs.get_all_players(game_id)
+    votes_map = {
+        p.character_name: p.voted_for
+        for p in all_players
+        if p.alive and p.character_name
+    }
+    tally = await fs.get_vote_tally(game_id)
     await manager.broadcast(game_id, {
         "type": "vote_update",
-        "votes": {},
-        "tally": current_tally,
+        "votes": votes_map,
+        "tally": tally,
     })
 
     logger.info(
-        "[%s] Camera vote for '%s': %d hands (confidence=%s)",
-        game_id, character_name, hand_count, confidence,
+        "[%s] Camera vote for '%s': %d hands (confidence=%s), assigned %d votes",
+        game_id, character_name, hand_count, confidence, assigned,
     )
+
+    # Auto-advance if all alive humans have now voted
+    voted_count = sum(1 for p in all_players if p.alive and p.voted_for)
+    alive_count = sum(1 for p in all_players if p.alive)
+    if voted_count >= alive_count and game_id not in _resolving_votes:
+        await _resolve_vote_and_advance(game_id, fs)
 
 
 def _build_timeline(events: list) -> list:

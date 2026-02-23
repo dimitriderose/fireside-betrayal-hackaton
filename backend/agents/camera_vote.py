@@ -13,6 +13,7 @@ Returns a count dict:
 Falls through to { hand_count: 0, confidence: "low" } on any failure —
 ws_router falls back to normal phone voting in that case.
 """
+import asyncio
 import base64
 import json
 import logging
@@ -59,22 +60,25 @@ async def count_raised_hands(image_b64: str) -> Dict[str, Any]:
 
         client = genai.Client(api_key=settings.gemini_api_key)
 
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=[
-                gtypes.Content(parts=[
-                    gtypes.Part(text=_COUNT_PROMPT),
-                    gtypes.Part(inline_data=gtypes.Blob(
-                        mime_type="image/jpeg",
-                        data=image_bytes,
-                    )),
-                ])
-            ],
-            config=gtypes.GenerateContentConfig(
-                max_output_tokens=64,
-                temperature=0.0,
-            ),
-        )
+        def _call() -> Any:
+            return client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    gtypes.Content(parts=[
+                        gtypes.Part(text=_COUNT_PROMPT),
+                        gtypes.Part(inline_data=gtypes.Blob(
+                            mime_type="image/jpeg",
+                            data=image_bytes,
+                        )),
+                    ])
+                ],
+                config=gtypes.GenerateContentConfig(
+                    max_output_tokens=64,
+                    temperature=0.0,
+                ),
+            )
+
+        response = await asyncio.get_running_loop().run_in_executor(None, _call)
 
         text = (response.text or "").strip()
         # Strip any accidental markdown fences
