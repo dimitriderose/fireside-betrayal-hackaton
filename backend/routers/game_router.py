@@ -159,11 +159,16 @@ async def start_game(
         f"Game {game_id} started with {len(assignment['assignments'])} players. "
         f"Characters in play: {assignment['character_cast']}."
     )
+    ai = assignment["ai_character"]
     return {
         "status": "started",
         "game_id": game_id,
         "character_cast": assignment["character_cast"],
-        "ai_character": assignment["ai_character"],
+        "ai_character": {
+            "name": ai["name"],
+            "intro": ai["intro"],
+            "personality_hook": ai["personality_hook"],
+        },
     }
 
 
@@ -183,6 +188,14 @@ async def get_events(
     game = await fs.get_game(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
+
+    # Enforce post-game-only access for hidden events — prevents mid-game
+    # callers from reading night_target/kill events that reveal AI alignment.
+    if not visible_only and game.status != GameStatus.FINISHED:
+        raise HTTPException(
+            status_code=403,
+            detail="Full event log is only available after the game has ended.",
+        )
 
     events = await fs.get_events(game_id, visible_only=visible_only)
     return {
