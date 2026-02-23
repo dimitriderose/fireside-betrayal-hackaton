@@ -12,7 +12,7 @@ const PRESETS = [
   { id: 'classic',  label: '⚔️ Classic',  desc: 'Deep, dramatic fantasy narrator',
     sample: '"The accused stands before you. Speak your defence, if you dare."' },
   { id: 'campfire', label: '🔥 Campfire', desc: 'Warm storyteller among friends',
-    sample: '"Gather close now — someone here isn\'t telling the whole truth."' },
+    sample: '"Pull up a log, friend. The night\'s young and the fire\'s warm."' },
   { id: 'horror',   label: '🕯️ Horror',   desc: 'Slow, unsettling dread',
     sample: '"Something watches from beyond the treeline. It always has."' },
   { id: 'comedy',   label: '😏 Comedy',   desc: 'Wry, self-aware humor',
@@ -185,7 +185,7 @@ export default function JoinLobby() {
                   <button
                     key={d}
                     type="button"
-                    onClick={() => setDifficulty(d)
+                    onClick={() => setDifficulty(d)}
                     className={`btn btn-sm ${difficulty === d ? 'btn-primary' : 'btn-ghost'}`}
                     style={{ flex: 1 }}
                   >
@@ -246,7 +246,7 @@ export default function JoinLobby() {
                         {p.desc}
                       </span>
                       {selected && (
-                        <span style={{ position: 'relative', zIndex: 1, fontSize: '0.625rem', fontStyle: 'italic', color: 'rgba(255,255,255,0.6)', fontWeight: 400, marginTop: 2 }}>
+                        <span style={{ position: 'relative', zIndex: 1, fontSize: '0.6875rem', fontStyle: 'italic', color: 'rgba(255,255,255,0.6)', fontWeight: 400, marginTop: 2 }}>
                           {p.sample}
                         </span>
                       )}
