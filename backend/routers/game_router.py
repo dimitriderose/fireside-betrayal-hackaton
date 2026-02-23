@@ -85,14 +85,7 @@ async def get_game(game_id: str):
         "round": game.round,
         "difficulty": game.difficulty.value,
         "character_cast": game.character_cast,
-        "ai_character": (
-            {
-                "name": game.ai_character.name,
-                "alive": game.ai_character.alive,
-            }
-            if game.ai_character
-            else None
-        ),
+        "ai_character": None,  # identity delivered privately via WS connected message
         "players": [p.to_public() for p in players],
         "player_count": player_count,
         # Lobby-only: shown before game start so host can see role breakdown + duration.

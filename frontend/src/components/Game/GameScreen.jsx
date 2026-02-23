@@ -273,7 +273,7 @@ function CharacterGridPanel({ players, aiCharacter, myCharacterName }) {
               }}
             >
               <div style={{ fontSize: '1.25rem', marginBottom: 4 }}>
-                {c.alive ? (isMe ? '🙂' : c.isAI ? '❓' : '🧑') : '💀'}
+                {c.alive ? (isMe ? '🙂' : '🧑') : '💀'}
               </div>
               <div
                 style={{
@@ -286,9 +286,6 @@ function CharacterGridPanel({ players, aiCharacter, myCharacterName }) {
               >
                 {c.name.split(' ').slice(0, 2).join(' ')}
               </div>
-              {c.isAI && c.alive && (
-                <div style={{ fontSize: '0.5rem', color: 'var(--text-dim)', marginTop: 2 }}>NPC</div>
-              )}
             </div>
           )
         })}

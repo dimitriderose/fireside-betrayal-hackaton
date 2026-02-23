@@ -278,11 +278,6 @@ export default function VotePanel({ sendMessage }) {
                         You
                       </span>
                     )}
-                    {isAI && !isSelected && (
-                      <span className="badge badge-muted" style={{ fontSize: '0.625rem' }}>
-                        NPC
-                      </span>
-                    )}
                   </div>
 
                   {/* Live vote count */}
