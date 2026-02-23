@@ -199,3 +199,56 @@ async def get_events(
             for e in events
         ],
     }
+
+
+# ── Tutorial script (§12.3.7) ─────────────────────────────────────────────────
+
+TUTORIAL_SCRIPT = {
+    "character": {"name": "Herbalist Mira", "role": "seer", "icon": "🔮"},
+    "cast": ["Blacksmith Garin", "Elder Sylva", "Miller Brant"],
+    "steps": [
+        {
+            "phase": "setup",
+            "narrator": "Welcome to Fireside: Betrayal. Tonight, you play as Herbalist Mira in the village of Thornwood. Each night a hidden Shapeshifter picks off a villager — the village must identify and vote them out. Let's start — tap your role card to learn your ability.",
+            "ui_highlight": "role_card",
+            "wait_for": "tap_role_card",
+            "prompt": "Tap the glowing role card below to learn your power.",
+        },
+        {
+            "phase": "night",
+            "narrator": "Night falls over Thornwood. As the Seer, you may peer into one villager's soul. Tap a character to investigate them.",
+            "ui_highlight": "character_grid",
+            "wait_for": "tap_character",
+            "scripted_result": {"target": "Blacksmith Garin", "is_shapeshifter": False},
+            "prompt": "Tap any character card to investigate them.",
+        },
+        {
+            "phase": "day_discussion",
+            "narrator": "Dawn breaks. The village gathers to discuss. Try a quick reaction — tap '🔍 Suspect…' and pick a character to voice your suspicion.",
+            "ui_highlight": "quick_reactions",
+            "wait_for": "tap_quick_reaction",
+            "scripted_ai_response": "Garin shifts uncomfortably. 'I was at the forge all night. Ask anyone.'",
+            "prompt": "Use a quick reaction to join the discussion.",
+        },
+        {
+            "phase": "day_vote",
+            "narrator": "The village must decide. Who do you think is the Shapeshifter? Tap a character to cast your vote.",
+            "ui_highlight": "vote_panel",
+            "wait_for": "tap_vote",
+            "prompt": "Tap a character to vote for elimination.",
+        },
+        {
+            "phase": "game_over",
+            "narrator": "The village has spoken. Here is everything that was really happening behind the scenes — the hidden actions, the night moves, all revealed.",
+            "ui_highlight": "post_game_timeline",
+            "wait_for": "done",
+            "prompt": "Explore the post-game timeline to see all hidden events.",
+        },
+    ],
+}
+
+
+@router.get("/tutorial")
+async def get_tutorial_script():
+    """Return the scripted tutorial flow. No Firestore, no multiplayer."""
+    return TUTORIAL_SCRIPT
