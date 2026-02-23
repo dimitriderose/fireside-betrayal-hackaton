@@ -126,6 +126,13 @@ export default function Landing() {
           >
             Join a Game
           </button>
+          <button
+            className="btn btn-ghost btn-lg"
+            onClick={() => navigate('/tutorial')}
+            style={{ fontSize: '0.9375rem' }}
+          >
+            📖 How to Play
+          </button>
         </div>
       </div>
 
