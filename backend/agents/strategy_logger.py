@@ -239,7 +239,7 @@ async def _generate_brief(
             "- What WORKS (successful deception strategies)\n"
             "- TIMING (when to be aggressive vs passive)\n"
         )
-        response = await asyncio.get_event_loop().run_in_executor(
+        response = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: client.models.generate_content(
                 model=settings.traitor_model,
