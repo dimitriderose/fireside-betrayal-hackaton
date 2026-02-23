@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 
@@ -29,6 +29,48 @@ export default function JoinLobby() {
   const [inPersonMode, setInPersonMode] = useState(false)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [previewState, setPreviewState] = useState({})  // { presetId: 'idle'|'loading'|'playing' }
+  const previewAudioRef = useRef(null)
+  const previewAbortRef = useRef(null)  // AbortController for in-flight fetch
+
+  const handlePreviewPlay = async (presetId) => {
+    // Cancel any in-flight fetch before starting a new one (prevents double-play race)
+    if (previewAbortRef.current) {
+      previewAbortRef.current.abort()
+      previewAbortRef.current = null
+    }
+    // Stop current playback if any
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause()
+      previewAudioRef.current = null
+    }
+    // Toggle off if already playing this preset
+    if (previewState[presetId] === 'playing') {
+      setPreviewState(prev => ({ ...prev, [presetId]: 'idle' }))
+      return
+    }
+    const controller = new AbortController()
+    previewAbortRef.current = controller
+    setPreviewState(prev => ({ ...prev, [presetId]: 'loading' }))
+    try {
+      const res = await fetch(`/api/narrator/preview/${presetId}`, { signal: controller.signal })
+      if (!res.ok) throw new Error('preview unavailable')
+      const { audio_b64 } = await res.json()
+      // Only proceed if this request is still the active one (not superseded)
+      if (previewAbortRef.current !== controller) return
+      previewAbortRef.current = null
+      const audio = new Audio(`data:audio/wav;base64,${audio_b64}`)
+      previewAudioRef.current = audio
+      setPreviewState(prev => ({ ...prev, [presetId]: 'playing' }))
+      audio.play().catch(() => {})
+      audio.onended = () => {
+        setPreviewState(prev => ({ ...prev, [presetId]: 'idle' }))
+        previewAudioRef.current = null
+      }
+    } catch {
+      setPreviewState(prev => ({ ...prev, [presetId]: 'idle' }))
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -157,20 +199,44 @@ export default function JoinLobby() {
             <div>
               <label className="input-label">Narrator Style</label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6 }}>
-                {PRESETS.map(p => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setNarratorPreset(p.id)}
-                    className={`btn btn-sm ${narratorPreset === p.id ? 'btn-primary' : 'btn-ghost'}`}
-                    style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px', height: 'auto' }}
-                  >
-                    <span>{p.label}</span>
-                    <span style={{ fontSize: '0.6875rem', color: narratorPreset === p.id ? 'rgba(255,255,255,0.75)' : 'var(--text-dim)', fontWeight: 400 }}>
-                      {p.desc}
-                    </span>
-                  </button>
-                ))}
+                {PRESETS.map(p => {
+                  const ps = previewState[p.id] ?? 'idle'
+                  return (
+                    <div
+                      key={p.id}
+                      className={`btn btn-sm ${narratorPreset === p.id ? 'btn-primary' : 'btn-ghost'}`}
+                      style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px', height: 'auto', cursor: 'default', userSelect: 'none' }}
+                      onClick={() => setNarratorPreset(p.id)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={e => e.key === 'Enter' && setNarratorPreset(p.id)}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                        <span>{p.label}</span>
+                        <button
+                          type="button"
+                          title={`Preview ${p.label} narrator`}
+                          onClick={e => { e.stopPropagation(); handlePreviewPlay(p.id) }}
+                          disabled={ps === 'loading'}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: ps === 'loading' ? 'default' : 'pointer',
+                            fontSize: '0.75rem',
+                            padding: '2px 4px',
+                            color: narratorPreset === p.id ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)',
+                            lineHeight: 1,
+                          }}
+                        >
+                          {ps === 'loading' ? '⏳' : ps === 'playing' ? '⏹' : '▶'}
+                        </button>
+                      </div>
+                      <span style={{ fontSize: '0.6875rem', color: narratorPreset === p.id ? 'rgba(255,255,255,0.75)' : 'var(--text-dim)', fontWeight: 400 }}>
+                        {p.desc}
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}
