@@ -732,6 +732,16 @@ export default function GameScreen() {
   // Clear scene image on phase transition so stale art doesn't persist
   useEffect(() => { setSceneImage(null) }, [phase])
 
+  // Auto-dismiss day hint on phase transition away from day_discussion (state only, not localStorage).
+  // Explicit ✕ click writes localStorage for permanent across-game dismissal.
+  const prevPhaseRef = useRef(null)
+  useEffect(() => {
+    if (prevPhaseRef.current === 'day_discussion' && phase !== 'day_discussion' && !dayHintDismissed) {
+      setDayHintDismissed(true)
+    }
+    prevPhaseRef.current = phase
+  }, [phase, dayHintDismissed])
+
   // Redirect if no playerId (navigated directly without joining)
   if (!playerId) {
     return (

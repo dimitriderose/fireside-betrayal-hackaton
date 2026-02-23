@@ -98,7 +98,7 @@ class FirestoreService:
         return None
 
     async def get_all_players(self, game_id: str) -> List[PlayerState]:
-        docs = await self._run(lambda: list(self._players_ref(game_id).stream()))
+        docs = await self._run(lambda: list(self._players_ref(game_id).order_by("joined_at").stream()))
         return [PlayerState(**d.to_dict()) for d in docs]
 
     async def get_alive_players(self, game_id: str) -> List[PlayerState]:

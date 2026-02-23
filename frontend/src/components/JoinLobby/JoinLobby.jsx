@@ -9,10 +9,14 @@ const DIFF_DESC = {
 }
 
 const PRESETS = [
-  { id: 'classic',  label: '⚔️ Classic',  desc: 'Deep, dramatic fantasy narrator' },
-  { id: 'campfire', label: '🔥 Campfire', desc: 'Warm storyteller among friends' },
-  { id: 'horror',   label: '🕯️ Horror',   desc: 'Slow, unsettling dread' },
-  { id: 'comedy',   label: '😏 Comedy',   desc: 'Wry, self-aware humor' },
+  { id: 'classic',  label: '⚔️ Classic',  desc: 'Deep, dramatic fantasy narrator',
+    sample: '"The accused stands before you. Speak your defence, if you dare."' },
+  { id: 'campfire', label: '🔥 Campfire', desc: 'Warm storyteller among friends',
+    sample: '"Pull up a log, friend. The night\'s young and the fire\'s warm."' },
+  { id: 'horror',   label: '🕯️ Horror',   desc: 'Slow, unsettling dread',
+    sample: '"Something watches from beyond the treeline. It always has."' },
+  { id: 'comedy',   label: '😏 Comedy',   desc: 'Wry, self-aware humor',
+    sample: '"Congratulations — you\'ve all survived round one. Mostly."' },
 ]
 
 export default function JoinLobby() {
@@ -181,7 +185,7 @@ export default function JoinLobby() {
                   <button
                     key={d}
                     type="button"
-                    onClick={() => setDifficulty(d)
+                    onClick={() => setDifficulty(d)}
                     className={`btn btn-sm ${difficulty === d ? 'btn-primary' : 'btn-ghost'}`}
                     style={{ flex: 1 }}
                   >
@@ -201,17 +205,23 @@ export default function JoinLobby() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6 }}>
                 {PRESETS.map(p => {
                   const ps = previewState[p.id] ?? 'idle'
+                  const selected = narratorPreset === p.id
                   return (
                     <div
                       key={p.id}
-                      className={`btn btn-sm ${narratorPreset === p.id ? 'btn-primary' : 'btn-ghost'}`}
-                      style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px', height: 'auto', cursor: 'default', userSelect: 'none' }}
-                      onClick={() => setNarratorPreset(p.id)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={e => e.key === 'Enter' && setNarratorPreset(p.id)}
+                      className={`btn btn-sm ${selected ? 'btn-primary' : 'btn-ghost'}`}
+                      style={{ position: 'relative', flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px', height: 'auto', userSelect: 'none' }}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                      {/* Full-card select button (behind preview button) */}
+                      <button
+                        type="button"
+                        aria-label={`Select ${p.label} narrator`}
+                        aria-pressed={selected}
+                        onClick={() => setNarratorPreset(p.id)}
+                        style={{ position: 'absolute', inset: 0, background: 'none', border: 'none', cursor: 'pointer', zIndex: 0 }}
+                      />
+                      {/* Visible content + preview button (above card button) */}
+                      <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
                         <span>{p.label}</span>
                         <button
                           type="button"
@@ -219,21 +229,27 @@ export default function JoinLobby() {
                           onClick={e => { e.stopPropagation(); handlePreviewPlay(p.id) }}
                           disabled={ps === 'loading'}
                           style={{
+                            position: 'relative', zIndex: 1,
                             background: 'none',
                             border: 'none',
                             cursor: ps === 'loading' ? 'default' : 'pointer',
                             fontSize: '0.75rem',
                             padding: '2px 4px',
-                            color: narratorPreset === p.id ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)',
+                            color: selected ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)',
                             lineHeight: 1,
                           }}
                         >
                           {ps === 'loading' ? '⏳' : ps === 'playing' ? '⏹' : '▶'}
                         </button>
                       </div>
-                      <span style={{ fontSize: '0.6875rem', color: narratorPreset === p.id ? 'rgba(255,255,255,0.75)' : 'var(--text-dim)', fontWeight: 400 }}>
+                      <span style={{ position: 'relative', zIndex: 1, fontSize: '0.6875rem', color: selected ? 'rgba(255,255,255,0.75)' : 'var(--text-dim)', fontWeight: 400 }}>
                         {p.desc}
                       </span>
+                      {selected && (
+                        <span style={{ position: 'relative', zIndex: 1, fontSize: '0.6875rem', fontStyle: 'italic', color: 'rgba(255,255,255,0.6)', fontWeight: 400, marginTop: 2 }}>
+                          {p.sample}
+                        </span>
+                      )}
                     </div>
                   )
                 })}
