@@ -479,27 +479,27 @@ export default function GameOver() {
         </p>
       </div>
 
-      {/* AI Teaser — pull-quote from the timeline to drive scroll-through */}
+      {/* AI Teaser — pull-quote from the first secret event to drive scroll-through */}
       {(() => {
-        const allEvents = strategyLog.flatMap(r => r.events ?? [])
+        const allEvents = (strategyLog ?? []).flatMap(r => r.events ?? [])
         const firstSecret = allEvents.find(e => !e.visible && EVENT_RENDERERS[e.type])
-        const fallbackHighlight = highlightReel?.[0]
-        const teaserText = firstSecret
-          ? EVENT_RENDERERS[firstSecret.type](firstSecret).text
-          : fallbackHighlight?.description ?? null
-        if (!teaserText) return null
+        if (!firstSecret) return null
+        const teaserText = EVENT_RENDERERS[firstSecret.type](firstSecret).text
+        // Loyal-AI-voted-out: reframe label — the AI was helping, not scheming
+        const teaserLabel = loyalAIVotedOut ? 'What your ally was doing for you' : "What the village didn't see"
+        const teaserLink = loyalAIVotedOut ? '↓ See the full timeline' : '↓ See what the AI was really thinking'
         return (
           <div
             style={{
-              borderLeft: '3px solid var(--danger)',
-              margin: '0 auto',
-              maxWidth: 480,
+              borderLeft: `3px solid ${loyalAIVotedOut ? 'var(--success)' : 'var(--danger)'}`,
+              margin: '0 auto 0',
+              maxWidth: 420,
               padding: '12px 20px',
-              background: 'rgba(220,38,38,0.06)',
+              background: loyalAIVotedOut ? 'rgba(22,163,74,0.06)' : 'rgba(220,38,38,0.06)',
             }}
           >
-            <div style={{ fontSize: '0.625rem', color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 6 }}>
-              🔴 What the village didn't see
+            <div style={{ fontSize: '0.625rem', color: loyalAIVotedOut ? 'var(--success)' : 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 6 }}>
+              <span aria-hidden="true">{loyalAIVotedOut ? '💚' : '🔴'}</span> {teaserLabel}
             </div>
             <p style={{ fontStyle: 'italic', fontSize: '0.875rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
               "{teaserText}"
@@ -512,7 +512,7 @@ export default function GameOver() {
               }}
               style={{ display: 'inline-block', marginTop: 10, fontSize: '0.75rem', color: 'var(--accent)', textDecoration: 'none' }}
             >
-              ↓ See what the AI was really thinking
+              <span aria-hidden="true">↓ </span>{teaserLink}
             </a>
           </div>
         )
