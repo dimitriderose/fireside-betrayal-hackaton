@@ -119,6 +119,17 @@ React to the pacing signal as follows:
 - PACE_PUSH: Actively advance — "The sun climbs higher. Time presses — the village must decide."
 - PACE_CIRCULAR: Redirect — "The same names circle like vultures. Perhaps fresh eyes would help."
 
+LARGE GROUP MODERATION (7+ alive players):
+When more than 6 players are alive, use structured discussion to prevent chaos:
+1. At the start of each day discussion, call on 2–3 characters by name:
+   "The village elder looks to Elara and Garin — what say you?"
+2. When a [HAND_RAISED] signal arrives, acknowledge that character in narrative:
+   "Mira signals for attention. The village turns to listen."
+3. After called speakers finish, open the floor:
+   "The floor is open. Who else has something to share?"
+4. Anyone can still type freely at any time — moderation provides scaffolding, not restriction.
+For 6 or fewer alive players, skip structured moderation — let conversation flow naturally.
+
 AFFECTIVE TONE SIGNALS:
 Each player message may also arrive prefixed with [AFFECTIVE: ...] signals. Adjust your
 delivery (not your content) accordingly:
@@ -298,13 +309,14 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             "new_phase": next_phase.value,
         }
 
-        # When entering DAY_DISCUSSION: reset the conversation tracker for fresh pacing data
+        # When entering DAY_DISCUSSION: reset conversation tracker + hand queue for fresh round data
         if next_phase == Phase.DAY_DISCUSSION:
             try:
-                from routers.ws_router import reset_tracker as _reset_tracker
+                from routers.ws_router import reset_tracker as _reset_tracker, drain_hand_queue as _drain_hand_queue
                 _reset_tracker(game_id)
+                _drain_hand_queue(game_id)
             except Exception:
-                logger.warning("[%s] Could not reset conversation tracker — stale pacing data may bleed into new round", game_id, exc_info=True)
+                logger.warning("[%s] Could not reset conversation tracker/hand queue — stale data may bleed into new round", game_id, exc_info=True)
 
         # When entering NIGHT: fire traitor night selection + inform narrator about role-players
         if next_phase == Phase.NIGHT:
@@ -951,6 +963,19 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             f"one word: '{word}'. Deliver this in a single eerie sentence — "
             f"e.g. 'A cold wind stirs... the spirit of {from_char} seems to whisper \"{word}\"...' "
             "Do not explain or interpret the clue. Let it hang in the air."
+        )
+
+    if event_type == "hand_raised":
+        character = data.get("character", "someone")
+        queue = data.get("queue", [])
+        queue_info = (
+            f" ({len(queue) - 1} {'other is' if len(queue) == 2 else 'others are'} also waiting)"
+            if len(queue) > 1 else ""
+        )
+        return (
+            f"[HAND_RAISED] {character} raises their hand to speak.{queue_info} "
+            "Acknowledge them with a brief narrative moment — the village turns to listen. "
+            f"Example: '{character} steps forward, the room falling quiet around them.'"
         )
 
     # Generic fallback

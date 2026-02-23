@@ -452,7 +452,7 @@ function ChatBar({ chatText, onChange, onSubmit }) {
 }
 
 
-function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction }) {
+function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction, onRaiseHand }) {
   const [picker, setPicker] = useState(null) // 'suspect' | 'trust' | null
   const targets = aliveCharacters.filter(c => c !== myCharacterName)
 
@@ -522,6 +522,13 @@ function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction }) {
           onClick={() => onReaction('information', '')}
         >
           💡 Info
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+          onClick={onRaiseHand}
+        >
+          ✋ Speak
         </button>
       </div>
     </div>
@@ -742,6 +749,10 @@ export default function GameScreen() {
     sendMessage('spectator_clue', { word })
   }
 
+  const handleRaiseHand = () => {
+    sendMessage('raise_hand', { characterName: characterName })
+  }
+
   const handleStartGame = async () => {
     setStartLoading(true)
     setStartError(null)
@@ -936,6 +947,7 @@ export default function GameScreen() {
               aliveCharacters={aliveCharacters}
               myCharacterName={characterName}
               onReaction={handleQuickReaction}
+              onRaiseHand={handleRaiseHand}
             />
           </>
         )}
