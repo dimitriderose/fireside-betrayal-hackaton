@@ -949,9 +949,8 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
     killed = night_result.get("killed")
 
     if killed:
-        # eliminate_character logs the event and returns metadata.
-        # resolve_night already called fs.eliminate_by_character() so the DB update
-        # is idempotent; by_vote=False ensures the event log is correct.
+        # eliminate_character handles the DB write, clears votes, and logs the
+        # elimination event. by_vote=False marks it as a night kill.
         elim_result = await game_master.eliminate_character(game_id, killed, by_vote=False)
 
         await manager.broadcast_elimination(

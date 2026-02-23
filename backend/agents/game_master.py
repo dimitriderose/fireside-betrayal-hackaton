@@ -177,23 +177,28 @@ class GameMaster:
         if bodyguard_id and bodyguard_id in night_actions:
             bodyguard_target = night_actions[bodyguard_id]
 
-        # ── Step 3: Apply kill (bodyguard → healer → direct hit) ──────────────
+        # ── Step 3: Apply kill (healer → bodyguard → direct hit) ──────────────
+        # Priority: Healer block takes precedence when both Healer and Bodyguard
+        # protect the same target (target lives, bodyguard is spared).
+        # Bodyguard only sacrifices when Healer is NOT also protecting that target.
+        # Actual DB elimination is deferred to the caller via eliminate_character().
         if shapeshifter_target:
-            if shapeshifter_target == bodyguard_target:
-                # Bodyguard absorbs: target lives, bodyguard dies
+            if shapeshifter_target == protected_target:
+                # Healer blocks: nobody dies
+                logger.info(f"[{game_id}] Kill on {shapeshifter_target} blocked by Healer")
+            elif shapeshifter_target == bodyguard_target:
+                # Bodyguard absorbs: target lives, bodyguard dies (DB write by caller)
                 bodyguard_player = id_to_player.get(bodyguard_id)
                 if bodyguard_player:
                     result["killed"] = bodyguard_player.character_name
                     result["bodyguard_sacrifice"] = True
-                    await fs.eliminate_by_character(game_id, bodyguard_player.character_name)
                     logger.info(f"[{game_id}] Bodyguard {bodyguard_player.character_name} died protecting {shapeshifter_target}")
-            elif shapeshifter_target == protected_target:
-                logger.info(f"[{game_id}] Kill on {shapeshifter_target} blocked by Healer")
+                else:
+                    logger.warning(f"[{game_id}] Bodyguard player not found in id_to_player — sacrifice skipped")
             else:
                 result["killed"] = shapeshifter_target
                 victim = char_to_player.get(shapeshifter_target)
                 if victim:
-                    await fs.eliminate_by_character(game_id, shapeshifter_target)
                     if victim.role == Role.HUNTER:
                         result["hunter_triggered"] = True
                         logger.info(f"[{game_id}] Hunter {shapeshifter_target} was killed — revenge triggered")
