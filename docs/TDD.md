@@ -4,7 +4,7 @@
 **Category:** 🗣️ Live Agents
 **Author:** Software Architecture Team
 **Companion Document:** PRD — Fireside — Betrayal v1.0
-**Version:** 1.0 | February 21, 2026
+**Version:** 2.0 | February 23, 2026 *(updated to reflect implemented architecture)*
 
 ---
 
@@ -12,9 +12,11 @@
 
 This Technical Design Document specifies the implementation architecture for Fireside — Betrayal, a real-time voice-first multiplayer social deduction game powered by the Gemini Live API, Google ADK, and Google Cloud. It translates the PRD's product requirements into concrete engineering decisions, API contracts, data models, code structure, and deployment specifications.
 
-**Scope:** All P0 (Must Have) features from the PRD, plus all P1 features: session resumption (architecturally critical for games exceeding 10 minutes), Hunter + Drunk roles (replayability), Traitor difficulty levels (accessibility), quick-reaction buttons (casual player participation), and post-game reveal timeline (retention).
+**Scope:** All P0, P1, and P2 features from the PRD are now implemented. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more.
 
-**Out of scope (unspecified):** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). All P2 features are now fully specified in §12.3 (18 sections). P3 features are additive and do not affect core architecture. See PRD §MVP Scope for full descriptions and prioritization.
+**Out of scope:** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). P3 features are additive and do not affect core architecture.
+
+> **Implementation Note:** The original TDD (v1.0) was a pre-implementation design spec. The code snippets below represent the *design intent* — the actual implementation in the codebase may differ in details (function signatures, error handling, etc.) while preserving the architectural decisions. Key deviations from the original design are called out with "**Implementation Update**" annotations.
 
 ---
 
@@ -24,7 +26,7 @@ This Technical Design Document specifies the implementation architecture for Fir
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                       PLAYER DEVICES (3–6)                      │
+│                       PLAYER DEVICES (2–7)                      │
 │                                                                 │
 │   Phone A          Phone B          Phone C         Phone N     │
 │   ┌──────────┐    ┌──────────┐    ┌──────────┐                  │
@@ -44,10 +46,15 @@ This Technical Design Document specifies the implementation architecture for Fir
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │                 FastAPI Application Server                 │  │
 │  │                                                           │  │
-│  │  /api/games          POST   → Create game (body: {difficulty})│  │
-│  │  /api/games/{id}     GET    → Game state                  │  │
-│  │  /ws/{gameId}        WS     → Player connection           │  │
-│  │  /health             GET    → Health check                │  │
+│  │  /api/games              POST → Create game + register host   │  │
+│  │  /api/games/{id}/join   POST → Join lobby                   │  │
+│  │  /api/games/{id}        GET  → Public game state            │  │
+│  │  /api/games/{id}/start  POST → Start game (host only)       │  │
+│  │  /api/games/{id}/events GET  → Event log (gated post-game)  │  │
+│  │  /api/games/{id}/result GET  → Post-game result + reveals   │  │
+│  │  /api/narrator/preview/{p} GET → Narrator audio sample      │  │
+│  │  /ws/{gameId}           WS   → Player connection            │  │
+│  │  /health                GET  → Health check                 │  │
 │  └──────────────┬────────────────────────────────────────────┘  │
 │                 │                                                │
 │  ┌──────────────▼────────────────────────────────────────────┐  │
@@ -70,13 +77,18 @@ This Technical Design Document specifies the implementation architecture for Fir
 │  │   │ advance_phase   │  ┌─────────────────┐               │  │
 │  │   │ narrate_event   │  │Game Master Agent│               │  │
 │  │   │ inject_traitor  │  │(Custom Agent)   │               │  │
-│  │   └─────────────────┘  │                  │               │  │
-│  │                        │ Deterministic:   │               │  │
+│  │   │ gen_vote_context│  │                  │               │  │
+│  │   └─────────────────┘  │ Deterministic:   │               │  │
 │  │                        │ assign_roles     │               │  │
-│  │                        │ count_votes      │               │  │
-│  │                        │ eliminate_player  │               │  │
-│  │                        │ check_win        │               │  │
-│  │                        └─────────────────┘               │  │
+│  │   ┌─────────────────┐  │ count_votes      │               │  │
+│  │   │ Additional       │  │ eliminate_player │               │  │
+│  │   │ Agents:          │  │ check_win        │               │  │
+│  │   │ scene_agent      │  └─────────────────┘               │  │
+│  │   │ camera_vote      │                                     │  │
+│  │   │ audio_recorder   │  ┌─────────────────┐               │  │
+│  │   │ strategy_logger  │  │ Role Assigner   │               │  │
+│  │   │ role_assigner    │  │ (LLM char gen)  │               │  │
+│  │   └─────────────────┘  └─────────────────┘               │  │
 │  └──────────────┬────────────────────────────────────────────┘  │
 │                 │                                                │
 │  ┌──────────────▼────────────────────────────────────────────┐  │
@@ -367,13 +379,15 @@ class GameMasterAgent(BaseAgent):
         GamePhase.ELIMINATION: GamePhase.NIGHT,  # or GAME_OVER
     }
     
+    # **Implementation Update:** Role distribution is a list-based format keyed by
+    # total character count (humans + 1 AI). Includes Bodyguard (7+) and Tanner (8).
     ROLE_DISTRIBUTION = {
-        3: {"villager": 1, "seer": 1, "healer": 0, "hunter": 0, "drunk": 0},  # + 1 AI
-        4: {"villager": 2, "seer": 1, "healer": 0, "hunter": 0, "drunk": 0},  # No Healer — too few eliminations
-        5: {"villager": 2, "seer": 1, "healer": 1, "hunter": 0, "drunk": 0},
-        6: {"villager": 2, "seer": 1, "healer": 1, "hunter": 1, "drunk": 0},  # P1: Hunter
-        7: {"villager": 3, "seer": 1, "healer": 1, "hunter": 1, "drunk": 0},
-        8: {"villager": 4, "seer": 1, "healer": 1, "hunter": 1, "drunk": 0},
+        3: ["villager", "seer", "shapeshifter"],
+        4: ["villager", "villager", "seer", "shapeshifter"],
+        5: ["villager", "villager", "seer", "healer", "shapeshifter"],
+        6: ["villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
+        7: ["villager", "villager", "seer", "healer", "hunter", "bodyguard", "shapeshifter"],
+        8: ["villager", "villager", "seer", "healer", "hunter", "bodyguard", "tanner", "shapeshifter"],
     }
     
     # Lobby display: communicate role distribution to host before game start.
@@ -1365,28 +1379,32 @@ async def game_websocket(websocket: WebSocket, game_id: str):
 ```
 fireside-db/
 ├── games/
-│   └── {gameId}/                          # Auto-generated or 4-digit code
+│   └── {gameId}/                          # 6-char alphanumeric code (ABCDEFGHJKLMNPQRSTUVWXYZ23456789)
 │       ├── status: string                 # "lobby" | "in_progress" | "finished"
 │       ├── phase: string                  # "setup" | "night" | "day_discussion" | "day_vote" | "elimination" | "game_over"
 │       ├── round: number                  # Current round (1-indexed)
-│       ├── difficulty: string             # P1: "easy" | "normal" | "hard" — AI deception level
+│       ├── difficulty: string             # "easy" | "normal" | "hard" — AI deception level
+│       ├── winner: string | null          # "villagers" | "shapeshifter" | "tanner" — set on game end
+│       ├── random_alignment: boolean      # §12.3.10: AI draws random role (true for Normal/Hard)
+│       ├── narrator_preset: string        # §12.3.17: "classic" | "campfire" | "horror" | "comedy"
+│       ├── in_person_mode: boolean        # §12.3.16: Camera-based voting enabled
 │       ├── created_at: timestamp          # Game creation time
 │       ├── updated_at: timestamp          # Last state change
 │       ├── host_player_id: string         # Player who created the game
-│       ├── join_code: string              # 4-digit code for joining
-│       ├── max_players: number            # 3-6 (MVP)
-│       ├── story_genre: string            # "fantasy" (MVP: only one)
+│       ├── story_genre: string            # "fantasy_village" (only genre for now)
 │       ├── story_context: string          # Current narrative summary for session injection
 │       │
-│       ├── character_cast: string[]       # P0: All character names in this game (players + AI)
-│       │                                  # e.g. ["Blacksmith Garin", "Merchant Elara", "Herbalist Mira", ...]
+│       ├── character_cast: string[]       # All character names in this game (players + AI)
+│       ├── generated_characters: map[]    # LLM-generated: [{name, intro, personality_hook}, ...]
 │       │
 │       ├── ai_character/                  # Embedded document
-│       │   ├── name: string               # "Blacksmith Garin"
+│       │   ├── name: string               # "Tinker Orin" (LLM-generated)
 │       │   ├── intro: string              # Character introduction for narrator
-│       │   ├── role: string               # Always "shapeshifter"
+│       │   ├── role: string               # §12.3.10: Any role — "shapeshifter", "seer", "villager", etc.
 │       │   ├── alive: boolean             # Is AI character still in the game
-│       │   ├── backstory: string          # Character background for Traitor Agent
+│       │   ├── backstory: string          # Character personality_hook for Traitor Agent
+│       │   ├── personality_hook: string   # Behavioral trait for roleplay
+│       │   ├── is_traitor: boolean        # §12.3.10: true if shapeshifter, false if loyal
 │       │   └── suspicion_level: number    # 0-100, tracked for strategy
 │       │
 │       ├── session/                       # Live API session tracking
@@ -1399,7 +1417,8 @@ fireside-db/
 │       │       ├── name: string           # Real display name (hidden during gameplay)
 │       │       ├── character_name: string # P0: Story character name (visible during gameplay)
 │       │       ├── character_intro: string # P0: Character introduction for narrator
-│       │       ├── role: string           # "villager" | "seer" | "healer" | "hunter" | "drunk"
+│       │       ├── personality_hook: string # Behavioral trait from LLM character generation
+│       │       ├── role: string           # "villager" | "seer" | "healer" | "hunter" | "drunk" | "bodyguard" | "tanner"
 │       │       ├── alive: boolean         # Still in the game
 │       │       ├── connected: boolean     # WebSocket connected
 │       │       ├── ready: boolean         # Ready to start
@@ -1566,75 +1585,71 @@ async def reconnect_narrator(game: GameSession):
 ## 8.1 React Component Tree
 
 ```
-App
-├── LandingPage (/)
-│   ├── HeroSection (fire animation, tagline, CTA)
-│   ├── HowItPlays (4-step walkthrough)
-│   ├── AIPreview (strategy reasoning sample)
-│   ├── RolesTeaser (2x3 grid: Villager, Seer, Healer, Hunter, Shapeshifter, AI)
-│   ├── GameMoments (gameplay vignettes)
-│   └── FooterCTA (repeat start button)
+**Implementation Update:** The actual component tree reflects the shipped architecture.
+Lobby and game share a single route. GameContext (useReducer) manages global state
+with sessionStorage persistence. AI character is hidden from the character grid.
+
+```
+App (GameProvider wraps all routes)
+├── Landing (/)
+│   ├── Hero section (tagline, "Hear the narrator" audio preview button)
+│   └── CTA → /join (Create or Join a Game)
 │
-├── JoinPage (/join/{gameCode})
-│   ├── JoinForm (name input, game code)
-│   └── PlayerList (waiting room, ready status)
+├── TutorialPage (/tutorial)
+│   ├── StepRoleCard (role reveal + narrator audio preview)
+│   ├── StepNightAction (mock investigation)
+│   ├── StepDayDiscussion (mock chat)
+│   ├── StepVoting (mock vote)
+│   └── StepGameOver (mock timeline + reveals)
 │
-├── LobbyPage (/lobby/{gameCode}) — host sees this
-│   ├── PlayerList (who's joined)
-│   ├── DifficultySelector (P1 — Easy / Normal / Hard radio buttons)
-│   │   └── DifficultyDescription (brief text explaining what changes)
-│   └── StartGameButton (enabled when 3+ players ready)
+├── JoinLobby (/join, /join/:gameCode)
+│   ├── CreateForm (name, difficulty, narrator preset selector with audio preview)
+│   ├── JoinForm (name, game code)
+│   └── → dispatches SET_PLAYER, SET_GAME → navigates to /game/:gameId
 │
-├── GamePage (/game/{gameCode})
-│   ├── AudioPlayer
-│   │   ├── useWebSocket() hook
-│   │   ├── AudioContext for PCM playback
-│   │   └── Queue for buffering audio chunks
+├── GameScreen (/game/:gameId)
+│   ├── LobbyPanel (pre-game: player dots, host badge, lobby summary, min-player warning)
+│   │   ├── DifficultySelector (Easy / Normal / Hard)
+│   │   ├── NarratorPresetCards (4 presets with audio preview)
+│   │   └── StartButton (host only, enabled when 2+ players)
 │   │
-│   ├── NarratorPanel (top section)
-│   │   ├── PhaseIndicator (night/day/vote icon + label)
-│   │   ├── RoundCounter
-│   │   └── Timer (60s countdown during voting)
+│   ├── NarratorBar (floating: phase label, round, narrator "thinking" indicator)
+│   │   └── Silence detection (15s timer, gated on logLen > 0 and !isPlaying)
 │   │
-│   ├── StoryLog (scrollable, center)
-│   │   └── MessageBubble[] (narrator, CHARACTER NAMES — never real player names)
+│   ├── StoryLog (scrollable narrator transcript + chat messages)
+│   │   └── Day-phase contextual hint (one-time dismissible for first-timers)
 │   │
-│   ├── CharacterGrid (alive/dead indicators — shows character names + portraits)
-│   │   └── CharacterCard[] (character name, character intro, alive status, vote indicator)
-│   │   # Player's OWN card has a subtle "You" badge. All others show only character identity.
+│   ├── CharacterGridPanel (alive/dead indicators — character names only, NO AI slot)
+│   │   └── CharacterCard[] (name, alive, "You" badge on player's own card)
 │   │
-│   ├── RoleCard (bottom drawer, PRIVATE)
-│   │   ├── CharacterName ("You are Herbalist Mira")
-│   │   ├── RoleName + Icon ("Healer")
-│   │   ├── RoleDescription
-│   │   └── NightActionButton (Seer: investigate, Healer: protect, Hunter: no night action, 
-│   │       Drunk: investigate — same UI as Seer, they don't know they're drunk)
+│   ├── RoleStrip (bottom bar, always visible, expandable)
+│   │   ├── RoleIcon (8 roles: 🛡️ bodyguard, 🧶 tanner, 👁️ seer, etc.)
+│   │   ├── RoleLabel
+│   │   └── AbilityReminder (one-sentence description on expand)
 │   │
-│   ├── ChatInput (text + quick reactions + optional STT)
-│   │   ├── QuickReactionBar (P1 — always visible during day_discussion)
-│   │   │   ├── "I suspect [dropdown: alive characters]"
-│   │   │   ├── "I trust [dropdown: alive characters]"
-│   │   │   ├── "I agree with [last speaker]"
-│   │   │   └── "I have information"
-│   │   ├── TextInput (free-form typing for detailed arguments)
-│   │   └── SpeechToTextButton (browser Web Speech API)
+│   ├── ChatInput (text + quick reactions)
+│   │   ├── QuickReactionBar ("I suspect [X]", "I trust [X]", "I agree", "I have info")
+│   │   └── TextInput (free-form)
 │   │
-│   └── VotePanel (appears during day_vote phase only)
-│       ├── CharacterVoteButton[] (one per alive CHARACTER — shows character name + portrait)
-│       ├── VoteConfirmation
-│       └── VoteTally (live update, shows character names)
+│   ├── VotePanel (day_vote phase only)
+│   │   ├── CharacterVoteButton[] (alive characters)
+│   │   ├── CameraVote (in-person mode: host captures frame for hand count)
+│   │   └── VoteTally (live update)
+│   │
+│   └── useWebSocket hook (auto-reconnect, message dispatch to GameContext)
 │
-└── GameOverPage
-    ├── WinnerAnnouncement ("The villagers triumphed!" / "The shapeshifter consumed the village!")
-    ├── CharacterRevealCards (P0 — all character-to-player mappings revealed)
-    │   └── RevealCard[] ("Herbalist Mira was SARAH (Healer)", "Blacksmith Garin was THE AI (Shapeshifter)")
-    ├── PostGameTimeline (P1 — round-by-round interactive reveal)
-    │   └── RoundSection[]
-    │       ├── RoundHeader ("Round 2 — Night")
-    │       ├── HiddenAction[] (night actions revealed: "Shapeshifter targeted Merchant Elara")
-    │       ├── AIStrategyReveal (P1 — "The AI chose Elara because she asked about the forge in Round 1")
-    │       └── VotingBreakdown (who voted for whom, with character + player names)
-    └── PlayAgainButton
+└── GameOver (/gameover/:gameId)
+    ├── REST fallback (fetchedRef: /api/games/{id}/result when no WS state)
+    ├── WinnerAnnouncement (villagers/shapeshifter/tanner + loyal AI detection)
+    ├── AISecretTeaser (pull-quote from AI strategy log)
+    ├── CharacterRevealCards (all character → player + role mappings)
+    │   └── RevealCard[] (alive/dead, role icon, "AI" badge with alignment)
+    ├── InteractiveTimeline (round-by-round: night actions, AI reasoning, votes)
+    │   └── KeyRound highlight (closest vote / most dramatic moment)
+    ├── AudioHighlightReel (top-5 narrator audio moments with play buttons)
+    ├── ShareButton (copy formatted game summary to clipboard)
+    └── PlayAgainButton (dispatches RESET, navigates to /)
+```
 ```
 
 ## 8.2 Audio Playback
@@ -1884,34 +1899,34 @@ options:
 # 10. Repository Structure
 
 ```
+**Implementation Update:** The actual repository structure evolved from the original design.
+Key differences: agents are colocated (not split into tools/), models use Pydantic,
+routers are separated from the main app, and frontend uses a context+hooks pattern.
+
+```
 fireside-betrayal/
 ├── backend/
 │   ├── agents/
 │   │   ├── __init__.py
-│   │   ├── narrator.py            # Narrator Agent definition + system prompt
-│   │   ├── traitor.py             # Traitor Agent definition + persona template
-│   │   └── game_master.py         # GameMasterAgent (BaseAgent subclass)
-│   ├── game/
-│   │   ├── __init__.py
-│   │   ├── state_machine.py       # GamePhase enum + transition logic
-│   │   ├── roles.py               # Role definitions + distribution tables
-│   │   ├── rules.py               # Win conditions, night action resolution
-│   │   └── characters.py          # Character name pools + backstory templates
-│   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── narrator_tools.py      # get_game_state, advance_phase, etc.
-│   │   └── traitor_tools.py       # plan_deflection, generate_alibi, etc.
+│   │   ├── narrator_agent.py      # Gemini Live API narrator (voice streaming, phase tools, presets)
+│   │   ├── traitor_agent.py       # AI Shapeshifter deception strategy (text-only LLM)
+│   │   ├── game_master.py         # Deterministic game logic (phases, votes, win conditions)
+│   │   ├── role_assigner.py       # Role distribution + LLM character generation + fallback cast
+│   │   ├── scene_agent.py         # §12.3.14: Scene image generation via Gemini
+│   │   ├── camera_vote.py         # §12.3.16: In-person hand-counting via Gemini Vision
+│   │   ├── audio_recorder.py      # §12.3.15: Narrator PCM recording + highlight reel
+│   │   └── strategy_logger.py     # §12.3.18: Cross-game AI strategy logging + aggregation
+│   ├── models/
+│   │   └── game.py                # Pydantic models (GameState, Role, Phase, AICharacter, etc.)
+│   ├── routers/
+│   │   ├── game_router.py         # REST API (create/join/start/events/result/narrator-preview)
+│   │   └── ws_router.py           # WebSocket hub (connection mgmt, message dispatch, phase auto-advance)
 │   ├── services/
-│   │   ├── __init__.py
-│   │   ├── firestore_client.py    # All Firestore read/write operations
-│   │   └── storage_client.py      # Cloud Storage for scene images
-│   ├── websocket/
-│   │   ├── __init__.py
-│   │   ├── game_session.py        # GameSession class
-│   │   ├── protocol.py            # Message type definitions
-│   │   └── audio_handler.py       # Audio encoding/decoding utilities
-│   ├── server.py                  # FastAPI app, WebSocket endpoints, REST API
-│   ├── config.py                  # Environment variables, constants
+│   │   └── firestore_service.py   # Async Firestore wrapper (games, players, events CRUD)
+│   ├── utils/
+│   │   └── audio.py               # PCM ↔ WAV conversion utilities
+│   ├── main.py                    # FastAPI app setup, CORS, route registration, static file serving
+│   ├── config.py                  # Pydantic Settings (API keys, model names, CORS origins)
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── .env.example
@@ -1919,28 +1934,36 @@ fireside-betrayal/
 │   ├── public/
 │   │   └── index.html
 │   ├── src/
-│   │   ├── App.jsx
-│   │   ├── pages/
-│   │   │   ├── JoinPage.jsx
-│   │   │   ├── GamePage.jsx
-│   │   │   └── GameOverPage.jsx
-│   │   ├── components/
-│   │   │   ├── AudioPlayer.jsx
-│   │   │   ├── NarratorPanel.jsx
-│   │   │   ├── StoryLog.jsx
-│   │   │   ├── PlayerGrid.jsx
-│   │   │   ├── RoleCard.jsx
-│   │   │   ├── ChatInput.jsx
-│   │   │   └── VotePanel.jsx
+│   │   ├── App.jsx                # React Router (6 routes: /, /tutorial, /join, /game, /gameover)
+│   │   ├── main.jsx               # Vite entry point
+│   │   ├── context/
+│   │   │   └── GameContext.jsx     # Global game state (useReducer + sessionStorage persistence)
 │   │   ├── hooks/
-│   │   │   ├── useWebSocket.js
-│   │   │   ├── useAudioPlayer.js
-│   │   │   └── useGameState.js
-│   │   └── utils/
-│   │       ├── audio.js           # PCM decode, AudioContext helpers
-│   │       └── protocol.js        # Message type constants
+│   │   │   ├── useWebSocket.js    # WebSocket connection + message routing + auto-reconnect
+│   │   │   └── useAudioPlayer.js  # PCM audio playback via AudioContext
+│   │   ├── components/
+│   │   │   ├── Landing/
+│   │   │   │   └── Landing.jsx    # Home page with narrator audio preview
+│   │   │   ├── JoinLobby/
+│   │   │   │   └── JoinLobby.jsx  # Create/join game, difficulty, narrator preset selection + preview
+│   │   │   ├── Game/
+│   │   │   │   ├── GameScreen.jsx # Main game UI (LobbyPanel, NarratorBar, CharacterGrid, ChatInput)
+│   │   │   │   └── RoleStrip.jsx  # Expandable role reminder strip (8 roles, icons, descriptions)
+│   │   │   ├── Voting/
+│   │   │   │   └── VotePanel.jsx  # Vote UI + optional camera hand-counting
+│   │   │   ├── GameOver/
+│   │   │   │   └── GameOver.jsx   # Post-game results, reveals, timeline, audio highlights, share
+│   │   │   └── Tutorial/
+│   │   │       └── TutorialPage.jsx # 5-step interactive tutorial with narrator audio preview
+│   │   └── styles/
+│   │       └── global.css         # Design system, animations, theming
 │   ├── package.json
 │   └── vite.config.js
+├── docs/
+│   ├── PRD.md                     # Product Requirements Document
+│   ├── TDD.md                     # Technical Design Document (this file)
+│   ├── fireside-ui.jsx            # Interactive UI prototype
+│   └── playtest-personas.md       # Playtest persona profiles
 ├── terraform/
 │   ├── main.tf
 │   ├── variables.tf
@@ -1948,6 +1971,7 @@ fireside-betrayal/
 ├── cloudbuild.yaml
 ├── README.md
 └── LICENSE (MIT)
+```
 ```
 
 ---
@@ -2049,9 +2073,9 @@ These features are sequenced by PM sprint priority (see PRD Post-Hackathon P2 Ro
 
 ---
 
-## 12.3.1 Procedural Character Generation (Sprint 4)
+## 12.3.1 Procedural Character Generation (Sprint 4) — ✅ SHIPPED
 
-**Effort:** 2–3 hours | **Type:** Prompt engineering only
+**Effort:** 2–3 hours | **Type:** Prompt engineering only | **Actual:** Implemented in `agents/role_assigner.py`
 
 Replace the hardcoded `CHARACTER_CAST` with a narrator pre-game generation step.
 
@@ -2113,9 +2137,9 @@ games/{gameId}/
 
 ---
 
-## 12.3.2 Narrator Vote Neutrality (Sprint 4)
+## 12.3.2 Narrator Vote Neutrality (Sprint 4) — ✅ SHIPPED
 
-**Effort:** 2–3 hours | **Type:** Prompt engineering + context isolation
+**Effort:** 2–3 hours | **Type:** Prompt engineering + context isolation | **Actual:** `generate_vote_context` tool in `narrator_agent.py`
 
 The narrator generates behavioral context for vote cards. This context must be firewalled from the traitor's private state.
 
@@ -2187,9 +2211,9 @@ All accusation, vote, discussion, and elimination events are `public`. Night act
 
 ---
 
-## 12.3.3 Narrator Pacing Intelligence (Sprint 4)
+## 12.3.3 Narrator Pacing Intelligence (Sprint 4) — ✅ SHIPPED
 
-**Effort:** 4–6 hours | **Type:** Server-side tracking + prompt engineering
+**Effort:** 4–6 hours | **Type:** Server-side tracking + prompt engineering | **Actual:** `ConversationTracker` in `ws_router.py`
 
 ```python
 # Add to WebSocket server — conversation flow tracker
@@ -2264,9 +2288,9 @@ OR
 
 ---
 
-## 12.3.4 Affective Dialog Input Signals (Sprint 4)
+## 12.3.4 Affective Dialog Input Signals (Sprint 4) — ✅ SHIPPED
 
-**Effort:** 3–4 hours | **Type:** Signal computation + prompt engineering
+**Effort:** 3–4 hours | **Type:** Signal computation + prompt engineering | **Actual:** `AffectiveSignals` in `ws_router.py`
 
 ```python
 class AffectiveSignals:
@@ -2329,9 +2353,9 @@ These signals adjust your DELIVERY, not your CONTENT. Never reveal game secrets 
 
 ---
 
-## 12.3.5 Minimum Satisfying Game Length (Sprint 4)
+## 12.3.5 Minimum Satisfying Game Length (Sprint 4) — ✅ SHIPPED
 
-**Effort:** 1–2 hours | **Type:** Config change
+**Effort:** 1–2 hours | **Type:** Config change | **Actual:** `MINIMUM_ROUNDS` in `game_master.py`
 
 ```python
 # Add to GameMasterAgent
@@ -2394,9 +2418,9 @@ def get_lobby_summary(self, n: int, difficulty: str) -> str:
 
 ---
 
-## 12.3.6 In-Game Role Reminder (Sprint 5)
+## 12.3.6 In-Game Role Reminder (Sprint 5) — ✅ SHIPPED
 
-**Effort:** 3–4 hours | **Type:** Frontend only
+**Effort:** 3–4 hours | **Type:** Frontend only | **Actual:** `RoleStrip.jsx` with 8 roles, icons, labels
 
 ```
 # Updated component tree — RoleCard changes
@@ -2444,9 +2468,9 @@ No backend changes. No WebSocket changes. No Firestore changes.
 
 ---
 
-## 12.3.7 Tutorial Mode (Sprint 5)
+## 12.3.7 Tutorial Mode (Sprint 5) — ✅ SHIPPED
 
-**Effort:** 1–2 days | **Type:** New route + scripted game flow
+**Effort:** 1–2 days | **Type:** New route + scripted game flow | **Actual:** `TutorialPage.jsx` — fully client-side, no backend needed
 
 ```
 # New route: /tutorial
@@ -2510,9 +2534,9 @@ TUTORIAL_SCRIPT = {
 
 ---
 
-## 12.3.8 Conversation Structure for Large Groups (Sprint 5)
+## 12.3.8 Conversation Structure for Large Groups (Sprint 5) — ✅ SHIPPED
 
-**Effort:** 4–6 hours | **Type:** Quick reaction + prompt engineering
+**Effort:** 4–6 hours | **Type:** Quick reaction + prompt engineering | **Actual:** `HandRaiseQueue` in `ws_router.py`
 
 **Frontend addition:**
 ```
@@ -2558,9 +2582,9 @@ For 6 or fewer players, skip structured moderation — let conversation flow nat
 
 ---
 
-## 12.3.9 Minimum Player Count Design (Sprint 5)
+## 12.3.9 Minimum Player Count Design (Sprint 5) — ✅ SHIPPED
 
-**Effort:** 3–4 hours | **Type:** Config + prompt adjustment
+**Effort:** 3–4 hours | **Type:** Config + prompt adjustment | **Actual:** `get_effective_difficulty` in `game_master.py`, min-player warning in lobby
 
 ```python
 # Add to GameMasterAgent — auto-adjust difficulty for small games
@@ -2586,9 +2610,11 @@ def get_effective_difficulty(self, player_count: int, selected_difficulty: str) 
 
 ---
 
-## 12.3.10 Random AI Alignment (Sprint 6)
+## 12.3.10 Random AI Alignment (Sprint 6) — ✅ SHIPPED
 
-**Effort:** 2–3 days | **Type:** New agent persona + role assignment change
+**Effort:** 2–3 days | **Type:** New agent persona + role assignment change | **Actual:** `role_assigner.py` + `game_master.py` win condition updates
+
+**Implementation Update:** Random alignment is derived from difficulty (Normal/Hard = true, Easy = false) — no separate toggle. The design spec proposed a phantom NPC shapeshifter when AI draws a village role; the actual implementation removes the shapeshifter entirely when the AI is loyal. This simplifies the game: "Is the AI helping or hurting?" becomes the meta-question.
 
 ```python
 # New: Loyal AI Agent — cooperative version of the Traitor Agent
@@ -2668,9 +2694,9 @@ games/{gameId}/
 
 ---
 
-## 12.3.11 Additional Roles — Bodyguard & Tanner (Sprint 6)
+## 12.3.11 Additional Roles — Bodyguard & Tanner (Sprint 6) — ✅ SHIPPED
 
-**Effort:** 1–2 days | **Type:** Role definitions + night action handlers
+**Effort:** 1–2 days | **Type:** Role definitions + night action handlers | **Actual:** `models/game.py` (Role enum), `game_master.py` (night actions, win conditions), `RoleStrip.jsx` (icons + reminders)
 
 ```python
 # New role definitions
@@ -2746,9 +2772,10 @@ ROLE_DISTRIBUTION_EXTENDED = {
 
 ---
 
-## 12.3.12 Dynamic AI Difficulty (Sprint 6)
+## 12.3.12 Dynamic AI Difficulty (Sprint 6) — ⬜ NOT SHIPPED (deferred to P3)
 
 **Effort:** 2–3 days | **Type:** Analytics + real-time prompt adjustment
+**Note:** Mid-game difficulty adaptation was deferred. Static difficulty presets (Easy/Normal/Hard) with small-game auto-adjustment (§12.3.9) proved sufficient.
 
 ```python
 class DifficultyAdapter:
@@ -2789,7 +2816,7 @@ class DifficultyAdapter:
 
 ---
 
-## 12.3.13 Post-Game Timeline Interactive UX (Sprint 6)
+## 12.3.13 Post-Game Timeline Interactive UX (Sprint 6) — ✅ SHIPPED
 
 **Effort:** 2–3 days | **Type:** Frontend enhancement
 
@@ -2826,7 +2853,7 @@ class DifficultyAdapter:
 
 ---
 
-## 12.3.14 Scene Image Generation (Sprint 7+)
+## 12.3.14 Scene Image Generation (Sprint 7+) — ✅ SHIPPED
 
 **Effort:** 1–2 days | **Type:** Gemini interleaved output
 
@@ -2886,7 +2913,7 @@ type ServerMessage =
 
 ---
 
-## 12.3.15 Audio Recording/Playback (Sprint 7+)
+## 12.3.15 Audio Recording/Playback (Sprint 7+) — ✅ SHIPPED
 
 **Effort:** 3–5 days | **Type:** Audio pipeline
 
@@ -2947,7 +2974,7 @@ class AudioRecorder:
 
 ---
 
-## 12.3.16 Camera Vote Counting (Sprint 7+)
+## 12.3.16 Camera Vote Counting (Sprint 7+) — ✅ SHIPPED
 
 **Effort:** 1–2 days | **Type:** Vision input mode + lobby toggle
 
@@ -3041,7 +3068,7 @@ games/{gameId}/
 
 ---
 
-## 12.3.17 Narrator Style Presets (Sprint 7+)
+## 12.3.17 Narrator Style Presets (Sprint 7+) — ✅ SHIPPED
 
 **Effort:** 3–5 days | **Type:** System prompt variants + voice config overrides
 
@@ -3170,7 +3197,7 @@ games/{gameId}/
 
 ---
 
-## 12.3.18 Competitor Intelligence for AI (Sprint 7+)
+## 12.3.18 Competitor Intelligence for AI (Sprint 7+) — ✅ SHIPPED
 
 **Effort:** 1–2 weeks | **Type:** Analytics pipeline + prompt augmentation
 
@@ -3410,77 +3437,149 @@ resource "google_cloud_scheduler_job" "daily_aggregation" {
 
 ---
 
+# 12.4 Implementation Additions (not in original TDD v1.0)
+
+The following features were added during implementation but were not specified in the original design document. They are documented here for architectural completeness.
+
+## 12.4.1 Hide AI Identity
+
+**Files:** `game_router.py`, `ws_router.py`, `GameScreen.jsx`
+
+The AI character is never exposed through HTTP responses. The `GET /api/games/{id}` endpoint returns `ai_character: null`. The AI's identity is sent only via a private WebSocket `connected` message to each player at game start. In the frontend, the `CharacterGridPanel` excludes the AI from the player grid — it appears indistinguishable from human players. The `is_traitor` flag and AI `role` are stripped from the `/start` HTTP response.
+
+## 12.4.2 Session Persistence (sessionStorage)
+
+**Files:** `JoinLobby.jsx`, `GameContext.jsx`
+
+After joining a game, `playerId`, `playerName`, `gameId`, and `isHost` are persisted to `sessionStorage`. `GameContext` initializes its `initialState` from sessionStorage, enabling automatic reconnection after page refresh. Keys are cleared on `GAME_OVER` and `RESET` dispatch actions.
+
+## 12.4.3 GameOver REST Fallback
+
+**Files:** `game_router.py` (`GET /api/games/{id}/result`), `GameOver.jsx`, `models/game.py` (`winner` field)
+
+Direct navigation to `/gameover/:gameId` no longer redirects to home. Instead, a `useEffect` hook fetches the game result from a REST endpoint. The `winner` field is persisted atomically alongside `status: "finished"` in a single Firestore write to avoid race conditions. The endpoint reconstructs reveals (character → player + role mappings) and timeline (events grouped by round) from Firestore data.
+
+## 12.4.4 Narrator Audio Preview
+
+**Files:** `game_router.py` (`GET /api/narrator/preview/{preset}`), `Landing.jsx`, `JoinLobby.jsx`, `TutorialPage.jsx`
+
+Each narrator preset has a short audio sample generated via `gemini-2.5-flash-preview-tts`. Samples are cached in-memory (`_narrator_preview_cache` dict) to avoid repeated API calls. The frontend plays previews via `new Audio()` with cleanup on component unmount. The Landing page shows a "Hear the narrator" button for the Classic preset. The Tutorial shows it on the role reveal step. The Lobby shows preview buttons on each of the 4 preset cards.
+
+## 12.4.5 Server-Side Vote Timeout
+
+**Files:** `ws_router.py`
+
+A 90-second `asyncio.Task` is scheduled when the `day_vote` phase begins. If not all players have voted by expiration, the vote auto-resolves with whatever votes have been cast. The timeout task is cancelled when votes are resolved normally. This prevents games from hanging indefinitely when a player disconnects during voting.
+
+## 12.4.6 WebSocket Error Safety
+
+**Files:** `ws_router.py`
+
+The `_handle_message` function wraps the entire dispatch block in try/except. Any unhandled exception (Firestore error, malformed message, etc.) sends an `error` type message to the player instead of crashing the WebSocket connection. This prevents one bad message from disconnecting the player.
+
+## 12.4.7 Readable Join Codes
+
+**Files:** `models/game.py`
+
+Game IDs use a 6-character alphanumeric code from a restricted character set (`ABCDEFGHJKLMNPQRSTUVWXYZ23456789` — no O/I/0/1 to avoid confusion). This replaces the original UUID-based hex code for better readability when sharing verbally.
+
+## 12.4.8 Narrator Silence Fallback
+
+**Files:** `GameScreen.jsx` (NarratorBar component)
+
+A 15-second silence timer detects when the narrator has stopped producing audio. The timer is gated: it only fires when `logLen > 0` (narrator has spoken at least once) and `!isPlaying` (no audio currently playing). When triggered, a "Narrator thinking..." indicator appears. This provides feedback when Gemini Live API has latency or session issues.
+
+## 12.4.9 Min-Player Warning
+
+**Files:** `game_master.py` (`get_lobby_summary`), `GameScreen.jsx` (LobbyPanel)
+
+When fewer than 4 human players have joined, the lobby summary includes a `min_player_warning` field: "Games work best with 4+ players. You can still start with fewer." This is rendered to the host in amber text below the player dots. The technical minimum remains at 2 (for dev/testing).
+
+---
+
 # 13. PRD Cross-Reference & Compliance Matrix
 
-| PRD Requirement | TDD Section | Implementation Status |
+| PRD Requirement | TDD Section | Status |
 |---|---|---|
-| Voice narration + interruptions (P0) | §3.1 Narrator Agent, §5 WebSocket Protocol | ✓ Specified |
-| Role assignment system (P0) | §3.3 Game Master, §6 Data Model | ✓ Specified |
-| Game state machine (P0) | §3.3 GamePhase enum + transitions | ✓ Specified |
-| AI-as-player Traitor Agent (P0) | §3.2 Traitor Agent, §4.2–4.3 Traitor Tools + Night Orchestration | ✓ Specified |
-| Multiplayer WebSocket hub (P0) | §5 WebSocket Protocol, §5.3 Server Implementation | ✓ Specified |
-| Voting system (P0) | §3.3 count_votes, §5.1 VOTE message | ✓ Specified |
-| Player phone UI (P0) | §8 Frontend Architecture | ✓ Specified |
-| Spectator mode (eliminated players) | §5.2 Spectator Mode note | ✓ Specified |
-| Spectator clues — P1 (one-word hints) | §5.2 Spectator Clues, §5.1 SpectatorClue message type | ✓ Specified |
-| Narrator contextual reactivity — P1 | §3.1 Narrator Agent CONTEXTUAL REACTIVITY prompt section | ✓ Specified |
-| Narrator quiet-player engagement — P1 | §3.1 Narrator Agent QUIET-PLAYER ENGAGEMENT prompt section | ✓ Specified |
-| Narrator rule violation handling — P0 | §3.1 Narrator Agent RULE VIOLATION HANDLING prompt section | ✓ Specified |
-| Narrator latency < 2s — P0 | §3.1 Audio Specifications, latency hard requirement | ✓ Specified |
-| Role distribution by player count — P0 | §3.3 ROLE_DISTRIBUTION table (3-8 players), get_lobby_summary() | ✓ Specified |
-| Night phase AI targeting (P0) | §4.2 select_night_target, §4.3 Night Phase Orchestration | ✓ Specified |
-| Game-over reveal with AI reasoning | §4.3 handle_game_over | ✓ Specified |
-| Session resumption (P1) | §7 Session Management | ✓ Specified |
-| Frontend serving (single container) | §9.1 Docker Configuration | ✓ Specified |
-| CORS configuration | §5.3 FastAPI app setup | ✓ Specified |
-| Gemini model compliance | §3.1 model string | ✓ gemini-2.5-flash-native-audio-preview-12-2025 |
-| ADK compliance | §3 All agents use google.adk | ✓ ADK Agents + run_live() |
-| Cloud Run + Firestore + Storage | §9 Deployment, §6 Data Model | ✓ All three services |
-| Automated deployment (bonus) | §9.2 Terraform, §9.3 Cloud Build | ✓ Specified |
-| Public GitHub repo | §10 Repository Structure | ✓ MIT License |
+| Voice narration + interruptions (P0) | §3.1 Narrator Agent, §5 WebSocket Protocol | ✅ Shipped |
+| Role assignment system (P0) | §3.3 Game Master, §6 Data Model | ✅ Shipped |
+| Game state machine (P0) | §3.3 GamePhase enum + transitions | ✅ Shipped |
+| AI-as-player Traitor Agent (P0) | §3.2 Traitor Agent, §4.2–4.3 | ✅ Shipped |
+| Multiplayer WebSocket hub (P0) | §5 WebSocket Protocol, §5.3 Server | ✅ Shipped |
+| Voting system (P0) | §3.3 count_votes | ✅ Shipped |
+| Player phone UI (P0) | §8 Frontend Architecture | ✅ Shipped |
+| Hide AI identity (P0) | (new) | ✅ Shipped — AI never exposed via HTTP |
+| Join cap (P0) | (new) | ✅ Shipped — 409 at 7 humans |
+| Session resumption (P1) | §7 Session Management | ✅ Shipped |
+| Hunter + Drunk roles (P1) | §3.3 ROLE_DISTRIBUTION | ✅ Shipped |
+| Traitor difficulty levels (P1) | §3.2 TRAITOR_DIFFICULTY | ✅ Shipped |
+| Quick-reaction buttons (P1) | §5.2 QuickReaction type | ✅ Shipped |
+| Post-game reveal timeline (P1) | §4.3 handle_game_over | ✅ Shipped |
+| Landing page (P1) | §8 Frontend Architecture | ✅ Shipped |
+| Session persistence (P1) | (new) | ✅ Shipped — sessionStorage |
+| GameOver REST fallback (P1) | (new) | ✅ Shipped — /api/games/{id}/result |
+| Narrator audio preview (P1) | (new) | ✅ Shipped — /api/narrator/preview/{preset} |
+| Host badge (P1) | (new) | ✅ Shipped |
+| Day-phase hint (P1) | (new) | ✅ Shipped |
 | **P2 Features** | | |
-| Procedural character generation (P2) | §12.3.1 | ✓ Specified |
-| Narrator vote neutrality (P2) | §12.3.2 | ✓ Specified |
-| Narrator pacing intelligence (P2) | §12.3.3 | ✓ Specified |
-| Affective dialog input signals (P2) | §12.3.4 | ✓ Specified |
-| Minimum satisfying game length (P2) | §12.3.5 | ✓ Specified |
-| In-game role reminder (P2) | §12.3.6 | ✓ Specified |
-| Tutorial mode (P2) | §12.3.7 | ✓ Specified |
-| Conversation structure for large groups (P2) | §12.3.8 | ✓ Specified |
-| Minimum player count design (P2) | §12.3.9 | ✓ Specified |
-| Random AI alignment (P2) | §12.3.10 | ✓ Specified |
-| Additional roles — Bodyguard, Tanner (P2) | §12.3.11 | ✓ Specified |
-| Dynamic AI difficulty (P2) | §12.3.12 | ✓ Specified |
-| Post-game timeline interactive UX (P2) | §12.3.13 | ✓ Specified |
-| Scene image generation (P2) | §12.3.14 | ✓ Specified |
-| Audio recording/playback (P2) | §12.3.15 | ✓ Specified |
-| Camera vote counting (P2) | §12.3.16 | ✓ Specified |
-| Narrator style presets (P2) | §12.3.17 | ✓ Specified |
-| Competitor intelligence for AI (P2) | §12.3.18 | ✓ Specified |
+| Procedural character generation | §12.3.1 | ✅ Shipped |
+| Narrator vote neutrality | §12.3.2 | ✅ Shipped |
+| Narrator pacing intelligence | §12.3.3 | ✅ Shipped |
+| Affective dialog input signals | §12.3.4 | ✅ Shipped |
+| Minimum satisfying game length | §12.3.5 | ✅ Shipped |
+| In-game role reminder | §12.3.6 | ✅ Shipped |
+| Tutorial mode | §12.3.7 | ✅ Shipped |
+| Conversation structure for large groups | §12.3.8 | ✅ Shipped |
+| Minimum player count design | §12.3.9 | ✅ Shipped |
+| Random AI alignment | §12.3.10 | ✅ Shipped |
+| Additional roles — Bodyguard, Tanner | §12.3.11 | ✅ Shipped |
+| Dynamic AI difficulty | §12.3.12 | ⬜ Deferred to P3 |
+| Post-game timeline interactive UX | §12.3.13 | ✅ Shipped |
+| Scene image generation | §12.3.14 | ✅ Shipped |
+| Audio recording/playback | §12.3.15 | ✅ Shipped |
+| Camera vote counting | §12.3.16 | ✅ Shipped |
+| Narrator style presets | §12.3.17 | ✅ Shipped |
+| Competitor intelligence for AI | §12.3.18 | ✅ Shipped |
 
 ---
 
 # 14. Environment Variable Manifest
 
+**Implementation Update:** Actual config uses Pydantic Settings (`backend/config.py`).
+
 | Variable | Required | Description | Example |
 |---|---|---|---|
 | `GOOGLE_CLOUD_PROJECT` | ✓ | GCP project ID | `fireside-hackathon-2026` |
-| `GEMINI_API_KEY` | ✓ | Gemini API key (or use ADC) | `AIzaSy...` |
-| `FIRESTORE_DATABASE` | | Firestore database ID (default: `(default)`) | `(default)` |
-| `GCS_BUCKET` | | Cloud Storage bucket name (auto-derived from project if unset) | `fireside-hackathon-2026-fireside-assets` |
+| `GEMINI_API_KEY` | ✓ | Gemini API key | `AIzaSy...` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | | Path to service account JSON (local dev) | `./sa-key.json` |
+| `FIRESTORE_EMULATOR_HOST` | | Firestore emulator address (local dev) | `localhost:8081` |
+| `NARRATOR_MODEL` | | Narrator Gemini model | `gemini-2.5-flash-native-audio-preview-12-2025` |
+| `TRAITOR_MODEL` | | Traitor strategy model | `gemini-2.5-flash` |
+| `NARRATOR_PREVIEW_MODEL` | | TTS preview model | `gemini-2.5-flash-preview-tts` |
+| `NARRATOR_VOICE` | | Default narrator voice | `Charon` |
+| `ALLOWED_ORIGINS` | | CORS allowed origins (comma-separated) | `https://app.example.com` |
+| `EXTRA_ORIGIN` | | Additional CORS origin (e.g., Cloud Run URL) | `https://fireside-xxx.run.app` |
+| `DEBUG` | | Enable debug logging | `true` |
 | `PORT` | | Server port (Cloud Run provides this) | `8080` |
 
 ```bash
 # .env.example
 GOOGLE_CLOUD_PROJECT=fireside-hackathon-2026
 GEMINI_API_KEY=your-api-key-here
-FIRESTORE_DATABASE=(default)
-GCS_BUCKET=fireside-hackathon-2026-fireside-assets
+GOOGLE_APPLICATION_CREDENTIALS=./sa-key.json
+# FIRESTORE_EMULATOR_HOST=localhost:8081  # uncomment for local dev
+NARRATOR_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+TRAITOR_MODEL=gemini-2.5-flash
+NARRATOR_PREVIEW_MODEL=gemini-2.5-flash-preview-tts
+NARRATOR_VOICE=Charon
+# ALLOWED_ORIGINS=https://your-app.run.app  # production CORS
+# EXTRA_ORIGIN=https://your-frontend.run.app
 PORT=8080
 ```
 
 ---
 
 *Document created: February 21, 2026*
-*Companion PRD: prd-fireside-betrayal.md v1.0*
+*Last updated: February 23, 2026 — all P0/P1/P2 features shipped (17/18 P2 specs, §12.3.12 deferred)*
+*Companion PRD: PRD.md v2.0*
 *Hackathon deadline: March 16, 2026*
