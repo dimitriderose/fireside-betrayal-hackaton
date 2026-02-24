@@ -1,0 +1,64 @@
+graph TB
+    subgraph Players["🎮 Player Phones (2-7)"]
+        P1["Player 1<br/>Mobile Browser"]
+        P2["Player 2<br/>Mobile Browser"]
+        P3["Player N<br/>Mobile Browser"]
+    end
+
+    subgraph CloudRun["☁️ Google Cloud Run"]
+        API["FastAPI Backend<br/>Port 8000"]
+        
+        subgraph Agents["AI Agents"]
+            NA["🎙️ Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy"]
+            TA["🐺 Traitor Agent<br/>gemini-2.5-flash<br/>Deception Strategy<br/>Difficulty: Easy/Normal/Hard"]
+            GM["🎲 Game Master<br/>Deterministic Python<br/>Role Assignment + Phase Transitions<br/>Win Conditions + Vote Resolution"]
+            SA["🎨 Scene Agent<br/>Image Generation<br/>Phase Transition Illustrations"]
+            CV["📷 Camera Vote Agent<br/>Gemini Vision<br/>Hand-Counting (In-Person)"]
+            AR["🎧 Audio Recorder<br/>Highlight Reel<br/>Post-Game Playback"]
+            SL["📊 Strategy Logger<br/>Cross-Game Learning<br/>Intelligence Brief"]
+        end
+    end
+
+    subgraph GCP["Google Cloud Platform"]
+        FS[("🔥 Cloud Firestore<br/>Real-time Game State<br/>Players, Events, Chat")]
+    end
+
+    subgraph Gemini["Google Gemini API"]
+        GLive["Gemini Live API<br/>WebSocket<br/>Bidirectional Voice"]
+        GFlash["gemini-2.5-flash<br/>Text Strategy"]
+        GTTS["gemini-2.5-flash-preview-tts<br/>Narrator Previews"]
+    end
+
+    P1 <-->|"WebSocket<br/>/ws/{gameId}"| API
+    P2 <-->|"WebSocket"| API
+    P3 <-->|"REST /api/*"| API
+
+    API --> NA
+    API --> TA
+    API --> GM
+    API --> SA
+    API --> CV
+    API --> AR
+    API --> SL
+
+    NA <-->|"Bidirectional Voice"| GLive
+    TA -->|"Text Completions"| GFlash
+    NA -->|"Audio Previews"| GTTS
+    SA -->|"Image Gen"| GFlash
+    CV -->|"Vision Analysis"| GFlash
+
+    GM --> FS
+    SL --> FS
+    API --> FS
+
+    classDef player fill:#1a1a2e,stroke:#e94560,color:#fff
+    classDef cloud fill:#0f3460,stroke:#16213e,color:#fff
+    classDef agent fill:#533483,stroke:#e94560,color:#fff
+    classDef gcp fill:#4285f4,stroke:#1a73e8,color:#fff
+    classDef gemini fill:#1e88e5,stroke:#1565c0,color:#fff
+
+    class P1,P2,P3 player
+    class API cloud
+    class NA,TA,GM,SA,CV,AR,SL agent
+    class FS gcp
+    class GLive,GFlash,GTTS gemini
