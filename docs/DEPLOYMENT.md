@@ -9,6 +9,7 @@
 | npm | 9+ | Frontend package manager |
 | Google Cloud SDK (`gcloud`) | Latest | GCP services + deployment |
 | Docker | 24+ | Container builds (production) |
+| Terraform | 1.5+ | Infrastructure as code (optional, see Part 5) |
 | Git | 2.x | Source control |
 
 ### GCP Services Required
@@ -171,7 +172,7 @@ Browser :5173 ──Vite proxy──→ FastAPI :8000
 
 ---
 
-## Part 2: Production Deployment (Cloud Run)
+## Part 2: Production Deployment (Cloud Run) — Manual
 
 ### 2.1 Architecture
 
@@ -327,12 +328,128 @@ fireside-betrayal-hackaton/
 │   ├── package.json               # React 18 + react-router-dom + Vite 5
 │   ├── vite.config.js             # Proxy /api → :8000, /ws → ws://:8000
 │   └── index.html
+├── terraform/                     # Infrastructure as Code (Part 5)
+│   ├── main.tf
+│   ├── variables.tf
+│   └── terraform.tfvars.example
 └── docs/
     ├── PRD.md
     ├── TDD.md
+    ├── DEPLOYMENT.md              # This file
+    ├── architecture.mermaid
     ├── fireside-ui.jsx
     └── playtest-personas.md
 ```
+
+---
+
+## Part 5: Automated Deployment (Terraform)
+
+> **Hackathon bonus:** This section demonstrates automated cloud deployment using infrastructure-as-code.
+
+Instead of running the manual `gcloud` commands in Part 2, you can provision everything with a single `terraform apply`. The Terraform config in `terraform/` creates:
+
+- All required GCP API enablements
+- Cloud Firestore database
+- Artifact Registry repository
+- Cloud Run service with session affinity (WebSocket support)
+- Public IAM policy (unauthenticated access)
+
+### 5.1 Prerequisites
+
+Install Terraform (v1.5+):
+
+```bash
+# macOS
+brew install terraform
+
+# Linux
+sudo apt-get install -y terraform
+
+# Or download from https://developer.hashicorp.com/terraform/downloads
+```
+
+Authenticate with GCP:
+
+```bash
+gcloud auth application-default login
+```
+
+### 5.2 Configure Variables
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Edit `terraform.tfvars`:
+
+```hcl
+project_id     = "your-gcp-project-id"
+region         = "us-central1"
+gemini_api_key = "your-gemini-api-key"
+```
+
+> **Never commit `terraform.tfvars`** — it contains your API key. It's already in `.gitignore`.
+
+### 5.3 Build and Push the Docker Image
+
+Terraform provisions the infrastructure but doesn't build your Docker image. Build and push it first:
+
+```bash
+# From repo root
+cd frontend && npm ci && npm run build && cd ..
+
+# Tag for Artifact Registry (must match Terraform's image_url output)
+export PROJECT_ID=your-gcp-project-id
+export IMAGE=us-central1-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal:latest
+
+# Build and push
+gcloud builds submit --tag $IMAGE --timeout=600
+```
+
+### 5.4 Deploy Everything
+
+```bash
+cd terraform
+terraform init
+terraform plan     # Review what will be created
+terraform apply    # Provision all resources
+```
+
+Terraform outputs your Cloud Run URL:
+
+```
+Outputs:
+
+service_url        = "https://fireside-betrayal-abc123-uc.a.run.app"
+image_url          = "us-central1-docker.pkg.dev/your-project/fireside/fireside-betrayal:latest"
+firestore_database = "(default)"
+```
+
+### 5.5 Post-Deploy: Set CORS
+
+After the first deploy, update `EXTRA_ORIGIN` with the Cloud Run URL from the output:
+
+```bash
+gcloud run services update fireside-betrayal \
+  --region us-central1 \
+  --set-env-vars="EXTRA_ORIGIN=https://fireside-betrayal-abc123-uc.a.run.app"
+```
+
+### 5.6 Tear Down (if needed)
+
+```bash
+terraform destroy   # Removes all provisioned resources
+```
+
+### 5.7 What's in `terraform/`
+
+| File | Purpose |
+|------|---------|
+| `main.tf` | All resource definitions (APIs, Firestore, Artifact Registry, Cloud Run, IAM) |
+| `variables.tf` | Input variables (project_id, region, gemini_api_key) |
+| `terraform.tfvars.example` | Template for your secret values |
 
 ---
 
@@ -347,3 +464,5 @@ fireside-betrayal-hackaton/
 | `403 Forbidden` from Gemini API | API key invalid or project not enabled | Verify key at [AI Studio](https://aistudio.google.com/apikey), enable Generative AI API |
 | Frontend shows blank page on Cloud Run | `frontend/dist/` not included in Docker image | Build frontend before Docker build (see §2.2) |
 | `--workers 1` in Dockerfile | Required — WebSocket state is per-process | Do not increase workers; scale via Cloud Run instances instead |
+| `terraform plan` fails with auth error | Not authenticated with GCP | Run `gcloud auth application-default login` |
+| `terraform apply` — image not found | Docker image not pushed yet | Build and push the image first (see §5.3), then `terraform apply` |
