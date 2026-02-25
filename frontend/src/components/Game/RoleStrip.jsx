@@ -10,7 +10,7 @@ const ROLE_REMINDERS = {
   drunk:        'Each night, you investigate a character — but your results may not be reliable.',
   bodyguard:    'Each night, protect one character. If the Shapeshifter targets them, you die instead.',
   tanner:       'You win only if YOU are voted out. Act suspicious — make them vote for you.',
-  shapeshifter: 'You are the AI. Eliminate villagers at night. Avoid detection during the day.',
+  shapeshifter: 'Each night, choose one character to eliminate. Blend in during the day to avoid detection.',
 }
 
 const ROLE_ICONS = {

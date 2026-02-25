@@ -36,6 +36,7 @@ function createInitialState() {
     nightActionSubmitted: false, // true after seer/healer submits night action
     hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
     clueSent: false,             // true after eliminated player submits spectator clue this round
+    showRoleReveal: false,       // true when role reveal overlay should be displayed
     inPersonMode: false,         // §12.3.16: camera counts raised hands during vote
     highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
     error: null,
@@ -66,7 +67,10 @@ function gameReducer(state, action) {
         characterName: action.characterName ?? state.characterName,
         role: action.role ?? state.role,
         abilities: action.abilities ?? [],
+        showRoleReveal: true,
       }
+    case 'ROLE_REVEAL_DISMISSED':
+      return { ...state, showRoleReveal: false }
     case 'SET_AI_CHARACTER':
       return { ...state, aiCharacter: action.aiCharacter }
     case 'SET_MY_VOTE':
@@ -136,6 +140,7 @@ function gameReducer(state, action) {
         nightActionSubmitted: false,
         hunterRevengeNeeded: false,
         clueSent: false,  // reset each phase so new day_discussion in a new round allows a new clue
+        showRoleReveal: false, // dismiss role reveal on phase transition
         // Reset per-round vote state on every phase transition
         votes: {},
         voteMap: {},

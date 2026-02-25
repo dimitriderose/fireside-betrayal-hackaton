@@ -30,7 +30,7 @@ const ROLE_INFO = {
   healer:       { icon: '💚', label: 'Healer',        action: 'protect',     actionLabel: 'Protect' },
   hunter:       { icon: '🏹', label: 'Hunter',        action: null,        actionLabel: null },
   drunk:        { icon: '🍺', label: 'Seer',          action: 'investigate', actionLabel: 'Investigate' },
-  shapeshifter: { icon: '🐺', label: 'Shapeshifter',  action: null,        actionLabel: null },
+  shapeshifter: { icon: '🐺', label: 'Shapeshifter',  action: 'kill',      actionLabel: 'Eliminate' },
   bodyguard:    { icon: '🛡️', label: 'Bodyguard',     action: 'protect',     actionLabel: 'Protect' },
   tanner:       { icon: '🪓', label: 'Tanner',        action: null,        actionLabel: null },
 }
@@ -348,6 +348,7 @@ function NightActionPanel({ role, candidates, onAction }) {
               {role === 'seer' && 'Investigate one character — are they the Shapeshifter?'}
               {role === 'healer' && 'Protect one character from elimination tonight.'}
               {role === 'bodyguard' && 'Protect one character. If the Shapeshifter targets them, you die instead.'}
+              {role === 'shapeshifter' && 'Choose one character to eliminate tonight.'}
             </div>
           )}
         </div>
@@ -639,6 +640,93 @@ function RoleCard({ roleInfo, characterName, role }) {
 }
 
 
+// ── Role Reveal Overlay (shown briefly at game start) ──────────────────────────
+
+function RoleRevealOverlay({ role, characterName, onDismiss }) {
+  const info = ROLE_INFO[role] ?? {}
+  const desc = ROLE_DESC[role] ?? 'Your secret role in Thornwood.'
+
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, 8000)
+    return () => clearTimeout(timer)
+  }, [onDismiss])
+
+  return (
+    <div
+      onClick={onDismiss}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 9999,
+        background: 'radial-gradient(ellipse at center, rgba(30,20,10,0.97) 0%, rgba(10,8,6,0.99) 100%)',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: 'pointer',
+        animation: 'roleRevealFadeIn 0.6s ease-out',
+        padding: 24,
+      }}
+    >
+      <div style={{ fontSize: '4rem', marginBottom: 16, filter: 'drop-shadow(0 0 24px rgba(255,180,60,0.4))' }}>
+        {info.icon ?? '❓'}
+      </div>
+      <div style={{
+        fontFamily: 'var(--font-heading)',
+        fontSize: '1.75rem',
+        fontWeight: 700,
+        color: 'var(--accent)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.15em',
+        marginBottom: 8,
+        textShadow: '0 0 20px rgba(255,180,60,0.3)',
+      }}>
+        {info.label ?? role}
+      </div>
+      {characterName && (
+        <div style={{
+          fontSize: '1.125rem',
+          color: 'var(--text)',
+          marginBottom: 16,
+          fontWeight: 500,
+        }}>
+          {characterName}
+        </div>
+      )}
+      <div style={{
+        fontSize: '0.9375rem',
+        color: 'var(--text-muted)',
+        textAlign: 'center',
+        maxWidth: 320,
+        lineHeight: 1.6,
+        marginBottom: 32,
+      }}>
+        {desc}
+      </div>
+      <div style={{
+        fontSize: '0.75rem',
+        color: 'var(--text-dim)',
+        textTransform: 'uppercase',
+        letterSpacing: '0.1em',
+        animation: 'roleRevealPulse 2s ease-in-out infinite',
+      }}>
+        Tap anywhere to continue
+      </div>
+      <style>{`
+        @keyframes roleRevealFadeIn {
+          from { opacity: 0; transform: scale(0.95); }
+          to   { opacity: 1; transform: scale(1); }
+        }
+        @keyframes roleRevealPulse {
+          0%, 100% { opacity: 0.5; }
+          50%      { opacity: 1; }
+        }
+      `}</style>
+    </div>
+  )
+}
+
+
 const NARRATOR_SILENCE_MS = 15_000
 
 function NarratorBar({ isPlaying, volume, setVolume, storyLog }) {
@@ -714,6 +802,7 @@ export default function GameScreen() {
     playerId, playerName, phase, characterName, round, isHost,
     players, aiCharacter, storyLog, role, isEliminated,
     nightActionSubmitted, hunterRevengeNeeded, clueSent,
+    showRoleReveal,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
@@ -865,6 +954,15 @@ export default function GameScreen() {
 
   return (
     <div className="page">
+
+      {/* ── Role reveal overlay (shown briefly at game start) ── */}
+      {showRoleReveal && role && (
+        <RoleRevealOverlay
+          role={role}
+          characterName={characterName}
+          onDismiss={() => dispatch({ type: 'ROLE_REVEAL_DISMISSED' })}
+        />
+      )}
 
       {/* ── Sticky phase header ── */}
       <div

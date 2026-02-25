@@ -975,7 +975,7 @@ async def _on_night_action(
     if not player or not player.alive:
         return
 
-    if player.role not in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD}:
+    if player.role not in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD, Role.SHAPESHIFTER}:
         await manager.send_to(game_id, player_id, {
             "type": "error",
             "message": "Your role has no night action",
@@ -1015,6 +1015,24 @@ async def _on_night_action(
         })
         return
 
+    if player.role == Role.SHAPESHIFTER and target == player.character_name:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "The Shapeshifter cannot target themselves",
+            "code": "INVALID_SELF_TARGET",
+        })
+        return
+
+    # Human shapeshifter: create night_target event (same format as AI traitor)
+    if player.role == Role.SHAPESHIFTER:
+        from models import GameEvent
+        await fs.add_event(game_id, GameEvent(
+            type="night_target",
+            actor=player.character_name,
+            target=target,
+            visible_in_game=False,
+        ))
+
     await fs.set_night_action(game_id, player_id, target)
     await manager.send_to(game_id, player_id, {
         "type": "night_action_received",
@@ -1026,7 +1044,7 @@ async def _on_night_action(
     all_players_fresh = await fs.get_all_players(game_id)
     night_role_players = [
         p for p in all_players_fresh
-        if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD}
+        if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD, Role.SHAPESHIFTER}
     ]
     all_acted = all(p.night_action for p in night_role_players)
     if all_acted:

@@ -65,39 +65,43 @@ async def _generate_preview_audio(preset: str) -> Optional[str]:
     client = genai.Client(api_key=settings.gemini_api_key)
     sample_text = "The fire dims. Someone among you is not what they seem."
 
-    try:
-        response = await client.aio.models.generate_content(
-            model=settings.narrator_preview_model,
-            contents=sample_text,
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=voice,
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await client.aio.models.generate_content(
+                model=settings.narrator_preview_model,
+                contents=sample_text,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=voice,
+                            )
                         )
-                    )
+                    ),
+                    system_instruction="Read the following text aloud exactly as written.",
                 ),
-                system_instruction=config["prompt_prefix"],
-            ),
-        )
-        candidates = response.candidates or []
-        if not candidates:
-            return None
-        for part in candidates[0].content.parts:
-            idata = getattr(part, "inline_data", None)
-            if not idata or not idata.data:
-                continue
-            raw = idata.data
-            if isinstance(raw, str):
-                raw = base64.b64decode(raw)
-            mime = getattr(idata, "mime_type", "") or ""
-            if "wav" in mime.lower():
-                return base64.b64encode(raw).decode()
-            # Assume raw PCM (L16, 24 kHz, mono) — wrap in WAV container
-            return base64.b64encode(pcm_to_wav(raw)).decode()
-    except Exception as exc:
-        logger.error("[preview] Audio generation failed for preset '%s': %s", preset, exc)
+            )
+            candidates = response.candidates or []
+            if not candidates:
+                return None
+            for part in candidates[0].content.parts:
+                idata = getattr(part, "inline_data", None)
+                if not idata or not idata.data:
+                    continue
+                raw = idata.data
+                if isinstance(raw, str):
+                    raw = base64.b64decode(raw)
+                mime = getattr(idata, "mime_type", "") or ""
+                if "wav" in mime.lower():
+                    return base64.b64encode(raw).decode()
+                # Assume raw PCM (L16, 24 kHz, mono) — wrap in WAV container
+                return base64.b64encode(pcm_to_wav(raw)).decode()
+        except Exception as exc:
+            logger.warning("[preview] Attempt %d/%d failed for '%s': %s", attempt + 1, max_retries, preset, exc)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(1)
     return None
 
 
