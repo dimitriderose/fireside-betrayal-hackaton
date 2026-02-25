@@ -1,0 +1,28 @@
+.git/
+.gitignore
+node_modules/
+.venv/
+__pycache__/
+
+# Secrets — never bake into images
+.env
+backend/.env
+backend/service-account*.json
+backend/credentials*.json
+*.tfvars
+
+# Build artifacts
+frontend/dist/
+*.pyc
+*.pyo
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+thumbs.db
+
+# Docs / Terraform (not needed in container)
+docs/
+terraform/
+*.md

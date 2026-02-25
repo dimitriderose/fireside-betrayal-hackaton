@@ -189,17 +189,13 @@ The `main.py` auto-mounts `frontend/dist/` if it exists at `../frontend/dist` re
 
 ### 2.2 Build the Docker Image
 
-From the **repo root** (not `backend/`):
+From the **repo root**:
 
 ```bash
-# Build frontend first
-cd frontend && npm ci && npm run build && cd ..
-
-# Build Docker image
-docker build -f backend/Dockerfile -t fireside-betrayal .
+docker build -t fireside-betrayal .
 ```
 
-**Note:** The current Dockerfile copies only the backend. For full-stack production deployment, the frontend must be built separately and the dist/ placed where the backend can find it (see `main.py` static mount logic). Consider updating the Dockerfile to include a multi-stage Node build if you want a single `docker build` command.
+The root `Dockerfile` is a multi-stage build: Stage 1 compiles the React frontend with Node 18, Stage 2 installs Python deps and copies both `backend/` and the compiled `frontend/dist/` into the final image. No separate frontend build step is needed.
 
 ### 2.3 Test Docker Locally
 
@@ -297,11 +293,13 @@ Follow the DNS verification steps in the output.
 
 ```
 fireside-betrayal-hackaton/
+├── Dockerfile                     # Multi-stage: Node build + Python runtime
+├── .dockerignore                  # Excludes .git, secrets, node_modules
 ├── backend/
 │   ├── agents/
-│   │   ├── narrator_agent.py      # Gemini Live API voice narrator (50KB)
-│   │   ├── traitor_agent.py       # AI hidden player strategy (22KB)
-│   │   ├── game_master.py         # Deterministic game logic (28KB)
+│   │   ├── narrator_agent.py      # Gemini Live API voice narrator
+│   │   ├── traitor_agent.py       # AI hidden player strategy
+│   │   ├── game_master.py         # Deterministic game logic
 │   │   ├── role_assigner.py       # Character generation + role dealing
 │   │   ├── scene_agent.py         # Phase transition illustrations
 │   │   ├── camera_vote.py         # Gemini Vision hand-counting
@@ -317,7 +315,6 @@ fireside-betrayal-hackaton/
 │   │   └── audio.py               # pcm_to_wav conversion
 │   ├── config.py                  # Pydantic Settings (env var loading)
 │   ├── main.py                    # FastAPI app + CORS + static mount
-│   ├── Dockerfile
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
@@ -397,10 +394,7 @@ gemini_api_key = "your-gemini-api-key"
 Terraform provisions the infrastructure but doesn't build your Docker image. Build and push it first:
 
 ```bash
-# From repo root
-cd frontend && npm ci && npm run build && cd ..
-
-# Tag for Artifact Registry (must match Terraform's image_url output)
+# From repo root (the multi-stage Dockerfile handles the frontend build)
 export PROJECT_ID=your-gcp-project-id
 export IMAGE=us-central1-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal:latest
 
@@ -462,7 +456,7 @@ terraform destroy   # Removes all provisioned resources
 | `Could not pre-load intelligence brief` on startup | No prior games in Firestore (expected on first run) | Ignore — strategy logger populates after first completed game |
 | `FIRESTORE_EMULATOR_HOST` set but emulator not running | Emulator not started | Run `gcloud emulators firestore start` first |
 | `403 Forbidden` from Gemini API | API key invalid or project not enabled | Verify key at [AI Studio](https://aistudio.google.com/apikey), enable Generative AI API |
-| Frontend shows blank page on Cloud Run | `frontend/dist/` not included in Docker image | Build frontend before Docker build (see §2.2) |
+| Frontend shows blank page on Cloud Run | `frontend/dist/` not in the image | Rebuild with the root `Dockerfile` which includes the multi-stage frontend build |
 | `--workers 1` in Dockerfile | Required — WebSocket state is per-process | Do not increase workers; scale via Cloud Run instances instead |
 | `terraform plan` fails with auth error | Not authenticated with GCP | Run `gcloud auth application-default login` |
 | `terraform apply` — image not found | Docker image not pushed yet | Build and push the image first (see §5.3), then `terraform apply` |
