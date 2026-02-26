@@ -5,7 +5,7 @@
 **Tagline:** The AI is one of you. Trust no one.
 **Core Technology:** Gemini Live API (real-time bidirectional voice)
 
-Version 2.0 | February 23, 2026 *(updated to reflect implemented features)*
+Version 3.0 | February 26, 2026 *(updated to reflect voice engagement overhaul, discussion timer, speaker identification, human shapeshifter night kill, IaC, and deployment guide)*
 Hackathon Deadline: **March 16, 2026 at 5:00 PM PDT**
 Prize Target: $10K (category) + $25K (grand prize)
 
@@ -23,7 +23,7 @@ The game combines the narrative immersion of tabletop RPGs with the social tensi
 | **Platform** | Mobile web (phones) + optional shared screen |
 | **Session Length** | 15–30 minutes per game |
 | **Core Mechanic** | AI narrates + secretly plays as one character (or plays as a loyal ally — players don't know) |
-| **Input** | Voice (primary), text (fallback), camera (in-person hand-counting) |
+| **Input** | Voice via phone microphone (primary — streamed to narrator with speaker identification), text (fallback), camera (in-person hand-counting) |
 | **Output** | Voice narration (4 narrator presets), scene images, private role cards, audio highlights |
 
 ---
@@ -45,8 +45,8 @@ Fireside — Betrayal is a real-time, voice-first multiplayer game that combines
 
 ## Core Experience
 
-- **Players speak naturally** — no typing, no turn-taking. Interrupt the AI mid-sentence to object. Argue with other players in real time. The Gemini Live API's barge-in support makes heated debates feel natural.
-- **AI narrates dramatically** — setting scenes, voicing NPCs, building tension with pauses and vocal inflection. Affective dialog adapts the narrator's tone to match game tension (whispered during night phase, urgent during accusations).
+- **Players speak naturally** — talk into your phone microphone, no typing, no turn-taking. Audio is streamed directly to the narrator's Gemini session with speaker identification so the AI knows exactly who is speaking. Interrupt the AI mid-sentence to object. Argue with other players in real time. The Gemini Live API's barge-in support makes heated debates feel natural.
+- **AI narrates dramatically** — setting scenes, voicing NPCs, building tension with pauses and vocal inflection. During discussions, the narrator shifts to an active moderator/game show host role: relaying player speech, reacting with provocative one-liners, stirring debate, and redirecting when conversations loop. Affective dialog adapts the narrator's tone to match game tension (whispered during night phase, urgent during accusations).
 - **AI plays as a hidden character** — with its own backstory, motivations, and deception strategy. It participates in discussions, deflects suspicion, and accuses others. Players must figure out which character is the AI before it's too late.
 - **No moderator needed** — the AI handles all game management duties (role assignment, phase transitions, vote tallying, win condition checks) while simultaneously participating as a story character.
 
@@ -74,7 +74,7 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 | 2. Role Assignment | AI assigns each player a secret role (Villager, Seer, Healer, Hunter, Drunk, Bodyguard, Tanner — based on player count) AND a unique LLM-generated story character identity. With Random AI Alignment (Normal/Hard), the AI draws from the full role pool — it might be the Shapeshifter, or a loyal Seer. All players see only character names from this point forward — real names are hidden. AI character is indistinguishable from human players. | Private role card: "You are **Tinker Orin** (Healer). Each night, choose one character to protect." Expandable role strip shows ability reminder. Players know their own character name but not which character belongs to which friend. |
 | 3. Story Begins | AI narrator sets the scene with dramatic voice narration. "The village of Thornwood sleeps beneath a pale moon..." Introduces all characters by name. | Players listen together. Each character is introduced with a brief personality hook. "Brother Aldric tends the chapel garden. Mira the Huntress returns from the forest with an uneasy look." |
 | 4. Night Phase | AI privately contacts special-role holders. Seer investigates (Drunk gets false results). Healer protects. Hunter has no night action. AI's shapeshifter picks a target. | Private text on individual phones. Other players see "Night has fallen..." with atmospheric narration. |
-| 5. Day Discussion | AI narrates what happened overnight, then opens discussion. Players debate via text input OR quick-reaction buttons ("I suspect [character]", "I trust [character]", "I agree with [last speaker]"). AI participates as its character. | Chat with character names only. Quick-reaction buttons for fast participation. AI responds in character when addressed or accused. |
+| 5. Day Discussion | AI narrates what happened overnight, then opens discussion with a **dynamic countdown timer** scaled by player count (3–4 players: 2 min, 5–6: 3 min, 7–8: 4 min). Players debate via **phone microphone** (audio streamed directly to narrator with speaker identification) OR text input OR quick-reaction buttons. Narrator acts as **active moderator/game show host**: relays player speech for the village, reacts with provocative one-liners, stirs debate by challenging weak arguments, and redirects when discussion loops. AI participates as its character. 30-second narrator warning before timer expires. | Visible M:SS countdown in sticky header with color transitions (gray → amber at 30s → red pulse at 15s). Speak naturally into phone mic — narrator knows who is talking via `[VOICE] {CharacterName}` annotations. Quick-reaction buttons for fast text participation. Narrator engages actively as moderator, not passive observer. |
 | 6. Voting | Players vote to eliminate a suspect character using buttons on their phones. AI tallies votes and handles ties. | Character portrait buttons to vote. Timer countdown. AI announces results with dramatic narration. |
 | 7. Elimination | AI narrates the elimination with story consequences. If the eliminated player was the Hunter, they immediately choose someone to take with them. Reveals whether the eliminated character was the traitor or innocent. | Dramatic reveal moment. Hunter's revenge kill creates unexpected second elimination. Eliminated players become spectators. |
 | 8. Resolution | Repeat Night/Day cycles until villagers correctly identify the shapeshifter OR the shapeshifter eliminates enough villagers to win OR the Tanner gets voted out (solo win). | Win/lose screen with **post-game reveal timeline**: round-by-round interactive view showing every hidden action, the AI's strategy reasoning, audio highlight reel, and key turning points. All character-to-player mappings revealed. Share results with a copy-to-clipboard summary. Direct URL navigation to `/gameover/:gameId` works via REST fallback. |
@@ -85,7 +85,7 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 
 | Modality | How Fireside Uses It | Category Requirement |
 |---|---|---|
-| **Voice Input** | Players speak accusations, defenses, and arguments naturally. Can interrupt the AI mid-narration to object or interject. | ✓ Natural conversation |
+| **Voice Input** | Players speak into phone microphones — audio is streamed to the narrator's Gemini Live API session via AudioWorklet (16kHz PCM16 mono). Speaker identification annotates each speaker (`[VOICE] {CharacterName} is now speaking`). Transcript buffering (0.8s debounce) shows complete sentences. Can interrupt the AI mid-narration to object or interject. | ✓ Natural conversation |
 | **Voice Output** | AI narrates with dramatic tone, voices different NPCs with distinct personalities, adapts emotional delivery via affective dialog. | ✓ Distinct persona/voice |
 | **Vision Input** | Camera can observe the room for hand-raise vote counting and player presence detection. | ✓ Vision-enabled interaction |
 | **Interruption Handling** | Players yelling objections during accusations IS the core gameplay. Barge-in is not a feature — it's the mechanic. | ✓ Handles interruptions |
@@ -111,21 +111,25 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 | **Cloud Run** | Backend API + ADK agent host | Serverless, auto-scaling, WebSocket support, one-command ADK deploy via `adk deploy cloud_run`. |
 | **Cloud Firestore** | Real-time game state | Real-time listeners sync game state (roles, votes, alive/dead, phase) across all player devices instantly. Generous free tier (1 GiB). |
 | **Cloud Storage** | Scene images, audio assets | Store generated scene illustrations and any pre-recorded audio clips. |
-| **Cloud Build + Terraform** | CI/CD pipeline + IaC | Automated deployment for bonus points (+0.2). Push to main auto-deploys to Cloud Run. |
+| **Cloud Build + Terraform** | CI/CD pipeline + IaC | Automated deployment for bonus points (+0.2). Push to main auto-deploys to Cloud Run. Full Terraform configuration in `terraform/` directory (main.tf, variables.tf, terraform.tfvars.example) for reproducible Cloud Run deployments. Multi-stage Dockerfile at repo root (frontend build + backend). |
 | **Artifact Registry** | Container images | Required by Cloud Run deploy pipeline. |
 
 ## System Architecture
 
 ```
 Player Phones (2-7) ←WebSocket→ Cloud Run (FastAPI)
-                                    ├── ADK Agent Orchestrator
-                                    │   ├── Narrator Agent (Live API voice)
-                                    │   ├── Game Master Agent (deterministic)
-                                    │   └── Traitor Agent (LLM sub-agent)
-                                    ├── Gemini Live API (WebSocket)
-                                    └── Cloud Firestore (game state)
-                                        Cloud Storage (scene images)
+  ├── Mic audio (PCM16)               ├── ADK Agent Orchestrator
+  ├── Text / quick reactions           │   ├── Narrator Agent (Live API voice)
+  └── Vote actions                     │   ├── Game Master Agent (deterministic)
+                                       │   └── Traitor Agent (LLM sub-agent)
+                                       ├── Gemini Live API (WebSocket)
+                                       │   ├── Audio output → broadcast to all players
+                                       │   └── Audio input ← player mic streams
+                                       ├── Cloud Firestore (game state)
+                                       └── Cloud Storage (scene images)
 ```
+
+See also: `docs/architecture.mermaid` for the full visual architecture diagram (Mermaid).
 
 ## Session Management
 
@@ -134,17 +138,19 @@ The Gemini Live API has a ~10-minute connection limit and 15-minute audio sessio
 - **Session resumption:** Enable `session_resumption` in LiveConnectConfig with a session handle for automatic reconnection after timeout, preserving conversation context.
 - **Context window compression:** Enable `context_window_compression` to automatically summarize older conversation history, extending sessions to unlimited duration.
 - **Firestore as source of truth:** Critical game state (roles, votes, alive/dead status, story progress) is persisted in Firestore, not just in the Live API session memory. On reconnection, the full game state summary is re-injected into the new session context.
+- **Dynamic discussion timer:** Day discussion phase uses a server-coordinated countdown timer that scales by player count (3–4 players: 2 min, 5–6: 3 min, 7–8: 4 min). Timer state is synced to all clients via WebSocket. The narrator receives a 30-second warning to wrap up discussion. Timer countdown is rendered in a sticky header with visual urgency cues (gray → amber at 30s → red pulse at 15s).
 
 ## Multiplayer Audio Architecture
 
 To manage concurrent session limits (3–50 per GCP project), we use a simplified hub model:
 
 - **Single narrator session:** Server maintains ONE Live API session for the narrator agent. This is the only entity that needs real-time voice output.
-- **Player input via text:** Players send text messages or use browser-native speech-to-text. Server transcribes and injects player messages into the narrator's context as attributed dialog ("Alex says: I think the blacksmith is suspicious").
+- **Player input via microphone (primary):** Players speak into their phone microphones. Audio is captured via AudioWorklet (16kHz PCM16 mono) and streamed to the server, which injects it into the narrator's Gemini Live API session. Speaker identification annotates each speaker with `[VOICE] {CharacterName} is now speaking via microphone`, enabling the narrator to distinguish between players in real time. Transcript buffering (0.8s debounce) aggregates Gemini's `input_audio_transcription` events into complete sentences before display.
+- **Player input via text (fallback):** Players can also send text messages or use quick-reaction buttons. Server injects player messages into the narrator's context as attributed dialog.
 - **Broadcast audio:** Narrator's audio responses are streamed to all connected player WebSockets simultaneously.
 - **Private channels:** Role assignments and night-phase messages are sent via text to individual player WebSockets only.
 
-This avoids the need for per-player Live API sessions (which would hit concurrent limits immediately) while preserving the core voice experience.
+This avoids the need for per-player Live API sessions (which would hit concurrent limits immediately) while preserving the core voice experience. The microphone-first approach means players interact naturally — speaking and interrupting — while the narrator hears and responds to every participant by name.
 
 ## Game State Schema (Firestore)
 
@@ -178,11 +184,15 @@ games/{gameId}/
 /join/{gameCode}  → Join screen (enter name, see other players)
 /game/{gameCode}  → Game screen
   ├── Audio player (narrator voice stream)
+  ├── Microphone input (AudioWorklet, 16kHz PCM16 mono → streamed to narrator)
   ├── Scene image (generated per phase, optional)
+  ├── Role reveal overlay (dramatic role assignment at game start)
   ├── Role card (private, only visible to this player)
   ├── Player list (alive/dead status, vote indicators)
-  ├── Chat input (text + optional browser speech-to-text)
+  ├── Discussion timer (sticky header, M:SS countdown with color transitions)
+  ├── Chat input (text + quick reactions, fallback to mic)
   ├── Vote buttons (appear during voting phase only)
+  ├── Night kill UI (for human shapeshifters via Random AI Alignment)
   └── Story log (scrollable narrative history)
 ```
 
@@ -242,7 +252,7 @@ games/{gameId}/
 | In-game role reminder | **P2** | ✅ Shipped | Expandable `RoleStrip` with ability description, icon, and label for all 8 roles. One-tap expand/collapse. |
 | Minimum player count design | **P2** | ✅ Shipped | Difficulty auto-adjusts for 3–4 player games. Role distribution adapts (no Healer at 4 players). Lobby shows warning "Games work best with 4+ players" when < 4 humans. Technical minimum stays at 2 for dev/testing. |
 | Narrator vote neutrality | **P2** | ✅ Shipped | `generate_vote_context` tool uses only public events log. Narrator prompt firewalled from traitor state. |
-| Narrator pacing intelligence | **P2** | ✅ Shipped | `ConversationTracker` monitors message flow (PACE_HOT/NORMAL/NUDGE/PUSH/CIRCULAR). Day discussion transitions organically, with 5-minute hard cap. |
+| Narrator pacing intelligence | **P2** | ✅ Shipped | `ConversationTracker` monitors message flow (PACE_HOT/NORMAL/NUDGE/PUSH/CIRCULAR). Day discussion transitions organically. Dynamic countdown timer scales by player count (2–4 min) with 30s narrator warning. `end_of_turn=False` parity for text messages in heated discussions (PACE_HOT) prevents narrator from responding to every message. |
 | Affective dialog input signals | **P2** | ✅ Shipped | `AffectiveSignals` computes vote_tension, debate_intensity, late_game, endgame_imminent, ai_heat. Injected into narrator context for tone adjustment. |
 | Conversation structure for large groups | **P2** | ✅ Shipped | `HandRaiseQueue` for 7+ players. Narrator calls on 2–3 characters first, then opens floor. "Raise hand" quick reaction added. |
 | Minimum satisfying game length | **P2** | ✅ Shipped | Minimum rounds enforced: 3–4 players = 3 rounds, 5–6 = 3, 7 = 4, 8 = 5. Expected duration displayed in lobby. |
@@ -260,6 +270,15 @@ games/{gameId}/
 | **New: Host badge** | **P1** | ✅ Shipped | Crown icon next to host name in lobby player grid. |
 | **New: Day-phase hint** | **P1** | ✅ Shipped | One-time dismissible hint for first-timers during day discussion ("Discuss who you think the Shapeshifter is..."). |
 | **New: Join cap** | **P0** | ✅ Shipped | Server returns 409 when 7th human tries to join (max 7 humans + 1 AI = 8 total). |
+| **New: Player Voice Input (Mic)** | **P0** | ✅ Shipped | Players speak into phone microphone, audio streamed to narrator via AudioWorklet (16kHz PCM16 mono). Speaker identification via text annotation (`[VOICE] {CharacterName} is now speaking via microphone`). Transcript buffering (0.8s debounce) shows complete sentences instead of word-by-word fragments. Voice-optimized dialog prompts for traitor and loyal AI characters ("write for voice: contractions, short sentences, natural speech"). |
+| **New: Dynamic Discussion Timer** | **P1** | ✅ Shipped | Visible countdown timer scales by player count (3–4 players: 2 min, 5–6: 3 min, 7–8: 4 min). 30-second narrator warning before time expires. Sticky header displays M:SS countdown with color transitions (gray → amber at 30s → red pulse at 15s). Replaces the previous 5-minute hard cap with player-count-aware timing. |
+| **New: Narrator Voice Engagement** | **P1** | ✅ Shipped | Complete narrator personality overhaul from passive observer to active game show host/moderator. Dual-mode style guide: theatrical during narration phases, fast-paced moderator during discussion. Four narrator roles during discussion: RELAY (echo player points for the village), REACT (provocative 1-sentence reactions), STIR (challenge weak arguments), REDIRECT (break loops). All 4 narrator presets upgraded with discussion-specific personalities: Classic (stern village elder), Campfire (mischievous friend), Horror (unsettling observer), Comedy (sports announcer). `end_of_turn=False` parity for text messages in heated discussions (PACE_HOT). |
+| **New: Human Shapeshifter Night Kill** | **P1** | ✅ Shipped | When Random AI Alignment gives a human player the shapeshifter role, they can perform night kills via the game UI. Complete implementation of human shapeshifter night kill action with backend logic and frontend target selection interface. |
+| **New: Role Reveal Overlay** | **P2** | ✅ Shipped | Visual overlay showing role assignment on game screen at the start of the game. Provides a clear, dramatic moment when players learn their character and role. |
+| **New: Terraform IaC** | **P2** | ✅ Shipped | Full Terraform configuration for automated Cloud Run deployment in `terraform/` directory (main.tf, variables.tf, terraform.tfvars.example). Infrastructure-as-code for reproducible production deployments. |
+| **New: Deployment Guide** | **P2** | ✅ Shipped | `docs/DEPLOYMENT.md` with complete local development setup and Cloud Run production deployment instructions. |
+| **New: Multi-Stage Docker Build** | **P2** | ✅ Shipped | Single Dockerfile at repo root with multi-stage build (frontend build + backend) for streamlined container image creation. |
+| **New: Python 3.14 Compatibility** | **P2** | ✅ Shipped | Dependencies upgraded and pinned for Python 3.14 compatibility. |
 | Multiple story genres | **P3 — Future** | ⬜ | Fantasy, mystery, sci-fi, horror story templates with different character sets, win conditions, atmosphere. |
 | Persistent player profiles | **P3 — Future** | Track win/loss records, roles played, times they correctly identified the AI. Leaderboards across friend groups. Unlockable story genres. |
 | Cross-device shared screen mode | **P3 — Future** | Dedicated "campfire screen" (TV/tablet) showing the shared narrative, scene images, and character status while phones remain private. Full second-screen experience. |
@@ -278,15 +297,18 @@ games/{gameId}/
 
 **Key differentiators that no competitor has:**
 1. Voice-first with interruptions — no existing AI game supports real-time voice with barge-in
-2. AI plays AS a character — the AI isn't just the narrator/GM, it's a deceptive participant with adjustable difficulty
-3. Random AI alignment — the AI might be friend or foe, completely changing the meta-game each session
-4. Character identity masking — all players AND the AI have LLM-generated story character names, making the AI unidentifiable
-5. 8 unique roles — Hunter's revenge kill, Drunk's false info, Bodyguard's sacrifice, Tanner's inversion create unpredictable moments
-6. 4 narrator personalities — Classic, Campfire, Horror, Comedy with distinct voices and tones
-7. Post-game reveal timeline — interactive round-by-round view with AI reasoning + audio highlights + share button
-8. In-person camera voting — Gemini Vision counts raised hands for physical gatherings
-9. Cross-game AI learning — the AI improves its deception strategy from past game data
-10. Built on Gemini Live API — native voice, not bolted-on text-to-speech
+2. Player microphone input with speaker identification — phone mic audio streamed directly to the narrator's Gemini Live API session, with per-speaker annotation so the AI knows who is talking
+3. AI plays AS a character — the AI isn't just the narrator/GM, it's a deceptive participant with adjustable difficulty
+4. Random AI alignment — the AI might be friend or foe, completely changing the meta-game each session
+5. Character identity masking — all players AND the AI have LLM-generated story character names, making the AI unidentifiable
+6. Active narrator moderation — narrator acts as game show host during discussions: relaying, reacting, stirring debate, and redirecting loops
+7. 8 unique roles — Hunter's revenge kill, Drunk's false info, Bodyguard's sacrifice, Tanner's inversion create unpredictable moments
+8. 4 narrator personalities — Classic, Campfire, Horror, Comedy with distinct voices and discussion-specific behaviors
+9. Dynamic discussion timer — player-count-aware countdown with visual urgency and narrator warning
+10. Post-game reveal timeline — interactive round-by-round view with AI reasoning + audio highlights + share button
+11. In-person camera voting — Gemini Vision counts raised hands for physical gatherings
+12. Cross-game AI learning — the AI improves its deception strategy from past game data
+13. Built on Gemini Live API — native voice, not bolted-on text-to-speech
 
 ---
 
@@ -339,7 +361,7 @@ games/{gameId}/
 
 ## Post-Hackathon P2 Roadmap
 
-> **Status Update (Feb 23, 2026):** All P2 features from Sprints 4–7 have been implemented and shipped ahead of the hackathon deadline. The roadmap below is preserved for historical context — all items marked ✅.
+> **Status Update (Feb 26, 2026):** All P2 features from Sprints 4–8 have been implemented and shipped ahead of the hackathon deadline. Sprint 8 delivered the voice engagement overhaul (player mic input, speaker identification, narrator moderator role, dynamic discussion timer) and infrastructure (Terraform IaC, multi-stage Docker, deployment guide). The roadmap below is preserved for historical context — all items marked ✅.
 
 ### Sprint 4: Narrator Intelligence — ✅ ALL SHIPPED
 
@@ -378,6 +400,23 @@ games/{gameId}/
 | Narrator style presets | ✅ | 4 presets (Classic/Campfire/Horror/Comedy) with distinct voices + system prompt prefixes. Audio preview in lobby. |
 | Competitor intelligence for AI | ✅ | Post-game strategy logs → meta-strategy brief after 20+ games → Traitor Agent prompt augmentation. |
 
+### Sprint 8: Voice Engagement & Infrastructure — ✅ ALL SHIPPED
+
+| Feature | Status | Implementation Notes |
+|---|---|---|
+| Player Voice Input (Mic) | ✅ | AudioWorklet (16kHz PCM16 mono) streams to narrator's Gemini Live API session. Speaker identification via `[VOICE] {CharacterName}` annotation. Transcript buffering (0.8s debounce). |
+| Dynamic Discussion Timer | ✅ | Player-count-aware countdown (2–4 min). 30s narrator warning. Sticky header with M:SS and color transitions. |
+| Narrator Voice Engagement Overhaul | ✅ | Dual-mode style (theatrical narration / fast-paced moderator). 4 roles: RELAY, REACT, STIR, REDIRECT. All 4 presets upgraded for discussion. |
+| Voice-Optimized Dialog Prompts | ✅ | Traitor and loyal AI character dialog prompts include "write for voice: contractions, short sentences, natural speech." |
+| end_of_turn Parity | ✅ | Text messages in heated discussions (PACE_HOT) use `end_of_turn=False` like voice, preventing narrator obligation to respond to every message. |
+| Human Shapeshifter Night Kill | ✅ | Full UI and backend for human players who draw shapeshifter via Random AI Alignment to perform night kills. |
+| Role Reveal Overlay | ✅ | Visual overlay showing role assignment on game screen. |
+| Terraform IaC | ✅ | `terraform/` directory with main.tf, variables.tf, terraform.tfvars.example for Cloud Run deployment. |
+| Multi-Stage Docker Build | ✅ | Single Dockerfile at repo root: frontend build + backend in one multi-stage image. |
+| Deployment Guide | ✅ | `docs/DEPLOYMENT.md` with local dev and Cloud Run production instructions. |
+| Visual Architecture Diagram | ✅ | `docs/architecture.mermaid` Mermaid diagram of full system architecture. |
+| Python 3.14 Compatibility | ✅ | Pinned dependencies upgraded for Python 3.14 compat. |
+
 ### Remaining (Post-Hackathon)
 
 | Feature | Priority | Notes |
@@ -414,6 +453,18 @@ games/{gameId}/
 
 ---
 
+# Documentation
+
+| Document | Path | Description |
+|---|---|---|
+| **PRD** | `docs/PRD.md` | This document — product requirements and feature inventory |
+| **TDD** | `docs/TDD.md` | Technical design document |
+| **Deployment Guide** | `docs/DEPLOYMENT.md` | Local development setup + Cloud Run production deployment instructions |
+| **Architecture Diagram** | `docs/architecture.mermaid` | Visual Mermaid diagram of the full system architecture (agents, services, data flow) |
+| **README** | `README.md` | Project overview, quickstart, and submission details |
+
+---
+
 *Document created: February 21, 2026*
-*Last updated: February 23, 2026 — all P0/P1/P2 features shipped*
+*Last updated: February 26, 2026 — voice engagement overhaul, discussion timer, speaker identification, human shapeshifter night kill, Terraform IaC, deployment guide*
 *Hackathon deadline: March 16, 2026*

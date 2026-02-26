@@ -4,7 +4,7 @@
 **Category:** 🗣️ Live Agents
 **Author:** Software Architecture Team
 **Companion Document:** PRD — Fireside — Betrayal v1.0
-**Version:** 2.0 | February 23, 2026 *(updated to reflect implemented architecture)*
+**Version:** 3.0 | February 26, 2026 *(updated to reflect voice input pipeline, discussion timer, speaker identification, human shapeshifter, infrastructure overhaul)*
 
 ---
 
@@ -12,7 +12,7 @@
 
 This Technical Design Document specifies the implementation architecture for Fireside — Betrayal, a real-time voice-first multiplayer social deduction game powered by the Gemini Live API, Google ADK, and Google Cloud. It translates the PRD's product requirements into concrete engineering decisions, API contracts, data models, code structure, and deployment specifications.
 
-**Scope:** All P0, P1, and P2 features from the PRD are now implemented. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more.
+**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide.
 
 **Out of scope:** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). P3 features are additive and do not affect core architecture.
 
@@ -1071,21 +1071,22 @@ Client                          Server
 
 ```typescript
 // Server → Client messages
-type ServerMessage = 
+type ServerMessage =
   | { type: "connected"; playerId: string; characterName: string; gameState: GameState }
   | { type: "role"; role: Role; characterName: string; characterIntro: string; description: string } // PRIVATE
   | { type: "audio"; data: string; sampleRate: number }         // BROADCAST
   | { type: "transcript"; speaker: string; text: string }       // BROADCAST (speaker = character name)
-  | { type: "phase_change"; phase: GamePhase; timerSeconds?: number }
+  | { type: "input_transcript"; speaker: string; text: string } // BROADCAST — player mic voice transcript (§12.5.1)
+  | { type: "phase_change"; phase: GamePhase; timerSeconds?: number } // timerSeconds: dynamic (§12.5.3)
   | { type: "player_joined"; characterName: string; count: number }  // Character name only
   | { type: "player_left"; characterName: string }
   | { type: "vote_update"; votes: Record<string, string | null> }   // Character names
-  | { type: "elimination"; characterName: string; wasTraitor: boolean; 
+  | { type: "elimination"; characterName: string; wasTraitor: boolean;
       role: Role; triggerHunterRevenge?: boolean }                   // P1: Hunter flag
   | { type: "hunter_revenge"; hunterCharacter: string; targetCharacter: string;
       targetWasTraitor: boolean }                                    // P1: Hunter's death kill
   | { type: "night_result"; result: any }                           // PRIVATE (Seer/Drunk)
-  | { type: "game_over"; winner: string; 
+  | { type: "game_over"; winner: string;
       characterReveals: CharacterReveal[];                          // P0: character → player + role
       aiStrategyLog: AIStrategyEntry[];                             // P1: post-game reveal timeline
       storyRecap: string }
@@ -1118,13 +1119,15 @@ type AIStrategyEntry = {
 **Spectator Clues (P1):** Eliminated players can send one single-word clue per round to living players via a `SpectatorClueInput` component (replaces `ChatInput` for spectators). The word is validated server-side: must be a single word (no spaces), cannot be a character name, max one clue per round per spectator. The clue is delivered through the Narrator Agent as an in-story event: "A voice from beyond the veil reaches you... a single word: 'forge.'" The narrator injects the clue during the day discussion phase only. This keeps eliminated players engaged — getting voted out in Round 1 and sitting idle for 20 minutes is the #1 cause of player dropout in social deduction games (board game organizer feedback).
 
 ```
-// Client → Server messages  
+// Client → Server messages
 type ClientMessage =
   | { type: "message"; text: string }                                    // Free-form text
   | { type: "quick_reaction"; reaction: QuickReaction; target?: string } // P1: preset buttons
+  | { type: "player_audio"; audio: string }                              // Base64 PCM16 16kHz mono (§12.5.1)
   | { type: "vote"; target: string }                                     // Character name
   | { type: "night_action"; action: NightAction; target: string }
   | { type: "hunter_revenge"; target: string }                           // P1: Hunter's death target
+  | { type: "shapeshifter_action"; target: string }                      // Human shapeshifter night kill (§12.5.5)
   | { type: "ready" }
   | { type: "ping" }
 
@@ -1706,36 +1709,29 @@ class NarratorAudioPlayer {
 
 **Frontend Serving Strategy:** Single container. The Vite frontend builds to `frontend/dist/`, and FastAPI serves it via `StaticFiles`. One Dockerfile, one Cloud Run service, zero CORS issues in production (same origin). This avoids multi-service complexity for a 3-week hackathon sprint.
 
+**Implementation Update:** The Dockerfile was rewritten as a multi-stage build (see section 12.5.6 for details). Stage 1 (`node:18-slim`) builds the frontend; Stage 2 (`python:3.11-slim`) copies only the compiled `dist/` output. This reduces final image size by approximately 400 MB compared to the original single-stage approach.
+
 ```dockerfile
-# Dockerfile
-FROM python:3.12-slim
+# Dockerfile (repo root — multi-stage build)
 
+# Stage 1: Build frontend
+FROM node:18-slim AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Python backend + compiled frontend
+FROM python:3.11-slim
 WORKDIR /app
-
-# Install system dependencies (includes Node.js for frontend build)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# Build frontend
-COPY frontend/ ./frontend/
-RUN cd frontend && npm ci && npm run build
-
-# Install Python dependencies
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy backend code
 COPY backend/ ./backend/
-
-# Cloud Run expects port 8080
-ENV PORT=8080
-EXPOSE 8080
-
-# Start FastAPI with uvicorn
-CMD ["uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8080", "--ws-ping-interval", "20", "--ws-ping-timeout", "20"]
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+WORKDIR /app/backend
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
 ```
 
 ```txt
@@ -1750,11 +1746,14 @@ pydantic==2.9.0
 python-dotenv==1.0.0
 ```
 
-## 9.2 Terraform (IaC for Bonus Points)
+## 9.2 Terraform (IaC)
+
+**Implementation Update:** The Terraform configuration was fully implemented and extends the original design spec. See section 12.5.6 for the complete shipped implementation. Key differences from the original design: API enablement via `for_each`, Artifact Registry repo named `fireside`, port 8000, environment variables passed directly (not via Secret Manager), and Cloud Build trigger commented out pending GitHub connection.
 
 ```hcl
-# terraform/main.tf
+# terraform/main.tf (excerpt — see section 12.5.6 for full details)
 terraform {
+  required_version = ">= 1.5"
   required_providers {
     google = {
       source  = "hashicorp/google"
@@ -1768,56 +1767,62 @@ provider "google" {
   region  = var.region
 }
 
+# Enable required GCP APIs
+resource "google_project_service" "apis" {
+  for_each = toset([
+    "run.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "firestore.googleapis.com",
+    "aiplatform.googleapis.com",
+    "artifactregistry.googleapis.com",
+  ])
+  service            = each.value
+  disable_on_destroy = false
+}
+
 # Cloud Run service
 resource "google_cloud_run_v2_service" "fireside" {
   name     = "fireside-betrayal"
   location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 10
+    }
+    session_affinity = true  # Critical for WebSocket connections
+
     containers {
-      image = "${var.region}-docker.pkg.dev/${var.project_id}/hackathon/fireside:latest"
-      
+      image = local.image_url  # {region}-docker.pkg.dev/{project}/fireside/fireside-betrayal:latest
+
       ports {
-        container_port = 8080
+        container_port = 8000
       }
-      
+
       env {
         name  = "GOOGLE_CLOUD_PROJECT"
         value = var.project_id
       }
       env {
         name  = "GEMINI_API_KEY"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.gemini_key.secret_id
-            version = "latest"
-          }
-        }
+        value = var.gemini_api_key
       }
-      
+
       resources {
         limits = {
-          cpu    = "2"
+          cpu    = "1"
           memory = "1Gi"
         }
       }
-      
-      startup_probe {
-        http_get {
-          path = "/health"
-        }
-      }
     }
-    
-    scaling {
-      min_instance_count = 0
-      max_instance_count = 3
-    }
-    
-    timeout = "3600s"  # 1 hour for long WebSocket connections
-    
-    session_affinity = true  # Keep WebSocket connections on same instance
   }
+
+  depends_on = [
+    google_project_service.apis,
+    google_firestore_database.default,
+    google_artifact_registry_repository.docker,
+  ]
 }
 
 # Allow unauthenticated access
@@ -1830,27 +1835,24 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
 }
 
 # Firestore database
-resource "google_firestore_database" "fireside" {
-  project     = var.project_id
+resource "google_firestore_database" "default" {
   name        = "(default)"
-  location_id = "us-east1"
+  location_id = var.region
   type        = "FIRESTORE_NATIVE"
-}
-
-# Cloud Storage bucket
-resource "google_storage_bucket" "assets" {
-  name     = "${var.project_id}-fireside-assets"
-  location = "US"
-  
-  uniform_bucket_level_access = true
+  depends_on  = [google_project_service.apis]
 }
 
 # Artifact Registry
-resource "google_artifact_registry_repository" "hackathon" {
+resource "google_artifact_registry_repository" "docker" {
+  repository_id = "fireside"
   location      = var.region
-  repository_id = "hackathon"
   format        = "DOCKER"
+  description   = "Fireside: Betrayal container images"
+  depends_on    = [google_project_service.apis]
 }
+
+# Variables: project_id (required), region (default us-central1), gemini_api_key (sensitive)
+# Outputs: service_url, image_url, firestore_database
 ```
 
 ## 9.3 Cloud Build Pipeline
@@ -1928,7 +1930,6 @@ fireside-betrayal/
 │   ├── main.py                    # FastAPI app setup, CORS, route registration, static file serving
 │   ├── config.py                  # Pydantic Settings (API keys, model names, CORS origins)
 │   ├── requirements.txt
-│   ├── Dockerfile
 │   └── .env.example
 ├── frontend/
 │   ├── public/
@@ -1962,12 +1963,15 @@ fireside-betrayal/
 ├── docs/
 │   ├── PRD.md                     # Product Requirements Document
 │   ├── TDD.md                     # Technical Design Document (this file)
+│   ├── DEPLOYMENT.md              # Deployment guide (local dev, Cloud Run, Terraform)
+│   ├── architecture.mermaid       # System architecture diagram (Mermaid)
 │   ├── fireside-ui.jsx            # Interactive UI prototype
 │   └── playtest-personas.md       # Playtest persona profiles
 ├── terraform/
-│   ├── main.tf
-│   ├── variables.tf
-│   └── outputs.tf
+│   ├── main.tf                    # Cloud Run, Firestore, Artifact Registry, IAM
+│   ├── variables.tf               # project_id, region, gemini_api_key
+│   └── terraform.tfvars.example   # Template for secrets
+├── Dockerfile                     # Multi-stage: node:18-slim (frontend) → python:3.11-slim (backend)
 ├── cloudbuild.yaml
 ├── README.md
 └── LICENSE (MIT)
@@ -3497,6 +3501,200 @@ When fewer than 4 human players have joined, the lobby summary includes a `min_p
 
 ---
 
+# 12.5 Post-P2 Additions (Shipped February 24–26, 2026)
+
+The following features were shipped after the P2 milestone. They address live-play quality, voice engagement, and deployment infrastructure.
+
+## 12.5.1 Player Voice Input Pipeline
+
+**Files:** `frontend/src/hooks/useWebSocket.js` (AudioWorklet), `backend/routers/ws_router.py` (audio handler), `backend/agents/narrator_agent.py` (`NarratorSession.send_audio`)
+
+Players can speak into their phone microphone. The full pipeline:
+
+1. **Browser capture:** An `AudioWorklet` in the browser captures mic audio at the device's native sample rate, downsamples to 16 kHz PCM16 mono in the worklet processor.
+2. **WebSocket transport:** The PCM bytes are base64-encoded and sent as `{ type: "player_audio", audio: "<base64>" }` over the existing game WebSocket.
+3. **Server decode + attribution:** The WebSocket dispatcher decodes the base64 payload, looks up the player's `character_name` from Firestore, and calls `narrator_manager.forward_player_audio(game_id, pcm_bytes, speaker=character_name)`.
+4. **Speaker annotation injection:** Inside `NarratorSession.send_audio(pcm_bytes, speaker)`, if the `speaker` differs from `_current_voice_speaker`, a text annotation is injected first: `[VOICE] {speaker} is now speaking via microphone.` This is sent via `session.send(input=text, end_of_turn=False)` so the narrator does not respond to the annotation itself.
+5. **Raw PCM to Gemini:** The audio bytes are queued to the Gemini Live API session via `send_realtime_input(audio=Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000"))`.
+6. **Transcript buffering:** Gemini returns partial `input_audio_transcription` fragments via `server_content.input_transcription.text`. These are accumulated in a `_transcript_buffer` with a 0.8-second debounce timer (`_flush_transcript_after_delay`). On flush, the complete sentence is broadcast to all players as `{ type: "input_transcript", speaker: "<character_name>", text: "<buffered sentence>" }`.
+
+```python
+# NarratorSession — voice input state (narrator_agent.py)
+class NarratorSession:
+    def __init__(self, ...):
+        # ... existing fields ...
+        self._current_voice_speaker: Optional[str] = None
+        self._transcript_buffer: str = ""
+        self._transcript_flush_task: Optional[asyncio.Task] = None
+
+    async def send_audio(self, pcm_bytes: bytes, speaker: str):
+        """Send player mic audio to Gemini with speaker attribution."""
+        if speaker != self._current_voice_speaker:
+            self._current_voice_speaker = speaker
+            annotation = f"[VOICE] {speaker} is now speaking via microphone."
+            await self._session.send(input=annotation, end_of_turn=False)
+        await self._session.send(
+            input=types.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
+        )
+
+    async def _flush_transcript_after_delay(self, delay: float = 0.8):
+        """Debounce partial transcription fragments into complete sentences."""
+        await asyncio.sleep(delay)
+        if self._transcript_buffer.strip():
+            text = self._transcript_buffer.strip()
+            self._transcript_buffer = ""
+            # Broadcast to all players
+            await self._broadcast_transcript(self._current_voice_speaker, text)
+```
+
+**Audio Specifications (updated):**
+- Player mic input: 16-bit PCM, 16 kHz, mono (downsampled in AudioWorklet)
+- Narrator output: 24 kHz PCM audio (broadcast to players)
+- Transcript flush debounce: 0.8 seconds
+
+## 12.5.2 Speaker Identification
+
+**Files:** `backend/agents/narrator_agent.py` (`_current_voice_speaker`), `backend/routers/ws_router.py` (audio handler)
+
+When multiple players use voice input, the narrator needs to know who is speaking. The system tracks the active speaker per `NarratorSession`:
+
+- `_current_voice_speaker: Optional[str]` — tracks the character name of the player currently sending audio.
+- On speaker change, a text annotation `[VOICE] {name} is now speaking via microphone.` is injected into the Gemini session before the audio bytes.
+- The annotation uses `end_of_turn=False` so the narrator does not interpret it as a prompt requiring a response.
+- The Gemini model's `input_audio_transcription` output is tagged with the speaker name and broadcast to all clients for display in the story log.
+
+This allows the narrator to address players by character name during voice discussions: "Blacksmith Garin, you sound troubled — tell us what you saw."
+
+## 12.5.3 Dynamic Discussion Timer
+
+**Files:** `backend/routers/ws_router.py` (`_discussion_timeout`, `_discussion_warning`), `frontend/src/components/Game/GameScreen.jsx` (countdown UI), `frontend/src/context/GameContext.jsx` (timerSeconds state), `frontend/src/hooks/useWebSocket.js` (phase_change handler)
+
+Replaced the flat 120-second discussion timeout with a dynamic timeout scaled to alive player count:
+
+```python
+# ws_router.py
+def _discussion_timeout(alive_count: int) -> int:
+    """Compute discussion phase timeout in seconds based on alive player count."""
+    if alive_count <= 4:
+        return 120   # 3-4 alive → 2 minutes
+    elif alive_count <= 6:
+        return 180   # 5-6 alive → 3 minutes
+    else:
+        return 240   # 7+ alive → 4 minutes
+```
+
+**Server-side flow:**
+1. `broadcast_phase_change` computes the timeout dynamically and includes `timer_seconds` in the `phase_change` WebSocket message.
+2. A `_discussion_warning` async task is scheduled to fire 30 seconds before timeout. It sends the narrator a wrap-up prompt: "Discussion time is running low. Summarize key points and guide toward a vote."
+3. Warning tasks are tracked in a `_discussion_warning_tasks: dict[str, asyncio.Task]` dict, keyed by game ID. If the narrator calls `advance_phase` manually before the timer expires, the warning task is cancelled.
+
+**Frontend rendering:**
+- `GameContext.jsx`: The `PHASE_CHANGE` reducer stores `timerSeconds: action.timerSeconds ?? null`.
+- `useWebSocket.js`: The `phase_change` handler passes `timerSeconds: msg.timer_seconds` to the dispatch.
+- `GameScreen.jsx`: A `discussionTimeLeft` state is initialized from `timerSeconds` when `phase === 'day_discussion'`. A `useEffect` countdown decrements every second.
+- Display: M:SS in a sticky header with color transitions:
+  - Default: muted gray
+  - 30 seconds remaining: amber (`#fbbf24`)
+  - 15 seconds remaining: red (`var(--danger)`) with CSS `pulse` animation
+
+## 12.5.4 Narrator Engagement Model (Dual-Mode)
+
+**Files:** `backend/agents/narrator_agent.py` (NARRATOR_SYSTEM_PROMPT overhaul)
+
+The narrator system prompt was overhauled to support two distinct operational modes:
+
+1. **Theatrical narration mode** — During night phases, transitions, and eliminations: rich, immersive, atmospheric storytelling with dramatic pacing.
+2. **Fast-paced moderator mode** — During day discussion: the narrator acts as a HOST who relays, reacts, stirs, and redirects. The RELAY/REACT/STIR/REDIRECT pattern:
+   - **RELAY:** When a player speaks, the narrator echoes or paraphrases key points so all players hear them clearly.
+   - **REACT:** Brief emotional reactions to accusations, defenses, or dramatic moments.
+   - **STIR:** Pose provocative follow-up questions to deepen discussion: "An interesting claim, Garin. But can anyone corroborate?"
+   - **REDIRECT:** When discussion stalls or circles, redirect attention to quiet players or unexplored angles.
+
+**`end_of_turn` parity:**
+- `NarratorSession.send()` now accepts an `end_of_turn` parameter (default `True`).
+- The internal `_sender` unpacks `(text, end_of_turn)` tuples from the send queue.
+- `forward_player_message` uses `end_of_turn=False` when `ConversationTracker` reports `PACE_HOT`, allowing rapid message injection without triggering narrator responses for each individual message.
+
+**Preset upgrades:** All 4 narrator presets (Classic, Campfire, Horror, Comedy) were updated with discussion-specific personalities. For example, the Comedy preset moderates discussion with self-aware meta-commentary, while the Horror preset uses eerie silence and unsettling observations.
+
+**Voice-optimized dialog:** Traitor and loyal AI dialog prompts now include: "This will be SPOKEN ALOUD — write for voice: contractions, short sentences, natural speech." This ensures AI character dialog sounds natural when delivered by the narrator's voice.
+
+## 12.5.5 Human Shapeshifter Night Kill
+
+**Files:** `backend/routers/ws_router.py` (shapeshifter_action handler), `frontend/src/components/Game/GameScreen.jsx` (night kill UI, role reveal overlay)
+
+When Random AI Alignment (section 12.3.10) assigns the shapeshifter role to a human player, that player must manually submit their night kill target:
+
+- **Client → Server:** `{ type: "shapeshifter_action", target: "<character_name>" }` — sent by the human player during the night phase.
+- **Server processing:** The `ws_router.py` dispatcher handles the `shapeshifter_action` message type. It validates the player holds the shapeshifter role and the target is alive, then records the night action in Firestore. The `execute_night_actions` pipeline processes human shapeshifter kills identically to AI shapeshifter kills.
+- **Frontend:** A `RoleRevealOverlay` component shows the player their role assignment at game start. During the night phase, human shapeshifters see a target selection UI (similar to the Seer investigation UI) instead of the "waiting for night to pass" message.
+
+## 12.5.6 Infrastructure Updates
+
+### Multi-Stage Dockerfile
+
+**File:** `Dockerfile` (repo root — replaces `backend/Dockerfile`)
+
+The Dockerfile was rewritten as a two-stage build:
+
+```dockerfile
+# Stage 1: Build frontend (node:18-slim)
+FROM node:18-slim AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Python backend + compiled frontend (python:3.11-slim)
+FROM python:3.11-slim
+WORKDIR /app
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/ ./backend/
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+WORKDIR /app/backend
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+```
+
+Key changes from the original single-stage design (section 9.1):
+- **Two stages** instead of installing Node.js inside the Python image. Stage 1 (`node:18-slim`) builds the frontend; Stage 2 (`python:3.11-slim`) copies only the compiled `dist/` output. This reduces final image size by ~400 MB.
+- **Port 8000** instead of 8080 (aligned with actual uvicorn config).
+- **Python 3.11** base image (pinned for compatibility with dependencies).
+- **Single worker** (`--workers 1`) since the app manages WebSocket state in-process.
+
+### Terraform IaC
+
+**Files:** `terraform/main.tf`, `terraform/variables.tf`, `terraform/terraform.tfvars.example`
+
+The Terraform configuration was implemented and extended beyond the original design spec (section 9.2):
+
+- **API enablement:** Automatically enables `run`, `cloudbuild`, `firestore`, `aiplatform`, and `artifactregistry` APIs via `google_project_service` resources with `for_each`.
+- **Artifact Registry:** Repository named `fireside` (instead of `hackathon`), format `DOCKER`.
+- **Cloud Run service:** `fireside-betrayal` with session affinity, port 8000, 1 CPU / 1 GiB memory, 0–10 instance scaling. Environment variables: `GOOGLE_CLOUD_PROJECT`, `GEMINI_API_KEY`, `EXTRA_ORIGIN`, `DEBUG`.
+- **Cloud Build trigger:** Defined but commented out (requires manual GitHub repo connection in Cloud Build console). Manual builds via `gcloud builds submit` are the recommended path.
+- **Public access:** `roles/run.invoker` granted to `allUsers`.
+- **Variables:** `project_id` (required), `region` (default `us-central1`), `gemini_api_key` (sensitive).
+- **Outputs:** `service_url`, `image_url`, `firestore_database`.
+
+### Deployment Guide
+
+**File:** `docs/DEPLOYMENT.md`
+
+Documents three deployment paths:
+1. **Local development** — `npm run dev` (frontend) + `uvicorn` (backend) with `.env` configuration.
+2. **Cloud Run manual deploy** — `gcloud builds submit` + `gcloud run deploy` commands.
+3. **Terraform automated deploy** — `terraform init` + `terraform apply` for full infrastructure provisioning.
+
+### Python 3.14 Compatibility
+
+**File:** `backend/requirements.txt`
+
+Dependencies were pinned to versions compatible with Python 3.14 (forward-compatibility).
+
+---
+
 # 13. PRD Cross-Reference & Compliance Matrix
 
 | PRD Requirement | TDD Section | Status |
@@ -3540,6 +3738,15 @@ When fewer than 4 human players have joined, the lobby summary includes a `min_p
 | Camera vote counting | §12.3.16 | ✅ Shipped |
 | Narrator style presets | §12.3.17 | ✅ Shipped |
 | Competitor intelligence for AI | §12.3.18 | ✅ Shipped |
+| **Post-P2 Features** | | |
+| Player voice input pipeline | §12.5.1 | ✅ Shipped |
+| Speaker identification | §12.5.2 | ✅ Shipped |
+| Dynamic discussion timer | §12.5.3 | ✅ Shipped |
+| Narrator dual-mode engagement | §12.5.4 | ✅ Shipped |
+| Human shapeshifter night kill | §12.5.5 | ✅ Shipped |
+| Multi-stage Dockerfile | §12.5.6 | ✅ Shipped |
+| Terraform IaC (updated) | §12.5.6 | ✅ Shipped |
+| Deployment guide | §12.5.6 | ✅ Shipped |
 
 ---
 
@@ -3580,6 +3787,6 @@ PORT=8080
 ---
 
 *Document created: February 21, 2026*
-*Last updated: February 23, 2026 — all P0/P1/P2 features shipped (17/18 P2 specs, §12.3.12 deferred)*
+*Last updated: February 26, 2026 — all P0/P1/P2 features shipped (17/18 P2 specs, §12.3.12 deferred) + post-P2 voice input, discussion timer, speaker identification, human shapeshifter, infrastructure overhaul*
 *Companion PRD: PRD.md v2.0*
 *Hackathon deadline: March 16, 2026*

@@ -1,38 +1,62 @@
 graph TB
-    subgraph Players["🎮 Player Phones (2-7)"]
-        P1["Player 1<br/>Mobile Browser"]
-        P2["Player 2<br/>Mobile Browser"]
+    subgraph Players["Player Phones (2-7)"]
+        P1["Player 1<br/>Mobile Browser<br/>AudioWorklet Mic Capture"]
+        P2["Player 2<br/>Mobile Browser<br/>AudioWorklet Mic Capture"]
         P3["Player N<br/>Mobile Browser"]
     end
 
-    subgraph CloudRun["☁️ Google Cloud Run"]
+    subgraph CloudRun["Google Cloud Run"]
         API["FastAPI Backend<br/>Port 8000"]
-        
+        DT["Discussion Timer<br/>Dynamic Timeout<br/>120s / 180s / 240s<br/>30s Warning Task"]
+
         subgraph Agents["AI Agents"]
-            NA["🎙️ Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy"]
-            TA["🐺 Traitor Agent<br/>gemini-2.5-flash<br/>Deception Strategy<br/>Difficulty: Easy/Normal/Hard"]
-            GM["🎲 Game Master<br/>Deterministic Python<br/>Role Assignment + Phase Transitions<br/>Win Conditions + Vote Resolution"]
-            SA["🎨 Scene Agent<br/>Image Generation<br/>Phase Transition Illustrations"]
-            CV["📷 Camera Vote Agent<br/>Gemini Vision<br/>Hand-Counting (In-Person)"]
-            AR["🎧 Audio Recorder<br/>Highlight Reel<br/>Post-Game Playback"]
-            SL["📊 Strategy Logger<br/>Cross-Game Learning<br/>Intelligence Brief"]
+            NA["Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy<br/>Dual-Mode: Theatrical + Moderator"]
+            TA["Traitor Agent<br/>gemini-2.5-flash<br/>Deception Strategy<br/>Difficulty: Easy/Normal/Hard<br/>Voice-Optimized Dialog"]
+            GM["Game Master<br/>Deterministic Python<br/>Role Assignment + Phase Transitions<br/>Win Conditions + Vote Resolution<br/>Human Shapeshifter Support"]
+            SA["Scene Agent<br/>Image Generation<br/>Phase Transition Illustrations"]
+            CV["Camera Vote Agent<br/>Gemini Vision<br/>Hand-Counting (In-Person)"]
+            AR["Audio Recorder<br/>Highlight Reel<br/>Post-Game Playback"]
+            SL["Strategy Logger<br/>Cross-Game Learning<br/>Intelligence Brief"]
+        end
+
+        subgraph VoicePipeline["Player Voice Input Pipeline"]
+            DECODE["Base64 Decode<br/>+ Speaker Lookup"]
+            SPKR["Speaker Identification<br/>Character Name Annotation<br/>end_of_turn=False"]
+            TBUF["Transcript Buffer<br/>0.8s Debounce Flush"]
         end
     end
 
     subgraph GCP["Google Cloud Platform"]
-        FS[("🔥 Cloud Firestore<br/>Real-time Game State<br/>Players, Events, Chat")]
+        FS[("Cloud Firestore<br/>Real-time Game State<br/>Players, Events, Chat")]
     end
 
     subgraph Gemini["Google Gemini API"]
-        GLive["Gemini Live API<br/>WebSocket<br/>Bidirectional Voice"]
+        GLive["Gemini Live API<br/>WebSocket<br/>Bidirectional Voice + Transcription"]
         GFlash["gemini-2.5-flash<br/>Text Strategy"]
         GTTS["gemini-2.5-flash-preview-tts<br/>Narrator Previews"]
     end
 
-    P1 <-->|"WebSocket<br/>/ws/{gameId}"| API
-    P2 <-->|"WebSocket"| API
+    subgraph Infra["Infrastructure"]
+        TF["Terraform IaC<br/>Cloud Run + Firestore<br/>Artifact Registry + IAM"]
+        DOCK["Multi-Stage Dockerfile<br/>node:18-slim -> python:3.11-slim"]
+    end
+
+    %% Player connections
+    P1 <-->|"WebSocket /ws/gameId<br/>text + audio + votes"| API
+    P2 <-->|"WebSocket<br/>text + audio + votes"| API
     P3 <-->|"REST /api/*"| API
 
+    %% Voice input flow: Player mic -> Server decode -> Speaker ID -> Gemini
+    P1 -.->|"player_audio<br/>Base64 PCM16 16kHz"| DECODE
+    P2 -.->|"player_audio<br/>Base64 PCM16 16kHz"| DECODE
+    DECODE -->|"PCM bytes + character_name"| SPKR
+    SPKR -->|"[VOICE] Speaker annotation<br/>+ raw PCM"| NA
+
+    %% Transcript flow: Gemini -> Buffer -> Broadcast
+    GLive -.->|"input_audio_transcription<br/>partial fragments"| TBUF
+    TBUF -.->|"input_transcript broadcast<br/>speaker + buffered sentence"| API
+
+    %% Agent connections
     API --> NA
     API --> TA
     API --> GM
@@ -40,25 +64,44 @@ graph TB
     API --> CV
     API --> AR
     API --> SL
+    API --> DT
 
-    NA <-->|"Bidirectional Voice"| GLive
+    %% Gemini connections
+    NA <-->|"Bidirectional Voice<br/>+ Speaker Annotations"| GLive
     TA -->|"Text Completions"| GFlash
     NA -->|"Audio Previews"| GTTS
     SA -->|"Image Gen"| GFlash
     CV -->|"Vision Analysis"| GFlash
 
+    %% Data connections
     GM --> FS
     SL --> FS
     API --> FS
+    DECODE -.->|"character_name lookup"| FS
+
+    %% Discussion timer connections
+    DT -->|"wrap-up prompt at T-30s"| NA
+    DT -->|"timer_seconds in phase_change"| API
+
+    %% Infrastructure provisions Cloud Run
+    TF -.->|"provisions"| CloudRun
+    TF -.->|"provisions"| FS
+    DOCK -.->|"builds"| CloudRun
 
     classDef player fill:#1a1a2e,stroke:#e94560,color:#fff
     classDef cloud fill:#0f3460,stroke:#16213e,color:#fff
     classDef agent fill:#533483,stroke:#e94560,color:#fff
     classDef gcp fill:#4285f4,stroke:#1a73e8,color:#fff
     classDef gemini fill:#1e88e5,stroke:#1565c0,color:#fff
+    classDef voice fill:#2d6a4f,stroke:#40916c,color:#fff
+    classDef infra fill:#374151,stroke:#6b7280,color:#fff
+    classDef timer fill:#92400e,stroke:#d97706,color:#fff
 
     class P1,P2,P3 player
     class API cloud
     class NA,TA,GM,SA,CV,AR,SL agent
     class FS gcp
     class GLive,GFlash,GTTS gemini
+    class DECODE,SPKR,TBUF voice
+    class TF,DOCK infra
+    class DT timer
