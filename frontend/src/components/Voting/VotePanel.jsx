@@ -27,6 +27,7 @@ export default function VotePanel({ sendMessage }) {
     isEliminated,
     isHost,
     inPersonMode,
+    voteCandidates,  // string[] | null — backend-filtered list excluding self
   } = state
 
   const [timeLeft, setTimeLeft] = useState(VOTE_TIMER_SECONDS)
@@ -98,12 +99,38 @@ export default function VotePanel({ sendMessage }) {
     sendMessage('in_person_vote_frame', { characterName: charName, imageData })
   }
 
-  if (phase !== 'day_vote') return null
+  // Delay showing the vote panel: wait for BOTH a minimum 3s delay (narrator transition)
+  // AND backend candidates to arrive. This prevents showing an empty/wrong candidate list.
+  const [timerDone, setTimerDone] = useState(false)
+  useEffect(() => {
+    if (phase === 'day_vote') {
+      setTimerDone(false)
+      const timer = setTimeout(() => setTimerDone(true), 3000)
+      return () => clearTimeout(timer)
+    }
+    setTimerDone(false)
+  }, [phase, round])
 
-  // Build the candidate list: alive human characters + AI character (if alive)
-  const aliveHumans = players.filter(p => p.alive).map(p => p.characterName)
-  const aiName = aiCharacter?.alive ? aiCharacter.name : null
-  const candidates = [...aliveHumans, ...(aiName ? [aiName] : [])]
+  // Use backend-provided candidate list (excludes self). Fall back to local filter.
+  const fallbackCandidates = [
+    ...players.filter(p => p.alive && p.characterName !== myCharacterName).map(p => p.characterName),
+    ...(aiCharacter?.alive ? [aiCharacter.name] : []),
+  ]
+  const candidates = voteCandidates ?? fallbackCandidates
+  const hasCandidates = candidates.length > 0
+
+  if (phase !== 'day_vote') return null
+  if (!timerDone || !hasCandidates) {
+    const waitMsg = !timerDone
+      ? 'The narrator calls for a vote…'
+      : 'Gathering the village…'
+    return (
+      <div className="container" style={{ paddingTop: 32, textAlign: 'center' }}>
+        <div className="pulse-glow" style={{ width: 12, height: 12, borderRadius: '50%', background: 'var(--accent)', margin: '0 auto 12px' }} />
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>{waitMsg}</p>
+      </div>
+    )
+  }
 
   // How many human players have voted (from voteMap)
   const votedHumanCount = Object.entries(voteMap).filter(
@@ -232,7 +259,6 @@ export default function VotePanel({ sendMessage }) {
             {candidates.map(charName => {
               const isSelected = myVote === charName
               const count = votes[charName] ?? 0
-              const isSelf = charName === myCharacterName
 
               return (
                 <button
@@ -272,11 +298,6 @@ export default function VotePanel({ sendMessage }) {
                         Your vote
                       </span>
                     )}
-                    {isSelf && !isSelected && (
-                      <span className="badge badge-muted" style={{ fontSize: '0.625rem' }}>
-                        You
-                      </span>
-                    )}
                   </div>
 
                   {/* Live vote count */}
@@ -298,12 +319,48 @@ export default function VotePanel({ sendMessage }) {
           </div>
         )}
 
-        {/* ── Eliminated player view ── */}
+        {/* ── Eliminated player view — read-only tally ── */}
         {isEliminated && (
-          <div style={{ textAlign: 'center', padding: '16px 0', color: 'var(--text-dim)' }}>
-            <div style={{ fontSize: '2rem', marginBottom: 8 }}>🕯</div>
-            <p style={{ fontSize: '0.875rem' }}>You watch the vote unfold from beyond...</p>
-          </div>
+          <>
+            <div style={{ textAlign: 'center', padding: '12px 0 8px', color: 'var(--text-dim)' }}>
+              <div style={{ fontSize: '1.5rem', marginBottom: 4 }}>🕯</div>
+              <p style={{ fontSize: '0.8125rem' }}>You watch the vote unfold from beyond...</p>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {candidates.map(charName => {
+                const count = votes[charName] ?? 0
+                return (
+                  <div
+                    key={charName}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '10px 14px',
+                      background: 'var(--bg-elevated)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 'var(--radius-md)',
+                      opacity: 0.7,
+                    }}
+                  >
+                    <span style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-muted)' }}>{charName}</span>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-heading)',
+                        fontSize: '1rem',
+                        fontWeight: 700,
+                        color: count > 0 ? 'var(--danger)' : 'var(--text-dim)',
+                        minWidth: 24,
+                        textAlign: 'right',
+                      }}
+                    >
+                      {count > 0 ? count : '—'}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </>
         )}
 
         {/* ── Vote Progress ── */}

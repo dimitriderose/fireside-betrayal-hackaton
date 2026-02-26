@@ -4,16 +4,25 @@ import { useGame } from '../context/GameContext.jsx'
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000]
 
 export function useWebSocket(gameId, playerId) {
-  const { dispatch } = useGame()
+  const { state, dispatch } = useGame()
   const wsRef = useRef(null)
   const attemptRef = useRef(0)
   const timerRef = useRef(null)
+  const syncRef = useRef(null)   // sync heartbeat interval
   const mountedRef = useRef(true)
+  const lastSeqRef = useRef(0)   // reliable delivery: track highest received seq
+  const phaseRef = useRef(state.phase)  // track current phase for sync comparison
   const [connectionStatus, setConnectionStatus] = useState('disconnected')
+
+  // Keep phaseRef in sync with state
+  phaseRef.current = state.phase
 
   const handleMessage = useCallback((event) => {
     let msg
     try { msg = JSON.parse(event.data) } catch { return }
+
+    // Track reliable delivery sequence numbers
+    if (msg.seq) lastSeqRef.current = Math.max(lastSeqRef.current, msg.seq)
 
     // NOTE: All backend messages use flat top-level fields (no `data` wrapper).
     // The frontend sendMessage wraps outgoing messages in { type, data } but
@@ -102,7 +111,7 @@ export function useWebSocket(gameId, playerId) {
         break
 
       case 'phase_change':
-        // msg: { type, phase, [round] }
+        // msg: { type, phase, [round], [seq] }
         dispatch({ type: 'PHASE_CHANGE', phase: msg.phase, round: msg.round })
         break
 
@@ -194,6 +203,25 @@ export function useWebSocket(gameId, playerId) {
         dispatch({ type: 'SET_HIGHLIGHT_REEL', segments: msg.segments ?? [] })
         break
 
+      case 'sync_ack':
+        // msg: { type, phase, round } — server's current phase
+        // If our local phase doesn't match, force reconnect to get reliable replay
+        if (msg.phase && msg.phase !== phaseRef.current) {
+          console.warn(`[sync] phase mismatch: local=${phaseRef.current} server=${msg.phase}, reconnecting`)
+          wsRef.current?.close()  // triggers onclose → reconnect → replay
+        }
+        break
+
+      case 'night_targets':
+        // msg: { type, candidates: string[] } — backend-filtered list excluding self
+        dispatch({ type: 'SET_NIGHT_TARGETS', candidates: msg.candidates })
+        break
+
+      case 'vote_candidates':
+        // msg: { type, candidates: string[] } — backend-filtered list excluding self
+        dispatch({ type: 'SET_VOTE_CANDIDATES', candidates: msg.candidates })
+        break
+
       case 'error':
         // msg: { type, message, code }
         dispatch({ type: 'SET_ERROR', error: msg.message })
@@ -212,7 +240,7 @@ export function useWebSocket(gameId, playerId) {
     // In dev, Vite proxies /ws → ws://localhost:8000 via vite.config.js
     const wsBase = import.meta.env.VITE_WS_URL
       ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
-    const wsUrl = `${wsBase}/ws/${gameId}?playerId=${playerId}`
+    const wsUrl = `${wsBase}/ws/${gameId}?playerId=${playerId}&lastSeq=${lastSeqRef.current}`
     setConnectionStatus('connecting')
 
     const ws = new WebSocket(wsUrl)
@@ -252,9 +280,25 @@ export function useWebSocket(gameId, playerId) {
     return () => {
       mountedRef.current = false
       clearTimeout(timerRef.current)
+      clearInterval(syncRef.current)
       wsRef.current?.close()
     }
   }, [gameId, playerId, connect])
+
+  // Sync heartbeat: every 2s ask the server "what phase are you on?"
+  // If there's a mismatch, force reconnect → reliable delivery replays missed events.
+  useEffect(() => {
+    if (connectionStatus !== 'connected') {
+      clearInterval(syncRef.current)
+      return
+    }
+    syncRef.current = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'sync' }))
+      }
+    }, 2000)
+    return () => clearInterval(syncRef.current)
+  }, [connectionStatus])
 
   return { connectionStatus, sendMessage }
 }

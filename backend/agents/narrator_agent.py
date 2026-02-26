@@ -361,6 +361,11 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             }
 
         next_phase = await game_master.advance_phase(game_id)
+
+        # Cancel narrator safety timeout — we advanced successfully
+        from routers.ws_router import _cancel_narrator_timeout
+        _cancel_narrator_timeout(game_id)
+
         await ws_manager.broadcast_phase_change(game_id, next_phase)
         logger.info(
             "[%s] Narrator advanced: %s → %s", game_id, game.phase.value, next_phase.value
@@ -862,9 +867,13 @@ class NarratorManager:
         For dawn (night_resolved) and deadlock (no_elimination) events, the last
         day's player discussion is fetched from Firestore and injected into the
         prompt so the narrator can reference lingering suspicions and accusations.
+        If no narrator session is active, broadcast a text-only fallback transcript
+        so players still see the narration in the story log.
         """
         session = self._sessions.get(game_id)
         if not session:
+            # Fallback: send text narration via transcript when narrator is dead
+            await self._send_fallback_transcript(game_id, event_type, data)
             return
 
         payload = dict(data or {})
@@ -903,6 +912,53 @@ class NarratorManager:
                 logger.debug("[%s] audio_recorder.start_segment failed", game_id, exc_info=True)
         await session.send(prompt)
         logger.debug("[%s] Narrator event queued: %s", game_id, event_type)
+
+    async def _send_fallback_transcript(
+        self, game_id: str, event_type: str, data: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """When no narrator session is alive, broadcast a minimal text narration."""
+        from routers.ws_router import manager as ws_manager
+
+        fallback_texts = {
+            "game_started": "Night falls over Thornwood. The village sleeps uneasily...",
+            "night_resolved": self._build_night_fallback(data),
+            "elimination": self._build_elimination_fallback(data),
+            "no_elimination": "The village cannot agree. No one is eliminated. Night falls once more...",
+            "game_over": self._build_game_over_fallback(data),
+        }
+        text = fallback_texts.get(event_type)
+        if text:
+            await ws_manager.broadcast_transcript(
+                game_id, speaker="Narrator", text=text, source="narrator",
+            )
+            logger.warning("[%s] Narrator session dead — sent fallback text for %s", game_id, event_type)
+
+    @staticmethod
+    def _build_night_fallback(data: Optional[Dict]) -> str:
+        if not data:
+            return "Dawn breaks over Thornwood..."
+        killed = data.get("eliminated") or data.get("killed")
+        if killed:
+            return f"Dawn breaks. The village discovers {killed} has been slain in the night..."
+        return "Dawn breaks. Miraculously, everyone has survived the night..."
+
+    @staticmethod
+    def _build_elimination_fallback(data: Optional[Dict]) -> str:
+        if not data:
+            return "The village has made its choice..."
+        char = data.get("character", "Unknown")
+        was_traitor = data.get("was_traitor", False)
+        if was_traitor:
+            return f"The village votes to eliminate {char}. They WAS the Shapeshifter! The village breathes a sigh of relief."
+        return f"The village votes to eliminate {char}. An innocent has fallen... The Shapeshifter still walks among you."
+
+    @staticmethod
+    def _build_game_over_fallback(data: Optional[Dict]) -> str:
+        winner = (data or {}).get("winner", "unknown")
+        reason = (data or {}).get("reason", "")
+        if winner == "villagers":
+            return f"The villagers have won! {reason}"
+        return f"The Shapeshifter has won... {reason}"
 
     async def stop_game(self, game_id: str) -> None:
         """Stop and clean up the narrator session for a finished game."""

@@ -203,9 +203,7 @@ class FirestoreService:
 
     async def get_chat_messages(self, game_id: str, limit: int = 50) -> List[ChatMessage]:
         docs = await self._run(
-            lambda: list(
-                self._chat_ref(game_id).order_by("timestamp").limit_to_last(limit).stream()
-            )
+            lambda: self._chat_ref(game_id).order_by("timestamp").limit_to_last(limit).get()
         )
         return [ChatMessage(**d.to_dict()) for d in docs]
 

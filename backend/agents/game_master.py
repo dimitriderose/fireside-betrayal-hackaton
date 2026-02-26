@@ -142,8 +142,9 @@ class GameMaster:
             "bodyguard_sacrifice": False,  # True when bodyguard absorbed the kill
         }
 
-        # ── Step 1: Shapeshifter kill target (set by TraitorAgent or default) ──
-        # Loyal AI (§12.3.10 random alignment) does not kill — skip this step.
+        # ── Step 1: Shapeshifter kill target ─────────────────────────────────
+        # Path A: AI is the traitor → look for AI-authored night_target event
+        # Path B: Human shapeshifter (random_alignment) → look for human-authored event
         shapeshifter_target: Optional[str] = None
         if ai_char and ai_char.alive and getattr(ai_char, "is_traitor", True):
             # TraitorAgent sets the target via a game event of type "night_target".
@@ -162,6 +163,24 @@ class GameMaster:
                     logger.warning(f"[{game_id}] Shapeshifter had no target set — random: {shapeshifter_target}")
                 else:
                     logger.warning(f"[{game_id}] Shapeshifter had no target and no alive players — skipping kill")
+        else:
+            # Human shapeshifter (AI is loyal) — look for human-authored night_target
+            human_shapeshifter = next(
+                (p for p in players if p.role == Role.SHAPESHIFTER), None
+            )
+            if human_shapeshifter:
+                # Build a set of ALL valid alive targets (humans + AI)
+                valid_targets: Set[str] = set(char_to_player.keys())
+                if ai_char and ai_char.alive:
+                    valid_targets.add(ai_char.name)
+                events = await fs.get_events(game_id, round=game.round, visible_only=False)
+                for ev in events:
+                    if ev.type == "night_target" and ev.actor == human_shapeshifter.character_name:
+                        if ev.target in valid_targets:
+                            shapeshifter_target = ev.target
+                        break
+                if shapeshifter_target:
+                    logger.info(f"[{game_id}] Human shapeshifter {human_shapeshifter.character_name} targets {shapeshifter_target}")
 
         # ── Step 2: Healer protection ─────────────────────────────────────────
         healer_id = role_map.get(Role.HEALER.value)
@@ -226,7 +245,7 @@ class GameMaster:
             is_ai_character = ai_char and ai_char.name == investigation_target
 
             if is_ai_character:
-                true_result = True
+                true_result = getattr(ai_char, "is_traitor", True)
             elif target_player:
                 true_result = target_player.role == Role.SHAPESHIFTER
             else:
@@ -470,22 +489,54 @@ class GameMaster:
 
         ai_char = game.ai_character
         if not ai_char or not ai_char.alive:
-            if not getattr(ai_char, "is_traitor", True):
-                # Loyal AI was voted out — handled upstream in _resolve_vote_and_advance
-                # before check_win_condition is called, so this branch should not trigger.
-                # If it does reach here (e.g. night kill of loyal AI), return no winner.
-                return None
-            # Shapeshifter eliminated — villagers win immediately, no round floor.
-            return {
-                "winner": "villagers",
-                "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
-            }
+            if getattr(ai_char, "is_traitor", True):
+                # AI shapeshifter eliminated — villagers win immediately, no round floor.
+                return {
+                    "winner": "villagers",
+                    "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
+                }
+            # Loyal AI died — don't end game as villager win, but fall through
+            # to check if the human shapeshifter has won via elimination count.
+
+        # Random alignment: check if the human shapeshifter has been eliminated.
+        # If AI is loyal and alive but no human shapeshifter remains → villagers win.
+        if ai_char and getattr(ai_char, "is_traitor", True) is False:
+            shapeshifter_alive = any(
+                p.role == Role.SHAPESHIFTER for p in alive_players
+            )
+            if not shapeshifter_alive:
+                return {
+                    "winner": "villagers",
+                    "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
+                }
 
         human_alive = len(alive_players)
 
         if human_alive <= 1:
-            # Potential shapeshifter win — check minimum round floor first.
-            # character_cast includes all names (humans + AI) set at game start.
+            # If NO humans remain, shapeshifter wins immediately — no round floor.
+            # (Can't play a game with nobody left.)
+            if human_alive == 0:
+                return {
+                    "winner": "shapeshifter",
+                    "reason": (
+                        "The Shapeshifter has eliminated enough villagers to seize Thornwood. "
+                        "The village falls into darkness."
+                    ),
+                }
+
+            # 1 human left — check if the sole survivor IS the shapeshifter.
+            # If so, they win immediately (no one left to oppose them).
+            sole_survivor = alive_players[0]
+            if sole_survivor.role == Role.SHAPESHIFTER:
+                return {
+                    "winner": "shapeshifter",
+                    "reason": (
+                        "The Shapeshifter has eliminated enough villagers to seize Thornwood. "
+                        "The village falls into darkness."
+                    ),
+                }
+
+            # 1 non-shapeshifter human left — check minimum round floor.
             total_players = len(game.character_cast)
             if total_players not in self.MINIMUM_ROUNDS:
                 logger.warning(

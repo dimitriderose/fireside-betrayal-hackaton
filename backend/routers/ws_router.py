@@ -199,6 +199,83 @@ _vote_timeout_tasks: Dict[str, asyncio.Task] = {}
 # (acceptable for hackathon: if the server restarts mid-game, the clue limit resets).
 _spectator_clues_sent: Set[str] = set()
 
+# Narrator phase safety timeouts — prevents game from hanging if the narrator
+# fails to call advance_phase (session crash, Gemini timeout, etc.).
+_narrator_timeout_tasks: Dict[str, asyncio.Task] = {}
+
+# Timeout durations per narrator-controlled phase (seconds)
+_NARRATOR_TIMEOUT_DELAYS: Dict[Phase, int] = {
+    Phase.NIGHT: 60,            # narrator should narrate night scene quickly
+    Phase.DAY_DISCUSSION: 120,  # discussion needs time but shouldn't hang forever
+    Phase.ELIMINATION: 60,      # narrator narrates elimination then advances
+}
+
+
+async def _narrator_phase_timeout(game_id: str, expected_phase: Phase, delay: int) -> None:
+    """Safety net: force-advance if narrator hasn't called advance_phase in time."""
+    await asyncio.sleep(delay)
+    _narrator_timeout_tasks.pop(game_id, None)
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if game and game.phase == expected_phase:
+        logger.warning(
+            "[%s] Narrator timeout fired — force-advancing from %s after %ds",
+            game_id, expected_phase.value, delay,
+        )
+        from agents.narrator_agent import handle_advance_phase
+        await handle_advance_phase(game_id)
+
+
+def _schedule_narrator_timeout(game_id: str, phase: Phase) -> None:
+    """Schedule a safety timeout for a narrator-controlled phase."""
+    # Cancel any existing timeout for this game
+    _cancel_narrator_timeout(game_id)
+    delay = _NARRATOR_TIMEOUT_DELAYS.get(phase)
+    if delay:
+        _narrator_timeout_tasks[game_id] = asyncio.create_task(
+            _narrator_phase_timeout(game_id, phase, delay)
+        )
+
+
+def _cancel_narrator_timeout(game_id: str) -> None:
+    """Cancel a pending narrator timeout (called on successful advance)."""
+    task = _narrator_timeout_tasks.pop(game_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
+# Night action timeout — auto-resolves night if not all players have submitted.
+# Fires BEFORE narrator's 60s timeout so night resolution happens properly.
+_night_action_timeout_tasks: Dict[str, asyncio.Task] = {}
+_NIGHT_ACTION_TIMEOUT = 45  # seconds
+
+
+async def _night_action_timeout(game_id: str, delay: int) -> None:
+    """Auto-resolve night if not all players have submitted actions in time."""
+    await asyncio.sleep(delay)
+    _night_action_timeout_tasks.pop(game_id, None)
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if game and game.phase == Phase.NIGHT:
+        logger.warning(
+            "[%s] Night action timeout fired — auto-resolving after %ds",
+            game_id, delay,
+        )
+        await _resolve_night_and_notify_narrator(game_id, fs)
+
+
+def _schedule_night_action_timeout(game_id: str) -> None:
+    _cancel_night_action_timeout(game_id)
+    _night_action_timeout_tasks[game_id] = asyncio.create_task(
+        _night_action_timeout(game_id, _NIGHT_ACTION_TIMEOUT)
+    )
+
+
+def _cancel_night_action_timeout(game_id: str) -> None:
+    task = _night_action_timeout_tasks.pop(game_id, None)
+    if task and not task.done():
+        task.cancel()
+
 
 async def _vote_timeout(game_id: str, fs, delay: int = 90) -> None:
     """Auto-advance day_vote phase after `delay` seconds if not already resolved."""
@@ -296,18 +373,45 @@ class ConnectionManager:
     def __init__(self):
         # {game_id: {player_id: WebSocket}}
         self._games: Dict[str, Dict[str, WebSocket]] = {}
+        # Reliable delivery: per-game monotonic sequence counter + event buffer
+        self._seq: Dict[str, int] = {}
+        self._event_log: Dict[str, list] = {}
+
+    # ── Reliable delivery helpers ─────────────────────────────────────────────
+
+    def _next_seq(self, game_id: str) -> int:
+        self._seq[game_id] = self._seq.get(game_id, 0) + 1
+        return self._seq[game_id]
+
+    def _buffer_event(self, game_id: str, seq: int, msg: Dict, target: Optional[str] = None) -> None:
+        buf = self._event_log.setdefault(game_id, [])
+        entry: Dict[str, Any] = {"seq": seq, "msg": msg}
+        if target:
+            entry["target"] = target
+        buf.append(entry)
+        if len(buf) > 100:
+            self._event_log[game_id] = buf[-100:]
+
+    def get_events_since(self, game_id: str, last_seq: int) -> list:
+        """Return all buffered events with seq > last_seq."""
+        return [e for e in self._event_log.get(game_id, []) if e["seq"] > last_seq]
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     async def connect(self, game_id: str, player_id: str, ws: WebSocket) -> None:
         await ws.accept()
         self._games.setdefault(game_id, {})[player_id] = ws
-        logger.debug(
+        logger.info(
             f"[{game_id}] {player_id} connected ({self.count(game_id)} total)"
         )
 
-    def disconnect(self, game_id: str, player_id: str) -> None:
+    def disconnect(self, game_id: str, player_id: str, ws: WebSocket = None) -> None:
         game_conns = self._games.get(game_id, {})
+        # Only remove if the disconnecting WS is the CURRENT one for this player.
+        # This prevents a stale WS close (from browser refresh or React StrictMode
+        # double-mount) from removing a newer, valid connection.
+        if ws is not None and game_conns.get(player_id) is not ws:
+            return  # stale connection closing — leave the current one alone
         game_conns.pop(player_id, None)
         if not game_conns:
             self._games.pop(game_id, None)
@@ -317,6 +421,10 @@ class ConnectionManager:
 
     def is_connected(self, game_id: str, player_id: str) -> bool:
         return player_id in self._games.get(game_id, {})
+
+    def is_current_ws(self, game_id: str, player_id: str, ws: WebSocket) -> bool:
+        """Check if the given WS is the current active connection for this player."""
+        return self._games.get(game_id, {}).get(player_id) is ws
 
     # ── Sending ────────────────────────────────────────────────────────────────
 
@@ -334,13 +442,30 @@ class ConnectionManager:
                 )
                 self.disconnect(game_id, player_id)
 
+    async def send_to_reliable(
+        self, game_id: str, player_id: str, message: Dict
+    ) -> None:
+        """Send a private message with seq number, buffered for replay."""
+        seq = self._next_seq(game_id)
+        message = {**message, "seq": seq}
+        self._buffer_event(game_id, seq, message, target=player_id)
+        await self.send_to(game_id, player_id, message)
+
     async def broadcast(
         self,
         game_id: str,
         message: Dict,
         exclude: Optional[str] = None,
+        reliable: bool = False,
     ) -> None:
         """Broadcast a message to all connected players in a game."""
+        if reliable:
+            seq = self._next_seq(game_id)
+            message = {**message, "seq": seq}
+            self._buffer_event(game_id, seq, message)
+            logger.info(f"[{game_id}] reliable broadcast seq={seq} type={message.get('type')}")
+        targets = [pid for pid in self._games.get(game_id, {}) if pid != exclude]
+        logger.info(f"[{game_id}] broadcast {message.get('type')} → {len(targets)} players")
         for pid, ws in list(self._games.get(game_id, {}).items()):
             if pid == exclude:
                 continue
@@ -360,20 +485,30 @@ class ConnectionManager:
         """
         Called by game_router after role assignment.
         Broadcasts phase_change → NIGHT, then sends private role cards.
+        All messages are reliable (sequenced + buffered for replay).
         """
+        pids = list(self._games.get(game_id, {}).keys())
+        logger.info(f"[{game_id}] broadcast_game_start → {len(pids)} players: {pids}")
         await self.broadcast(game_id, {
             "type": "phase_change",
             "phase": Phase.NIGHT.value,
             "round": 1,
-        })
+        }, reliable=True)
         for a in assignments:
-            await self.send_to(game_id, a["player_id"], {
+            await self.send_to_reliable(game_id, a["player_id"], {
                 "type": "role",
                 "role": a["role"],
                 "characterName": a["character_name"],
                 "characterIntro": a["character_intro"],
                 "description": ROLE_DESCRIPTIONS.get(a["role"], ""),
             })
+        # Send per-player night target candidates (seer/healer/shapeshifter need these)
+        await self._send_candidates(game_id, Phase.NIGHT)
+        # Schedule narrator safety timeout for the initial NIGHT phase
+        _schedule_narrator_timeout(game_id, Phase.NIGHT)
+        # Schedule night action timeout — auto-resolves if players don't submit in time
+        _schedule_night_action_timeout(game_id)
+
         # §12.3.14: Fire scene image for opening night
         from agents.scene_agent import trigger_scene_image
         asyncio.create_task(trigger_scene_image(game_id, "game_started"))
@@ -388,7 +523,13 @@ class ConnectionManager:
             "type": "phase_change",
             "phase": phase.value,
             "round": round,
-        })
+        }, reliable=True)
+
+        # Send per-player candidate lists for night/vote phases.
+        # The backend is the source of truth — frontend uses these directly.
+        if phase in (Phase.NIGHT, Phase.DAY_VOTE):
+            await self._send_candidates(game_id, phase)
+
         # Schedule vote timeout when entering day_vote (cancels on normal resolution)
         if phase == Phase.DAY_VOTE:
             existing = _vote_timeout_tasks.pop(game_id, None)
@@ -398,6 +539,36 @@ class ConnectionManager:
             _vote_timeout_tasks[game_id] = asyncio.create_task(
                 _vote_timeout(game_id, fs_ref)
             )
+
+        # Schedule narrator safety timeout for narrator-controlled phases
+        if phase in _NARRATOR_TIMEOUT_DELAYS:
+            _schedule_narrator_timeout(game_id, phase)
+
+        # Schedule night action timeout when entering NIGHT (rounds 2+)
+        if phase == Phase.NIGHT:
+            _schedule_night_action_timeout(game_id)
+
+    async def _send_candidates(self, game_id: str, phase: Phase) -> None:
+        """Send per-player candidate lists for night actions or voting.
+        Each player gets a list that excludes themselves."""
+        fs = get_firestore_service()
+        alive_players = await fs.get_alive_players(game_id)
+        ai_char = await fs.get_ai_character(game_id)
+
+        # Build full candidate pool: alive human character names + alive AI
+        all_names = [p.character_name for p in alive_players if p.character_name]
+        if ai_char and ai_char.alive:
+            all_names.append(ai_char.name)
+
+        msg_type = "night_targets" if phase == Phase.NIGHT else "vote_candidates"
+
+        for player in alive_players:
+            # Exclude self from the candidate list
+            candidates = [n for n in all_names if n != player.character_name]
+            await self.send_to(game_id, player.id, {
+                "type": msg_type,
+                "candidates": candidates,
+            })
 
         # §12.3.14: Trigger atmospheric scene image for the new phase
         _scene_map = {
@@ -425,7 +596,7 @@ class ConnectionManager:
             "role": role,
             "triggerHunterRevenge": needs_hunter_revenge,
             "tally": tally or {},
-        })
+        }, reliable=True)
 
     async def broadcast_game_over(
         self,
@@ -441,7 +612,7 @@ class ConnectionManager:
             "reason": reason,
             "characterReveals": character_reveals,
             "timeline": timeline or [],
-        })
+        }, reliable=True)
 
     async def broadcast_transcript(
         self,
@@ -497,6 +668,7 @@ async def websocket_endpoint(
     ws: WebSocket,
     game_id: str,
     playerId: str = Query(..., description="Player UUID from join response"),
+    lastSeq: int = Query(0, description="Last received sequence number for replay"),
 ):
     fs = get_firestore_service()
 
@@ -514,7 +686,8 @@ async def websocket_endpoint(
     await manager.connect(game_id, playerId, ws)
     await fs.set_player_connected(game_id, playerId, connected=True)
 
-    # Refresh player (character_name is set after game start)
+    # Refresh player AND game (character_name / phase set after game start)
+    game = await fs.get_game(game_id)
     player = await fs.get_player(game_id, playerId)
     alive_players = await fs.get_alive_players(game_id)
     ai_char = await fs.get_ai_character(game_id)
@@ -539,6 +712,31 @@ async def websocket_endpoint(
             "inPersonMode": game.in_person_mode,  # §12.3.16
         },
     })
+
+    # Replay missed reliable events (lastSeq=0 on first connect replays all)
+    missed = manager.get_events_since(game_id, lastSeq)
+    if missed:
+        logger.info(f"[{game_id}] replaying {len(missed)} events (lastSeq={lastSeq}) to {playerId}")
+    for entry in missed:
+        # Skip private messages targeted at other players
+        if "target" in entry and entry["target"] != playerId:
+            continue
+        try:
+            await ws.send_json(entry["msg"])
+        except Exception:
+            break
+
+    # Send per-player candidate list if we're in a phase that needs it
+    if game.phase in (Phase.NIGHT, Phase.DAY_VOTE) and player.alive and player.character_name:
+        all_names = [p.character_name for p in alive_players if p.character_name]
+        if ai_char and ai_char.alive:
+            all_names.append(ai_char.name)
+        candidates = [n for n in all_names if n != player.character_name]
+        msg_type = "night_targets" if game.phase == Phase.NIGHT else "vote_candidates"
+        await manager.send_to(game_id, playerId, {
+            "type": msg_type,
+            "candidates": candidates,
+        })
 
     # Broadcast presence to everyone else (use character name only)
     if player.character_name:
@@ -570,19 +768,23 @@ async def websocket_endpoint(
     except WebSocketDisconnect:
         pass
     finally:
-        manager.disconnect(game_id, playerId)
-        await fs.set_player_connected(game_id, playerId, connected=False)
-        player_refresh = await fs.get_player(game_id, playerId)
-        # Use character_name if assigned (in-game), fall back to player name (lobby)
-        if player_refresh:
-            char_name = player_refresh.character_name or player_refresh.name
-        else:
-            char_name = playerId
-        await manager.broadcast(game_id, {
-            "type": "player_left",
-            "characterName": char_name,
-            "count": manager.count(game_id),
-        })
+        # Only clean up if this WS is still the current connection for this player.
+        # A stale WS (from refresh/StrictMode) closing must NOT remove the newer connection.
+        is_current = manager.is_current_ws(game_id, playerId, ws)
+        manager.disconnect(game_id, playerId, ws=ws)
+        if is_current:
+            await fs.set_player_connected(game_id, playerId, connected=False)
+            player_refresh = await fs.get_player(game_id, playerId)
+            # Use character_name if assigned (in-game), fall back to player name (lobby)
+            if player_refresh:
+                char_name = player_refresh.character_name or player_refresh.name
+            else:
+                char_name = playerId
+            await manager.broadcast(game_id, {
+                "type": "player_left",
+                "characterName": char_name,
+                "count": manager.count(game_id),
+            })
 
 
 # ── Message dispatcher ─────────────────────────────────────────────────────────
@@ -617,6 +819,14 @@ async def _dispatch_message(
 ) -> None:
     if msg_type == "ping":
         await manager.send_to(game_id, player_id, {"type": "pong"})
+
+    elif msg_type == "sync":
+        game = await fs.get_game(game_id)
+        await manager.send_to(game_id, player_id, {
+            "type": "sync_ack",
+            "phase": game.phase.value if game else "setup",
+            "round": game.round if game else 0,
+        })
 
     elif msg_type == "ready":
         await _on_ready(game_id, player_id, fs)
@@ -787,6 +997,15 @@ async def _on_vote(
             "type": "error",
             "message": "Vote target is required",
             "code": "MISSING_TARGET",
+        })
+        return
+
+    # Prevent self-voting
+    if target == player.character_name:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "You cannot vote for yourself",
+            "code": "SELF_VOTE",
         })
         return
 
@@ -1007,27 +1226,24 @@ async def _on_night_action(
         })
         return
 
-    if player.role in {Role.HEALER, Role.BODYGUARD} and target == player.character_name:
+    # No role can target themselves during the night
+    if target == player.character_name:
         await manager.send_to(game_id, player_id, {
             "type": "error",
-            "message": f"The {player.role.value.capitalize()} cannot protect themselves",
-            "code": "INVALID_SELF_TARGET",
-        })
-        return
-
-    if player.role == Role.SHAPESHIFTER and target == player.character_name:
-        await manager.send_to(game_id, player_id, {
-            "type": "error",
-            "message": "The Shapeshifter cannot target themselves",
+            "message": "You cannot target yourself",
             "code": "INVALID_SELF_TARGET",
         })
         return
 
     # Human shapeshifter: create night_target event (same format as AI traitor)
     if player.role == Role.SHAPESHIFTER:
-        from models import GameEvent
-        await fs.add_event(game_id, GameEvent(
+        import uuid
+        from models.game import GameEvent
+        await fs.log_event(game_id, GameEvent(
+            id=str(uuid.uuid4()),
             type="night_target",
+            round=game.round,
+            phase=Phase.NIGHT,
             actor=player.character_name,
             target=target,
             visible_in_game=False,
@@ -1048,7 +1264,10 @@ async def _on_night_action(
     ]
     all_acted = all(p.night_action for p in night_role_players)
     if all_acted:
-        await _resolve_night_and_notify_narrator(game_id, fs)
+        # Fire-and-forget: do NOT await inline — that blocks the submitting
+        # player's WS receive loop, preventing them from receiving broadcasts
+        # (phase_change, elimination, game_over) until resolution finishes.
+        asyncio.create_task(_resolve_night_and_notify_narrator(game_id, fs))
 
 
 async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
@@ -1056,6 +1275,9 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
     Resolve all night actions, broadcast the results, then hand off to the
     Narrator Agent which will narrate the outcome and call advance_phase.
     """
+    # Cancel night action timeout — we're resolving now (prevents double-fire)
+    _cancel_night_action_timeout(game_id)
+
     from agents.game_master import game_master
 
     night_result = await game_master.resolve_night(game_id)

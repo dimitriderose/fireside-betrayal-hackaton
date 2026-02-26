@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     google_application_credentials: str = ""
     gemini_api_key: str = ""
     firestore_emulator_host: Optional[str] = None
-    narrator_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    narrator_model: str = "gemini-live-2.5-flash-native-audio"
     traitor_model: str = "gemini-2.5-flash"
     narrator_preview_model: str = "gemini-2.5-flash-preview-tts"  # TTS via generate_content
     narrator_voice: str = "Charon"

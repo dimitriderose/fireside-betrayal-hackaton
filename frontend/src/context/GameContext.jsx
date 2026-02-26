@@ -39,6 +39,8 @@ function createInitialState() {
     showRoleReveal: false,       // true when role reveal overlay should be displayed
     inPersonMode: false,         // §12.3.16: camera counts raised hands during vote
     highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
+    nightTargets: null,          // string[] | null — backend-filtered night action targets (excludes self)
+    voteCandidates: null,        // string[] | null — backend-filtered vote candidates (excludes self)
     error: null,
   }
 }
@@ -67,7 +69,7 @@ function gameReducer(state, action) {
         characterName: action.characterName ?? state.characterName,
         role: action.role ?? state.role,
         abilities: action.abilities ?? [],
-        showRoleReveal: true,
+        showRoleReveal: !state.role,  // only show on first assignment, not reconnect
       }
     case 'ROLE_REVEAL_DISMISSED':
       return { ...state, showRoleReveal: false }
@@ -132,6 +134,10 @@ function gameReducer(state, action) {
       return { ...state, nightActionSubmitted: true }
     case 'CLUE_SENT':
       return { ...state, clueSent: true }
+    case 'SET_NIGHT_TARGETS':
+      return { ...state, nightTargets: action.candidates }
+    case 'SET_VOTE_CANDIDATES':
+      return { ...state, voteCandidates: action.candidates }
     case 'PHASE_CHANGE':
       return {
         ...state,
@@ -145,6 +151,10 @@ function gameReducer(state, action) {
         votes: {},
         voteMap: {},
         myVote: null,
+        // Keep candidate lists until backend sends fresh ones via
+        // SET_NIGHT_TARGETS / SET_VOTE_CANDIDATES (avoids stale-fallback race)
+        nightTargets: state.nightTargets,
+        voteCandidates: state.voteCandidates,
       }
     case 'GAME_OVER': {
       clearSession()

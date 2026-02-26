@@ -275,10 +275,13 @@ function StoryLogPanel({ logRef, storyLog, myCharacterName }) {
 }
 
 
-function CharacterGridPanel({ players, myCharacterName }) {
+function CharacterGridPanel({ players, myCharacterName, aiCharacter }) {
   const all = players
-    .map(p => ({ name: p.characterName, alive: p.alive }))
+    .map(p => ({ name: p.characterName, alive: p.alive, isAI: false }))
     .filter(c => c.name)
+  if (aiCharacter?.name) {
+    all.push({ name: aiCharacter.name, alive: aiCharacter.alive !== false, isAI: true })
+  }
 
   if (all.length === 0) return null
 
@@ -306,7 +309,7 @@ function CharacterGridPanel({ players, myCharacterName }) {
               }}
             >
               <div style={{ fontSize: '1.25rem', marginBottom: 4 }}>
-                {c.alive ? (isMe ? '🙂' : '🧑') : '💀'}
+                {c.alive ? (c.isAI ? '🤖' : isMe ? '🙂' : '🧑') : '💀'}
               </div>
               <div
                 style={{
@@ -372,13 +375,35 @@ function NightActionPanel({ role, candidates, onAction }) {
 
 
 function HunterRevengePanel({ candidates, onRevenge }) {
+  const [fired, setFired] = useState(false)
+  const [target, setTarget] = useState(null)
+
+  const handleRevenge = (name) => {
+    setFired(true)
+    setTarget(name)
+    onRevenge(name)
+  }
+
+  if (fired) {
+    return (
+      <div className="container" style={{ marginTop: 16 }}>
+        <div className="card fade-in" style={{ borderColor: 'var(--danger)', textAlign: 'center' }}>
+          <div style={{ fontSize: '1.5rem', marginBottom: 8 }}>🏹</div>
+          <p style={{ color: 'var(--danger)', fontWeight: 600, fontSize: '0.9375rem' }}>
+            Your final shot rings out against {target}...
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="container" style={{ marginTop: 16 }}>
       <div className="card" style={{ borderColor: 'var(--danger)' }}>
         <div style={{ marginBottom: 12 }}>
           <span className="phase-indicator phase-elimination">🏹 Final Shot</span>
           <div style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: 8 }}>
-            You have been eliminated. Choose one character to take with you.
+            As the Hunter, you may take one character with you in your final act.
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -387,7 +412,7 @@ function HunterRevengePanel({ candidates, onRevenge }) {
               key={name}
               className="btn btn-danger"
               style={{ padding: '12px 16px' }}
-              onClick={() => onRevenge(name)}
+              onClick={() => handleRevenge(name)}
             >
               Take {name}
             </button>
@@ -459,25 +484,31 @@ function SpectatorCluePanel({ onSubmitClue, clueSent }) {
 }
 
 
-function ChatBar({ chatText, onChange, onSubmit }) {
+function ChatBar({ chatText, onChange, onSubmit, isConnected }) {
   return (
     <div
       className="container"
       style={{ marginTop: 12, paddingBottom: 8 }}
     >
+      {!isConnected && (
+        <div style={{ fontSize: '0.75rem', color: 'var(--danger)', marginBottom: 6, textAlign: 'center' }}>
+          Reconnecting to server…
+        </div>
+      )}
       <form onSubmit={onSubmit} style={{ display: 'flex', gap: 8 }}>
         <input
           className="input"
-          placeholder="Speak to the village…"
+          placeholder={isConnected ? 'Speak to the village…' : 'Reconnecting…'}
           value={chatText}
           onChange={e => onChange(e.target.value)}
           maxLength={200}
-          style={{ flex: 1 }}
+          style={{ flex: 1, opacity: isConnected ? 1 : 0.5 }}
+          disabled={!isConnected}
         />
         <button
           type="submit"
           className="btn btn-primary"
-          disabled={!chatText.trim()}
+          disabled={!chatText.trim() || !isConnected}
           style={{ padding: '12px 16px', flexShrink: 0 }}
         >
           →
@@ -488,9 +519,18 @@ function ChatBar({ chatText, onChange, onSubmit }) {
 }
 
 
-function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction, onRaiseHand }) {
+function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction, onRaiseHand, handRaised }) {
   const [picker, setPicker] = useState(null) // 'suspect' | 'trust' | null
+  const [lastReaction, setLastReaction] = useState(null) // brief toast
   const targets = aliveCharacters.filter(c => c !== myCharacterName)
+
+  const handleReaction = (type, name) => {
+    onReaction(type, name)
+    if (name) setLastReaction(`${type === 'suspect' ? 'Suspected' : 'Trusted'} ${name}`)
+    else setLastReaction(type === 'agree' ? 'Agreed' : 'Shared info')
+    setPicker(null)
+    setTimeout(() => setLastReaction(null), 2000)
+  }
 
   if (picker) {
     return (
@@ -515,7 +555,7 @@ function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction, onRais
                 key={name}
                 className="btn btn-ghost btn-sm"
                 style={{ fontSize: '0.75rem', padding: '6px 10px' }}
-                onClick={() => { onReaction(picker, name); setPicker(null) }}
+                onClick={() => handleReaction(picker, name)}
               >
                 {name.split(' ').slice(0, 2).join(' ')}
               </button>
@@ -548,25 +588,31 @@ function QuickReactionBar({ aliveCharacters, myCharacterName, onReaction, onRais
         <button
           className="btn btn-ghost btn-sm"
           style={{ fontSize: '0.75rem', padding: '6px 10px' }}
-          onClick={() => onReaction('agree', '')}
+          onClick={() => handleReaction('agree', '')}
         >
           👍 Agree
         </button>
         <button
           className="btn btn-ghost btn-sm"
           style={{ fontSize: '0.75rem', padding: '6px 10px' }}
-          onClick={() => onReaction('information', '')}
+          onClick={() => handleReaction('information', '')}
         >
           💡 Info
         </button>
         <button
           className="btn btn-ghost btn-sm"
-          style={{ fontSize: '0.75rem', padding: '6px 10px' }}
+          style={{ fontSize: '0.75rem', padding: '6px 10px', opacity: handRaised ? 0.5 : 1 }}
           onClick={onRaiseHand}
+          disabled={handRaised}
         >
-          ✋ I want to speak
+          {handRaised ? '✋ Hand raised' : '✋ I want to speak'}
         </button>
       </div>
+      {lastReaction && (
+        <div style={{ fontSize: '0.6875rem', color: 'var(--accent)', marginTop: 4, paddingLeft: 2 }}>
+          ✓ {lastReaction}
+        </div>
+      )}
     </div>
   )
 }
@@ -647,8 +693,11 @@ function RoleRevealOverlay({ role, characterName, onDismiss }) {
   const desc = ROLE_DESC[role] ?? 'Your secret role in Thornwood.'
 
   useEffect(() => {
-    const timer = setTimeout(onDismiss, 8000)
-    return () => clearTimeout(timer)
+    // Auto-dismiss after 10s, or when first narrator audio arrives
+    const timer = setTimeout(onDismiss, 10000)
+    const onAudio = () => onDismiss()
+    window.addEventListener('narrator-audio', onAudio, { once: true })
+    return () => { clearTimeout(timer); window.removeEventListener('narrator-audio', onAudio) }
   }, [onDismiss])
 
   return (
@@ -694,10 +743,10 @@ function RoleRevealOverlay({ role, characterName, onDismiss }) {
         </div>
       )}
       <div style={{
-        fontSize: '0.9375rem',
+        fontSize: '1rem',
         color: 'var(--text-muted)',
         textAlign: 'center',
-        maxWidth: 320,
+        maxWidth: 340,
         lineHeight: 1.6,
         marginBottom: 32,
       }}>
@@ -728,28 +777,46 @@ function RoleRevealOverlay({ role, characterName, onDismiss }) {
 
 
 const NARRATOR_SILENCE_MS = 15_000
+const NARRATOR_LONG_SILENCE_MS = 30_000
 
-function NarratorBar({ isPlaying, volume, setVolume, storyLog }) {
-  const [silent, setSilent] = useState(false)
+function NarratorBar({ isPlaying, volume, setVolume, storyLog, connectionStatus }) {
+  // 0 = normal, 1 = thinking (15s), 2 = long silence (30s)
+  const [silenceTier, setSilenceTier] = useState(0)
   const lastLogLen = useRef(storyLog?.length ?? 0)
   const logLen = storyLog?.length ?? 0
 
   useEffect(() => {
     if (isPlaying || logLen > lastLogLen.current) {
       lastLogLen.current = logLen
-      setSilent(false)
+      setSilenceTier(0)
     }
-    if (isPlaying) return   // no timer needed while audio is active
-    if (logLen === 0) return // narrator hasn't spoken yet — don't show "thinking"
-    const id = setTimeout(() => setSilent(true), NARRATOR_SILENCE_MS)
-    return () => clearTimeout(id)
+    if (isPlaying) return
+    if (logLen === 0) return
+    const t1 = setTimeout(() => setSilenceTier(1), NARRATOR_SILENCE_MS)
+    const t2 = setTimeout(() => setSilenceTier(2), NARRATOR_LONG_SILENCE_MS)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [isPlaying, logLen])
 
-  const label = isPlaying
-    ? '♪ Narrator'
-    : silent
-      ? '… Narrator thinking'
-      : '· Narrator'
+  const disconnected = connectionStatus && connectionStatus !== 'connected'
+  const label = disconnected
+    ? '⚠ Disconnected'
+    : isPlaying
+      ? '♪ Narrator'
+      : silenceTier >= 2
+        ? '… Narrator may be reconnecting'
+        : silenceTier >= 1
+          ? '… Narrator thinking'
+          : '· Narrator'
+
+  const color = disconnected
+    ? 'var(--danger)'
+    : isPlaying
+      ? 'var(--accent)'
+      : silenceTier >= 2
+        ? 'var(--danger)'
+        : silenceTier >= 1
+          ? 'var(--warning, #f59e0b)'
+          : 'var(--text-dim)'
 
   return (
     <div
@@ -766,7 +833,7 @@ function NarratorBar({ isPlaying, volume, setVolume, storyLog }) {
       <span
         style={{
           fontSize: '0.6875rem',
-          color: isPlaying ? 'var(--accent)' : silent ? 'var(--warning, #f59e0b)' : 'var(--text-dim)',
+          color,
           textTransform: 'uppercase',
           letterSpacing: '0.1em',
           minWidth: 130,
@@ -802,7 +869,7 @@ export default function GameScreen() {
     playerId, playerName, phase, characterName, round, isHost,
     players, aiCharacter, storyLog, role, isEliminated,
     nightActionSubmitted, hunterRevengeNeeded, clueSent,
-    showRoleReveal,
+    showRoleReveal, nightTargets, voteCandidates,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
@@ -815,6 +882,7 @@ export default function GameScreen() {
   const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
   const [lobbySummary, setLobbySummary] = useState(null)
   const [sceneImage, setSceneImage] = useState(null)
+  const [nightPanelReady, setNightPanelReady] = useState(false)
   const [dayHintDismissed, setDayHintDismissed] = useState(
     () => localStorage.getItem('dayHintSeen') === '1'
   )
@@ -826,7 +894,7 @@ export default function GameScreen() {
     }
   }, [storyLog])
 
-  // Navigate to game over screen when phase reaches game_over
+  // Navigate to game over screen immediately
   useEffect(() => {
     if (phase === 'game_over' && gameId) {
       navigate(`/gameover/${gameId}`)
@@ -858,8 +926,18 @@ export default function GameScreen() {
     return () => window.removeEventListener('narrator-scene', handler)
   }, [])
 
-  // Clear scene image on phase transition so stale art doesn't persist
-  useEffect(() => { setSceneImage(null) }, [phase])
+  // Fade out scene image on phase transition (new image replaces it when it arrives)
+  // Removed instant clear — scene image now persists until replaced by a new one
+
+  // Delay showing the night action panel so the narrator can speak first
+  useEffect(() => {
+    if (phase === 'night') {
+      setNightPanelReady(false)
+      const timer = setTimeout(() => setNightPanelReady(true), 8000)
+      return () => clearTimeout(timer)
+    }
+    setNightPanelReady(false)
+  }, [phase])
 
   // Auto-dismiss day hint on phase transition away from day_discussion (state only, not localStorage).
   // Explicit ✕ click writes localStorage for permanent across-game dismissal.
@@ -872,7 +950,8 @@ export default function GameScreen() {
   }, [phase, dayHintDismissed])
 
   // Redirect if no playerId (navigated directly without joining)
-  if (!playerId) {
+  // Skip this guard during game_over — the useEffect above will navigate to /gameover
+  if (!playerId && phase !== 'game_over') {
     return (
       <div className="page" style={{ justifyContent: 'center', alignItems: 'center', padding: 32 }}>
         <div className="container" style={{ textAlign: 'center' }}>
@@ -906,10 +985,12 @@ export default function GameScreen() {
     sendMessage('quick_reaction', { reaction, target })
   }
 
+  const [nightActionTarget, setNightActionTarget] = useState(null)
   const handleNightAction = (target) => {
     const info = ROLE_INFO[role]
     if (!info?.action) return
     sendMessage('night_action', { action: info.action, target })
+    setNightActionTarget(target)
     dispatch({ type: 'NIGHT_ACTION_SUBMITTED' })
   }
 
@@ -922,17 +1003,25 @@ export default function GameScreen() {
     sendMessage('spectator_clue', { word })
   }
 
+  const [handRaised, setHandRaised] = useState(false)
   const handleRaiseHand = () => {
     sendMessage('raise_hand', { characterName: characterName })
+    setHandRaised(true)
+    setTimeout(() => setHandRaised(false), 3000)
   }
 
   const handleStartGame = async () => {
+    if (startLoading) return  // guard against double-click
     setStartLoading(true)
     setStartError(null)
     try {
       const res = await fetch(`/api/games/${gameId}/start?host_player_id=${playerId}`, {
         method: 'POST',
       })
+      if (res.status === 409) {
+        // 409 = "Game is not in lobby state" → already starting, not an error
+        return
+      }
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.detail ?? 'Failed to start game')
@@ -945,9 +1034,9 @@ export default function GameScreen() {
   }
 
   const roleInfo = ROLE_INFO[role]
-  const showStoryLog = phase !== 'setup' && phase !== 'day_vote'
+  const showStoryLog = phase !== 'setup'
   const showNightPanel =
-    phase === 'night' && !isEliminated && !nightActionSubmitted && !!ROLE_INFO[role]?.action
+    phase === 'night' && !isEliminated && !nightActionSubmitted && !!ROLE_INFO[role]?.action && nightPanelReady
   const showCharacterGrid = phase === 'day_discussion' || phase === 'elimination'
   const showChat = phase === 'day_discussion' && !isEliminated
   const showNarratorBar = phase !== 'setup'
@@ -963,6 +1052,7 @@ export default function GameScreen() {
           onDismiss={() => dispatch({ type: 'ROLE_REVEAL_DISMISSED' })}
         />
       )}
+
 
       {/* ── Sticky phase header ── */}
       <div
@@ -1013,22 +1103,34 @@ export default function GameScreen() {
               ♪
             </span>
           )}
-          <div
-            title={connectionStatus}
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: connectionStatus === 'connected' ? 'var(--success)' : 'var(--danger)',
-              flexShrink: 0,
-            }}
-          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div
+              title={connectionStatus}
+              className={connectionStatus !== 'connected' ? 'pulse-glow' : ''}
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: connectionStatus === 'connected'
+                  ? 'var(--success)'
+                  : connectionStatus === 'connecting'
+                    ? 'var(--warning, #f59e0b)'
+                    : 'var(--danger)',
+                flexShrink: 0,
+              }}
+            />
+            {connectionStatus !== 'connected' && (
+              <span style={{ fontSize: '0.625rem', color: 'var(--danger)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                {connectionStatus === 'connecting' ? 'Connecting' : 'Disconnected'}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
       {/* ── Narrator audio bar ── */}
       {showNarratorBar && (
-        <NarratorBar isPlaying={isPlaying} volume={volume} setVolume={setVolume} storyLog={storyLog} />
+        <NarratorBar isPlaying={isPlaying} volume={volume} setVolume={setVolume} storyLog={storyLog} connectionStatus={connectionStatus} />
       )}
 
       {/* ── Main content ── */}
@@ -1087,31 +1189,39 @@ export default function GameScreen() {
         {showNightPanel && (
           <NightActionPanel
             role={role}
-            candidates={aliveCharacters}
+            candidates={nightTargets ?? aliveCharacters.filter(c => c !== characterName)}
             onAction={handleNightAction}
           />
         )}
 
         {/* Night: submitted confirmation */}
         {phase === 'night' && !isEliminated && nightActionSubmitted && ROLE_INFO[role]?.action && (
-          <div className="container" style={{ paddingTop: 12 }}>
-            <p style={{ textAlign: 'center', color: 'var(--success)', fontSize: '0.875rem' }}>
-              ✓ Your action has been submitted. Rest now…
+          <div className="container" style={{ paddingTop: 12, textAlign: 'center' }}>
+            <p style={{ color: 'var(--success)', fontSize: '0.875rem' }}>
+              ✓ {nightActionTarget ? `You targeted ${nightActionTarget}.` : 'Your action has been submitted.'} Rest now…
             </p>
+            <div style={{ marginTop: 8 }}>
+              <div className="pulse-glow" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', margin: '0 auto 6px' }} />
+              <p style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>Waiting for other players…</p>
+            </div>
           </div>
         )}
 
         {/* Night: villager / hunter (no action) */}
         {phase === 'night' && !isEliminated && !ROLE_INFO[role]?.action && (
-          <div className="container" style={{ paddingTop: 12 }}>
-            <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+          <div className="container" style={{ paddingTop: 12, textAlign: 'center' }}>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
               🌙 The village sleeps…
             </p>
+            <div style={{ marginTop: 8 }}>
+              <div className="pulse-glow" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', margin: '0 auto 6px' }} />
+              <p style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>Waiting for special roles…</p>
+            </div>
           </div>
         )}
 
-        {/* Eliminated spectator — clue panel during discussion, plain notice otherwise */}
-        {isEliminated && !hunterRevengeNeeded && phase === 'day_discussion' && (
+        {/* Eliminated spectator — clue panel during discussion + voting */}
+        {isEliminated && !hunterRevengeNeeded && (phase === 'day_discussion' || phase === 'day_vote') && (
           <SpectatorCluePanel onSubmitClue={handleSpectatorClue} clueSent={clueSent} />
         )}
         {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'day_vote' && phase !== 'day_discussion' && (
@@ -1127,6 +1237,7 @@ export default function GameScreen() {
           <CharacterGridPanel
             players={players}
             myCharacterName={characterName}
+            aiCharacter={aiCharacter}
           />
         )}
 
@@ -1175,6 +1286,7 @@ export default function GameScreen() {
               chatText={chatText}
               onChange={setChatText}
               onSubmit={handleChat}
+              isConnected={connectionStatus === 'connected'}
             />
             <QuickReactionBar
               key={round}
@@ -1182,6 +1294,7 @@ export default function GameScreen() {
               myCharacterName={characterName}
               onReaction={handleQuickReaction}
               onRaiseHand={handleRaiseHand}
+              handRaised={handRaised}
             />
           </>
         )}
