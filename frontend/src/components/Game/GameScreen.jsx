@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 import { useWebSocket } from '../../hooks/useWebSocket.js'
 import { useAudioPlayer } from '../../hooks/useAudioPlayer.js'
+import { useAudioCapture } from '../../hooks/useAudioCapture.js'
 import VotePanel from '../Voting/VotePanel.jsx'
 import RoleStrip from './RoleStrip.jsx'
 
@@ -869,11 +870,12 @@ export default function GameScreen() {
     playerId, playerName, phase, characterName, round, isHost,
     players, aiCharacter, storyLog, role, isEliminated,
     nightActionSubmitted, hunterRevengeNeeded, clueSent,
-    showRoleReveal, nightTargets, voteCandidates,
+    showRoleReveal, nightTargets, voteCandidates, timerSeconds,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
   const { isPlaying, volume, setVolume } = useAudioPlayer()
+  const { micActive, muted, micError, startCapture, stopCapture, toggleMute } = useAudioCapture(sendMessage)
 
   const logRef = useRef(null)
   const [chatText, setChatText] = useState('')
@@ -886,6 +888,21 @@ export default function GameScreen() {
   const [dayHintDismissed, setDayHintDismissed] = useState(
     () => localStorage.getItem('dayHintSeen') === '1'
   )
+
+  // ── Discussion countdown timer ──
+  const [discussionTimeLeft, setDiscussionTimeLeft] = useState(null)
+
+  useEffect(() => {
+    if (phase !== 'day_discussion' || !timerSeconds) {
+      setDiscussionTimeLeft(null)
+      return
+    }
+    setDiscussionTimeLeft(timerSeconds)
+    const interval = setInterval(() => {
+      setDiscussionTimeLeft(prev => (prev > 0 ? prev - 1 : 0))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [phase, round, timerSeconds])
 
   // Auto-scroll story log to bottom on new messages
   useEffect(() => {
@@ -900,6 +917,15 @@ export default function GameScreen() {
       navigate(`/gameover/${gameId}`)
     }
   }, [phase, gameId, navigate])
+
+  // Auto-start mic during day_discussion, stop on other phases
+  useEffect(() => {
+    if (phase === 'day_discussion' && !isEliminated && connectionStatus === 'connected') {
+      startCapture()
+    } else {
+      stopCapture()
+    }
+  }, [phase, isEliminated, connectionStatus, startCapture, stopCapture])
 
   // Poll player count from REST API during lobby (WS player_joined only fires post-game-start)
   useEffect(() => {
@@ -1086,9 +1112,36 @@ export default function GameScreen() {
           )}
         </div>
 
-        <span className={`phase-indicator ${PHASE_CLASS[phase] ?? 'phase-day'}`}>
-          {PHASE_LABELS[phase] ?? phase}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className={`phase-indicator ${PHASE_CLASS[phase] ?? 'phase-day'}`}>
+            {PHASE_LABELS[phase] ?? phase}
+          </span>
+          {discussionTimeLeft != null && phase === 'day_discussion' && (() => {
+            const mins = Math.floor(discussionTimeLeft / 60)
+            const secs = discussionTimeLeft % 60
+            const timerColor = discussionTimeLeft <= 15
+              ? 'var(--danger)'
+              : discussionTimeLeft <= 30
+                ? '#fbbf24'
+                : 'var(--text-muted)'
+            return (
+              <span
+                className={discussionTimeLeft <= 15 ? 'pulse-glow' : ''}
+                style={{
+                  fontFamily: 'var(--font-heading)',
+                  fontSize: '0.875rem',
+                  fontWeight: 700,
+                  color: timerColor,
+                  transition: 'color 0.5s ease',
+                  minWidth: 36,
+                  textAlign: 'center',
+                }}
+              >
+                {mins}:{secs.toString().padStart(2, '0')}
+              </span>
+            )
+          })()}
+        </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {isPlaying && (
@@ -1282,6 +1335,37 @@ export default function GameScreen() {
         {/* Chat bar + quick reactions */}
         {showChat && (
           <>
+            {/* Mic status bar */}
+            <div className="container" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px' }}>
+              <button
+                onClick={toggleMute}
+                style={{
+                  background: muted ? 'var(--danger-dim, #3a1c1c)' : 'var(--bg-elevated)',
+                  border: `1px solid ${muted ? 'var(--danger)' : 'var(--border-accent, var(--border))'}`,
+                  borderRadius: 'var(--radius-full, 999px)',
+                  padding: '6px 12px',
+                  color: 'var(--text)',
+                  cursor: 'pointer',
+                  fontSize: '0.8125rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+                title={muted ? 'Unmute microphone' : 'Mute microphone'}
+              >
+                {muted ? '\uD83D\uDD07' : '\uD83C\uDFA4'}
+                <span>{muted ? 'Muted' : 'Mic On'}</span>
+              </button>
+              {micError && (
+                <span style={{ fontSize: '0.75rem', color: 'var(--danger)' }}>{micError}</span>
+              )}
+              {micActive && !muted && (
+                <span style={{ fontSize: '0.75rem', color: 'var(--success)' }}>
+                  <span className="pulse-glow" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', marginRight: 4 }} />
+                  Narrator can hear you
+                </span>
+              )}
+            </div>
             <ChatBar
               chatText={chatText}
               onChange={setChatText}

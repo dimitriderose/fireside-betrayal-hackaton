@@ -204,11 +204,38 @@ _spectator_clues_sent: Set[str] = set()
 _narrator_timeout_tasks: Dict[str, asyncio.Task] = {}
 
 # Timeout durations per narrator-controlled phase (seconds)
+# DAY_DISCUSSION is handled dynamically via _discussion_timeout() based on player count.
 _NARRATOR_TIMEOUT_DELAYS: Dict[Phase, int] = {
     Phase.NIGHT: 60,            # narrator should narrate night scene quickly
-    Phase.DAY_DISCUSSION: 120,  # discussion needs time but shouldn't hang forever
     Phase.ELIMINATION: 60,      # narrator narrates elimination then advances
 }
+
+# Discussion warning tasks — sends narrator a wrap-up prompt before timeout
+_discussion_warning_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _discussion_timeout(alive_count: int) -> int:
+    """Scale discussion duration by number of alive players."""
+    if alive_count >= 7:
+        return 240   # 4 min
+    if alive_count >= 5:
+        return 180   # 3 min
+    return 120       # 2 min
+
+
+async def _discussion_warning(game_id: str, delay: int) -> None:
+    """Send the narrator a wrap-up prompt before the hard timeout fires."""
+    await asyncio.sleep(delay)
+    _discussion_warning_tasks.pop(game_id, None)
+    from agents.narrator_agent import narrator_manager
+    session = narrator_manager._sessions.get(game_id)
+    if session:
+        await session.send(
+            "[TIME WARNING] 30 seconds remain. Begin wrapping up the discussion "
+            "and transition to voting. Call generate_vote_context, create summaries, "
+            "then call advance_phase."
+        )
+        logger.info("[%s] Discussion 30s warning sent to narrator", game_id)
 
 
 async def _narrator_phase_timeout(game_id: str, expected_phase: Phase, delay: int) -> None:
@@ -519,11 +546,34 @@ class ConnectionManager:
         if round is None:
             _game = await get_firestore_service().get_game(game_id)
             round = _game.round if _game else 0
-        await self.broadcast(game_id, {
+
+        msg: dict = {
             "type": "phase_change",
             "phase": phase.value,
             "round": round,
-        }, reliable=True)
+        }
+
+        # Dynamic discussion timeout — scale by alive player count
+        if phase == Phase.DAY_DISCUSSION:
+            fs = get_firestore_service()
+            alive = await fs.get_alive_players(game_id)
+            timeout = _discussion_timeout(len(alive))
+            msg["timer_seconds"] = timeout
+            # Schedule narrator safety timeout with scaled duration
+            _cancel_narrator_timeout(game_id)
+            _narrator_timeout_tasks[game_id] = asyncio.create_task(
+                _narrator_phase_timeout(game_id, phase, timeout)
+            )
+            # Schedule 30s warning to narrator before hard timeout
+            warn_task = _discussion_warning_tasks.pop(game_id, None)
+            if warn_task and not warn_task.done():
+                warn_task.cancel()
+            if timeout > 30:
+                _discussion_warning_tasks[game_id] = asyncio.create_task(
+                    _discussion_warning(game_id, timeout - 30)
+                )
+
+        await self.broadcast(game_id, msg, reliable=True)
 
         # Send per-player candidate lists for night/vote phases.
         # The backend is the source of truth — frontend uses these directly.
@@ -540,7 +590,7 @@ class ConnectionManager:
                 _vote_timeout(game_id, fs_ref)
             )
 
-        # Schedule narrator safety timeout for narrator-controlled phases
+        # Schedule narrator safety timeout for non-discussion narrator-controlled phases
         if phase in _NARRATOR_TIMEOUT_DELAYS:
             _schedule_narrator_timeout(game_id, phase)
 
@@ -854,6 +904,9 @@ async def _dispatch_message(
 
     elif msg_type == "in_person_vote_frame":
         await _on_in_person_vote_frame(game_id, player_id, data, fs)
+
+    elif msg_type == "player_audio":
+        await _on_player_audio(game_id, player_id, data, fs)
 
     else:
         await manager.send_to(game_id, player_id, {
@@ -1737,6 +1790,21 @@ async def _on_in_person_vote_frame(
     alive_count = sum(1 for p in all_players if p.alive)
     if voted_count >= alive_count and game_id not in _resolving_votes:
         await _resolve_vote_and_advance(game_id, fs)
+
+
+async def _on_player_audio(game_id: str, player_id: str, data: Dict, fs) -> None:
+    """Forward base64 PCM audio from a player to the narrator's Gemini session."""
+    audio_b64 = data.get("audio", "")
+    if not audio_b64:
+        return
+    try:
+        import base64
+        pcm_bytes = base64.b64decode(audio_b64)
+    except Exception:
+        return
+    player = await fs.get_player(game_id, player_id)
+    speaker = player.character_name if player else None
+    await narrator_manager.forward_player_audio(game_id, pcm_bytes, speaker=speaker)
 
 
 def _build_timeline(events: list) -> list:

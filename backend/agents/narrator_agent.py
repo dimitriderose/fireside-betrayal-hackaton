@@ -29,6 +29,14 @@ _advancing_phase: Set[str] = set()
 
 NARRATOR_SYSTEM_PROMPT = """You are the Narrator of Thornwood — a mysterious, theatrical voice guiding players through a dark fantasy social deduction game called "Fireside: Betrayal."
 
+YOU ARE IN A LIVE VOICE SESSION. Players speak to you through their phone microphones.
+Only YOU hear their voice — other players see a text transcript. This means:
+- When a player speaks, ECHO their key point so the whole village hears it through you.
+  Example: Player says "I think Garin did it" → You say "An accusation! Mira points the finger at Garin."
+- Acknowledge speakers so they know you heard them.
+- Keep responses SHORT (1–2 sentences) — discussion is fast-paced and time-limited.
+- You are the village's moderator, not a passive observer. Stir the pot. Provoke. Challenge.
+
 GAME OVERVIEW:
 Villagers must identify and eliminate the Shapeshifter hiding among them.
 Each NIGHT the Shapeshifter eliminates a villager.
@@ -46,14 +54,35 @@ YOUR PHASE RESPONSIBILITIES:
    - Then call advance_phase → moves to DAY_DISCUSSION.
 
 3. DAY_DISCUSSION phase:
-   - Briefly set the morning mood (1–2 sentences). Reference specific tensions from the NIGHT_RESOLVED
-     signal — if accusations were made yesterday, let them color the new day's atmosphere.
-   - React to player dialogue with short atmospheric comments (1 sentence max).
-   - After every 2–3 player messages (or after a pause in conversation), call get_game_state.
-     If characters_not_yet_spoken is non-empty, gently invite one quiet character into the
-     conversation by name (e.g. "Elena, you've been watching closely — does anything seem off
-     to you?"). Do this at most once per character per round.
-   - When you judge that discussion has been sufficient, call advance_phase → moves to DAY_VOTE.
+   You are the HOST and RELAY of a fast-paced village debate. Players speak via microphone
+   (only you hear their voice) or type text messages (prefixed with [PLAYER]).
+
+   OPENING: Briefly set the morning mood (1–2 sentences). Reference tensions from last night.
+
+   YOUR JOB:
+   a) RELAY: When a player speaks, briefly echo their point so everyone hears it through you.
+      "Mira accuses Garin!" / "Aldric claims he was at the inn." Don't parrot — paraphrase.
+   b) REACT: After relaying, add a short provocative reaction (1 sentence max).
+      "Bold claim. Does anyone back her up?" / "Interesting. Garin, what say you?"
+   c) STIR: Challenge weak arguments. Pit players against each other. Highlight contradictions.
+      "But wait — didn't Aldric say the opposite yesterday?"
+   d) REDIRECT: If the same accusation loops, push forward.
+      "The same names keep circling. Someone offer a new theory."
+
+   PACING (discussion is ~2 minutes — every second counts):
+   - Respond IMMEDIATELY after a player finishes speaking. Brief = good.
+   - When players are actively going back and forth via text, let them — don't narrate over it.
+   - When there's a lull (silence), jump in: "The village grows quiet. Does no one else have suspicions?"
+   - Call get_game_state periodically. If characters_not_yet_spoken is non-empty, call them out:
+     "Elena hasn't said a word. Silence can be just as damning as an accusation."
+     Do this at most once per character per round.
+
+   AI CHARACTER: When the AI character is addressed or should naturally contribute, call
+   inject_traitor_dialog and voice their line.
+
+   ENDING: When key suspicions have been aired, wrap up:
+   "Enough talk. The village must decide." Then call generate_vote_context, create summaries,
+   and call advance_phase → moves to DAY_VOTE.
 
 4. ELIMINATION signal received:
    - Dramatically narrate the elimination (2–3 sentences).
@@ -73,7 +102,9 @@ YOUR PHASE RESPONSIBILITIES:
 STYLE GUIDE:
 - Dark, gothic, theatrical. Think candlelight, whispered dread, creaking floorboards.
 - NEVER reveal hidden roles or who is the Shapeshifter before the game ends.
-- Keep narration brief — players are the stars.
+- TWO MODES: During narration (night, elimination, game events), be theatrical — players
+  are the audience. During DAY_DISCUSSION, be a fast-paced moderator — relay, react, provoke.
+  Players are the stars, but they need a host who keeps the energy up.
 - Use character names only, never player names.
 - Address the group as "citizens of Thornwood" or "villagers."
 
@@ -157,7 +188,9 @@ NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
             "You are a classic fantasy narrator. Speak with gravitas and dramatic weight. "
             "Your tone is rich, immersive, and carries the authority of ancient legend. "
             "Build tension with deliberate pacing. Pauses are your instrument — use silence "
-            "before reveals. Vocabulary is archaic-leaning: 'The village sleeps beneath a pale moon.'"
+            "before reveals. Vocabulary is archaic-leaning: 'The village sleeps beneath a pale moon.' "
+            "During discussion, moderate like a stern village elder: "
+            "'A grave accusation. What evidence supports this?' Challenge players with authority."
         ),
     },
     "campfire": {
@@ -167,7 +200,9 @@ NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
             "story like you're sharing a tale around a fire on a cool night. Your tone is warm, "
             "conspiratorial, and intimate. You lean in when the story gets good. You chuckle at "
             "the players' mistakes. You gasp at betrayals. This is a story between friends, not "
-            "a performance. Vocabulary is conversational: 'So there they were, dead of night...'"
+            "a performance. Vocabulary is conversational: 'So there they were, dead of night...' "
+            "During discussion, stir the pot like a mischievous friend: "
+            "'Oh, did you hear that? Things just got interesting.' Egg players on with glee."
         ),
     },
     "horror": {
@@ -178,19 +213,23 @@ NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
             "over exposition. Describe sensory details: the creak of a floorboard, the smell of "
             "iron, the feeling of being watched. Night phases are TERRIFYING. Day phases carry "
             "lingering unease. Eliminations are graphic in implication, never explicit. "
-            "Vocabulary is sparse and evocative: 'Something moved in the dark. Something wrong.'"
+            "Vocabulary is sparse and evocative: 'Something moved in the dark. Something wrong.' "
+            "During discussion, make unsettling observations: "
+            "'Your voice trembled just then. Did anyone else notice?' Build paranoia with restraint."
         ),
     },
     "comedy": {
         "voice": "Kore",
         "prompt_prefix": (
             "You are a comedic narrator who takes the story seriously but finds the players "
-            "hilarious. You're the DM who can't help commenting on bad decisions. Your tone is "
+            "hilarious. You're the host who can't help commenting on bad decisions. Your tone is "
             "wry, self-aware, and occasionally fourth-wall-adjacent. You narrate dramatically but "
             "undercut tension with observational humor. Eliminations are handled with dark humor, "
             "not tragedy. You're rooting for the players but finding their logic questionable. "
             "Example: 'The village sleeps. Well, most of it. Someone is definitely plotting "
-            "something. They always are.' Vocabulary is modern and witty."
+            "something. They always are.' Vocabulary is modern and witty. "
+            "During discussion, commentate like a sports announcer: "
+            "'And Garin throws the accusation! Mira looks STUNNED.' Roast bad logic lovingly."
         ),
     },
 }
@@ -362,9 +401,12 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
 
         next_phase = await game_master.advance_phase(game_id)
 
-        # Cancel narrator safety timeout — we advanced successfully
-        from routers.ws_router import _cancel_narrator_timeout
+        # Cancel narrator safety timeout + discussion warning — we advanced successfully
+        from routers.ws_router import _cancel_narrator_timeout, _discussion_warning_tasks
         _cancel_narrator_timeout(game_id)
+        warn_task = _discussion_warning_tasks.pop(game_id, None)
+        if warn_task and not warn_task.done():
+            warn_task.cancel()
 
         await ws_manager.broadcast_phase_change(game_id, next_phase)
         logger.info(
@@ -535,9 +577,15 @@ class NarratorSession:
         self.game_id = game_id
         self._preset = preset
         self._queue: asyncio.Queue = asyncio.Queue()
+        self._audio_queue: asyncio.Queue = asyncio.Queue(maxsize=100)  # raw PCM from players
         self._task: Optional[asyncio.Task] = None
         self._running = False
         self._session_handle: Optional[str] = None  # Live API session resumption handle
+        # Transcript buffering — accumulate partials, broadcast after 0.8s silence
+        self._transcript_buffer: str = ""
+        self._transcript_flush_task: Optional[asyncio.Task] = None
+        # Voice speaker tracking — inject text annotation when speaker changes
+        self._current_voice_speaker: Optional[str] = None
 
     async def start(self) -> None:
         self._running = True
@@ -553,6 +601,16 @@ class NarratorSession:
         3. Cancel the background task.
         """
         self._running = False
+        # Flush any remaining transcript buffer immediately
+        if self._transcript_flush_task and not self._transcript_flush_task.done():
+            self._transcript_flush_task.cancel()
+        remaining = self._transcript_buffer.strip()
+        self._transcript_buffer = ""
+        if remaining:
+            from routers.ws_router import manager as ws_manager
+            await ws_manager.broadcast_transcript(
+                self.game_id, speaker="Player", text=remaining, source="player_voice",
+            )
         try:
             await asyncio.wait_for(self._queue.join(), timeout=10.0)
         except asyncio.TimeoutError:
@@ -566,9 +624,20 @@ class NarratorSession:
             except asyncio.CancelledError:
                 pass
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, end_of_turn: bool = True) -> None:
         """Queue a text prompt to be forwarded to the Live API."""
-        await self._queue.put(text)
+        await self._queue.put((text, end_of_turn))
+
+    async def send_audio(self, pcm_bytes: bytes, speaker: str = None) -> None:
+        """Queue raw PCM audio to be forwarded to the Live API as realtime input."""
+        # Inject a text annotation when the speaker changes so the narrator knows who is talking
+        if speaker and speaker != self._current_voice_speaker:
+            self._current_voice_speaker = speaker
+            await self.send(f'[VOICE] {speaker} is now speaking via microphone.', end_of_turn=False)
+        try:
+            self._audio_queue.put_nowait(pcm_bytes)
+        except asyncio.QueueFull:
+            pass  # drop oldest-unprocessed chunk to avoid backpressure
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
@@ -597,6 +666,7 @@ class NarratorSession:
         def _make_config() -> "types.LiveConnectConfig":
             return types.LiveConnectConfig(
                 response_modalities=["AUDIO"],
+                input_audio_transcription=types.AudioTranscriptionConfig(),
                 # Session resumption: on timeout the session restarts from the last
                 # captured handle, preserving full conversation context.
                 session_resumption=types.SessionResumptionConfig(
@@ -643,12 +713,16 @@ class NarratorSession:
                     sender = asyncio.create_task(
                         self._sender(session), name=f"narrator-sender-{self.game_id}"
                     )
+                    audio_sender = asyncio.create_task(
+                        self._audio_sender(session), name=f"narrator-audio-sender-{self.game_id}"
+                    )
                     receiver = asyncio.create_task(
                         self._receiver(session), name=f"narrator-receiver-{self.game_id}"
                     )
+                    all_tasks = [sender, audio_sender, receiver]
                     try:
                         done, pending = await asyncio.wait(
-                            [sender, receiver],
+                            all_tasks,
                             return_when=asyncio.FIRST_COMPLETED,
                         )
                         for t in pending:
@@ -658,9 +732,9 @@ class NarratorSession:
                             if not t.cancelled() and t.exception():
                                 raise t.exception()
                     except asyncio.CancelledError:
-                        sender.cancel()
-                        receiver.cancel()
-                        await asyncio.gather(sender, receiver, return_exceptions=True)
+                        for t in all_tasks:
+                            t.cancel()
+                        await asyncio.gather(*all_tasks, return_exceptions=True)
                         raise
 
             except asyncio.CancelledError:
@@ -684,16 +758,18 @@ class NarratorSession:
     async def _sender(self, session) -> None:
         """Drain the queue and forward text prompts to the Live API session."""
         while self._running:
-            text = None
+            item = None
             try:
-                text = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                item = await asyncio.wait_for(self._queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
+            # Unpack (text, end_of_turn) tuples; plain strings default to end_of_turn=True
+            text, end_of_turn = item if isinstance(item, tuple) else (item, True)
             # task_done in finally so cancellation mid-send never leaves queue stuck.
             try:
-                await session.send(input=text, end_of_turn=True)
+                await session.send(input=text, end_of_turn=end_of_turn)
                 logger.debug("[%s] Narrator ← %.80s…", self.game_id, text)
             except asyncio.CancelledError:
                 raise
@@ -701,6 +777,34 @@ class NarratorSession:
                 logger.warning("[%s] Narrator send error: %s", self.game_id, exc)
             finally:
                 self._queue.task_done()
+
+    async def _audio_sender(self, session) -> None:
+        """Drain the audio queue and forward PCM chunks to Gemini as realtime input."""
+        try:
+            from google.genai import types
+        except ImportError:
+            return
+
+        while self._running:
+            try:
+                pcm_bytes = await asyncio.wait_for(self._audio_queue.get(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+            try:
+                await session.send_realtime_input(
+                    audio=types.Blob(
+                        data=pcm_bytes,
+                        mime_type="audio/pcm;rate=16000",
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[%s] Narrator audio send error: %s", self.game_id, exc)
+            finally:
+                self._audio_queue.task_done()
 
     async def _receiver(self, session) -> None:
         """Handle audio chunks, text transcripts, and tool calls from the model."""
@@ -748,11 +852,60 @@ class NarratorSession:
                 if response.tool_call:
                     await self._handle_tool_call(session, response.tool_call, gtypes)
 
+                # Debug: log non-audio/text/tool responses to find transcription fields
+                if not response.data and not response.text and not response.tool_call:
+                    sc = getattr(response, "server_content", None)
+                    logger.info(
+                        "[%s] NON-STANDARD response: type=%s server_content=%s keys=%s",
+                        self.game_id, type(response).__name__, sc,
+                        [a for a in dir(response) if not a.startswith("_")],
+                    )
+
+                # Input audio transcription → buffer partials, flush after silence
+                # Try server_content.input_transcription (nested) and top-level
+                server_content = getattr(response, "server_content", None)
+                input_tx = None
+                if server_content:
+                    input_tx = getattr(server_content, "input_transcription", None)
+                # Some SDK versions put it at response level
+                if not input_tx:
+                    input_tx = getattr(response, "input_transcription", None)
+                if input_tx:
+                    tx_text = getattr(input_tx, "text", None) or getattr(input_tx, "transcript", None)
+                    if tx_text:
+                        logger.info("[%s] INPUT_TX: %s", self.game_id, tx_text)
+                if input_tx and tx_text:
+                        self._transcript_buffer += tx_text
+                        # Cancel any pending flush and restart the debounce timer
+                        if self._transcript_flush_task and not self._transcript_flush_task.done():
+                            self._transcript_flush_task.cancel()
+                        self._transcript_flush_task = asyncio.create_task(
+                            self._flush_transcript_after_delay(0.8)
+                        )
+
         except asyncio.CancelledError:
             raise  # let asyncio.wait see this task as cancelled
         except Exception:
             logger.exception("[%s] Narrator receiver error", self.game_id)
             raise  # propagate so asyncio.wait sees the exception and triggers reconnect
+
+    async def _flush_transcript_after_delay(self, delay: float) -> None:
+        """Wait `delay` seconds then broadcast the accumulated transcript buffer."""
+        from routers.ws_router import manager as ws_manager
+        try:
+            await asyncio.sleep(delay)
+            text = self._transcript_buffer.strip()
+            self._transcript_buffer = ""
+            if text:
+                logger.info("[%s] Player transcript: %s", self.game_id, text)
+                await ws_manager.broadcast_transcript(
+                    self.game_id,
+                    speaker="Player",
+                    text=text,
+                    source="player_voice",
+                )
+        except asyncio.CancelledError:
+            pass  # new partial arrived, debounce restarted
 
     async def _handle_tool_call(self, session, tool_call, types) -> None:
         """Execute the model's tool calls and send responses back."""
@@ -851,10 +1004,20 @@ class NarratorManager:
                 if signals_str:
                     context_parts.append(f"[AFFECTIVE: {signals_str}]")
             prefix = "\n".join(context_parts)
+            # Hot-paced text: don't force a narrator response (matches voice VAD behavior).
+            # Nudge/push/circular: force a response so the narrator re-engages.
+            force_response = not pacing or pacing not in ("PACE_HOT",)
+            msg = f'[PLAYER] {safe_speaker} says: "{safe_text}"'
             if prefix:
-                await session.send(f'{prefix}\n[PLAYER] {safe_speaker} says: "{safe_text}"')
-            else:
-                await session.send(f'[PLAYER] {safe_speaker} says: "{safe_text}"')
+                msg = f"{prefix}\n{msg}"
+            await session.send(msg, end_of_turn=force_response)
+
+    async def forward_player_audio(self, game_id: str, pcm_bytes: bytes, speaker: str = None) -> None:
+        """Forward raw PCM audio bytes from a player to the narrator's Gemini session."""
+        session = self._sessions.get(game_id)
+        if not session:
+            return
+        await session.send_audio(pcm_bytes, speaker=speaker)
 
     async def send_phase_event(
         self,
@@ -981,6 +1144,8 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             f"The characters of Thornwood tonight are: {cast_str}. "
             "Open the game with a foreboding 2–3 sentence monologue that establishes "
             "the dark, tense atmosphere of the village under the threat of a Shapeshifter. "
+            "Introduce 2–3 characters by name with a brief atmospheric detail to give players "
+            "a sense of who surrounds them. End with anticipation for the first morning. "
             "Then call get_game_state to confirm who is present."
         )
 
@@ -1050,6 +1215,7 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
                 f"[ELIMINATION — INNOCENT VICTIM] "
                 f"The village votes to eliminate {character} (role: {role}), who was innocent.{vote_desc} "
                 "Narrate this tragic mistake in 2–3 sentences — the growing dread. "
+                "End with a hook: the Shapeshifter still walks among them, and now they are one fewer. "
                 "Then call advance_phase to start a new night."
             )
 

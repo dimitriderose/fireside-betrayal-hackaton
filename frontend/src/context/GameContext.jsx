@@ -143,6 +143,7 @@ function gameReducer(state, action) {
         ...state,
         phase: action.phase,
         round: action.round ?? state.round,
+        timerSeconds: action.timerSeconds ?? null,  // discussion countdown (null = no timer)
         nightActionSubmitted: false,
         hunterRevengeNeeded: false,
         clueSent: false,  // reset each phase so new day_discussion in a new round allows a new clue

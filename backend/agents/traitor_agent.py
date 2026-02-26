@@ -317,8 +317,10 @@ class TraitorAgent:
 
         system = _build_system(ai, diff_key, _format_state(ctx), game_id)
         prompt = (
-            f"The following occurred during village discussion:\n{context}\n\n"
-            f"Respond as {ai.name} in 1-3 sentences, staying in character."
+            f"The following occurred during a live voice discussion:\n{context}\n\n"
+            f"Respond as {ai.name} in 1-2 sentences, staying in character. "
+            f"This will be SPOKEN ALOUD — write for voice: contractions, short sentences, "
+            f"natural speech. React emotionally to accusations. If accused, defend with specifics."
         )
 
         dialog = await _call_gemini(prompt, system, temperature)
@@ -485,8 +487,10 @@ class LoyalAgent:
             game_state=_format_state(ctx),
         )
         prompt = (
-            f"The following occurred during village discussion:\n{context}\n\n"
-            f"Respond as {ai.name} honestly in 1-3 sentences, staying in character."
+            f"The following occurred during a live voice discussion:\n{context}\n\n"
+            f"Respond as {ai.name} honestly in 1-2 sentences, staying in character. "
+            f"This will be SPOKEN ALOUD — write for voice: contractions, short sentences, "
+            f"natural speech. Contribute an observation, agree or disagree, or share a suspicion."
         )
 
         dialog = await _call_gemini(prompt, system, temperature)

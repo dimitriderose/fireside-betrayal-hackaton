@@ -111,8 +111,8 @@ export function useWebSocket(gameId, playerId) {
         break
 
       case 'phase_change':
-        // msg: { type, phase, [round], [seq] }
-        dispatch({ type: 'PHASE_CHANGE', phase: msg.phase, round: msg.round })
+        // msg: { type, phase, [round], [timer_seconds], [seq] }
+        dispatch({ type: 'PHASE_CHANGE', phase: msg.phase, round: msg.round, timerSeconds: msg.timer_seconds })
         break
 
       case 'vote_update':
