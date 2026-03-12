@@ -323,39 +323,6 @@ export default function Landing() {
         </p>
       </div>
 
-      {/* ── Bottom CTA ── */}
-      <div
-        style={{
-          borderTop: '1px solid var(--border)',
-          padding: '32px 16px 40px',
-        }}
-      >
-        <div className="container" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <p
-            style={{
-              textAlign: 'center',
-              fontSize: '0.8125rem',
-              color: 'var(--text-dim)',
-              marginBottom: 4,
-            }}
-          >
-            Powered by Gemini Live API · Voice-first · No moderator needed
-          </p>
-          <button
-            className="btn btn-primary btn-lg"
-            onClick={() => navigate('/join?host=true')}
-          >
-            🔥 Host a Game
-          </button>
-          <button
-            className="btn btn-ghost btn-lg"
-            onClick={() => navigate('/join')}
-          >
-            Join a Game
-          </button>
-        </div>
-      </div>
-
     </div>
   )
 }
