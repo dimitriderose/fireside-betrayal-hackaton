@@ -11,6 +11,8 @@ Phase responsibilities:
 """
 import asyncio
 import logging
+import re
+import time
 from typing import Dict, Optional, Any, Set
 
 from config import settings
@@ -686,6 +688,8 @@ class NarratorSession:
         self._transcript_flush_task: Optional[asyncio.Task] = None
         # Voice speaker tracking — inject text annotation when speaker changes
         self._current_voice_speaker: Optional[str] = None
+        # AI auto-reply cooldown: character_name → last_reply_timestamp
+        self._ai_reply_cooldown: Dict[str, float] = {}
 
     async def start(self) -> None:
         self._running = True
@@ -994,6 +998,7 @@ class NarratorSession:
                     # Some SDK versions put it at response level
                     if not input_tx:
                         input_tx = getattr(response, "input_transcription", None)
+                    tx_text = None
                     if input_tx:
                         tx_text = getattr(input_tx, "text", None) or getattr(input_tx, "transcript", None)
                         if tx_text:
@@ -1016,7 +1021,8 @@ class NarratorSession:
             raise  # propagate so asyncio.wait sees the exception and triggers reconnect
 
     async def _flush_transcript_after_delay(self, delay: float) -> None:
-        """Wait `delay` seconds then broadcast the accumulated transcript buffer."""
+        """Wait `delay` seconds then broadcast the accumulated transcript buffer.
+        Also auto-triggers AI character dialog if the transcript mentions their name."""
         from routers.ws_router import manager as ws_manager
         try:
             await asyncio.sleep(delay)
@@ -1030,8 +1036,76 @@ class NarratorSession:
                     text=text,
                     source="player_voice",
                 )
+                # Auto-trigger AI dialog when a player mentions an AI character by name
+                await self._maybe_trigger_ai_reply(text)
         except asyncio.CancelledError:
             pass  # new partial arrived, debounce restarted
+
+    async def _maybe_trigger_ai_reply(self, transcript_text: str) -> None:
+        """If transcript mentions an alive AI character's name during day_discussion,
+        auto-trigger their dialog response with a 30s cooldown per character."""
+        from routers.ws_router import manager as ws_manager
+        try:
+            fs = get_firestore_service()
+            game = await fs.get_game(self.game_id)
+            if not game or game.phase != Phase.DAY_DISCUSSION:
+                return
+
+            from agents.traitor_agent import generate_dialog, _ai_chars_with_fields
+            ai_pairs = _ai_chars_with_fields(game)  # [(ai_char_obj, field_prefix), ...]
+            text_lower = transcript_text.lower()
+            now = time.time()
+
+            # Global throttle: only one AI auto-reply per flush
+            replied = False
+
+            for ai_char, _field in ai_pairs:
+                if replied:
+                    break
+                name = ai_char.name if ai_char else ""
+                if not name or not ai_char.alive:
+                    continue
+                # Match the first name as a whole word (not substring)
+                first_name = name.lower().split()[0] if name else ""
+                if len(first_name) < 3:
+                    continue
+                # Use word boundary check: first name must appear as whole word
+                if not re.search(r'\b' + re.escape(first_name) + r'\b', text_lower):
+                    continue
+                # Cooldown: 30s per character
+                last_reply = self._ai_reply_cooldown.get(name, 0)
+                if now - last_reply < 30:
+                    logger.debug("[%s] AI reply cooldown for %s, skipping", self.game_id, name)
+                    continue
+
+                self._ai_reply_cooldown[name] = now
+                replied = True
+                logger.info("[%s] Auto-triggering AI dialog for %s (mentioned in voice)", self.game_id, name)
+                try:
+                    result = await generate_dialog(
+                        game_id=self.game_id,
+                        ai_char=ai_char,
+                        context=f"A player just said: \"{transcript_text}\". Respond in character.",
+                    )
+                    if result and result.get("dialog"):
+                        await ws_manager.broadcast_transcript(
+                            self.game_id,
+                            speaker=result["character_name"],
+                            text=result["dialog"],
+                            source="player",
+                        )
+                        await fs.add_chat_message(self.game_id, ChatMessage(
+                            speaker=result["character_name"],
+                            text=result["dialog"],
+                            source="ai_character",
+                            phase=game.phase,
+                            round=game.round,
+                        ))
+                except Exception:
+                    logger.warning("[%s] Failed to auto-trigger AI dialog for %s",
+                                   self.game_id, name, exc_info=True)
+        except Exception:
+            logger.warning("[%s] _maybe_trigger_ai_reply error", self.game_id, exc_info=True)
 
     async def _handle_tool_call(self, session, tool_call, types) -> None:
         """Execute the model's tool calls and send responses back."""

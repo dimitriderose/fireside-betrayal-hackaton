@@ -310,46 +310,44 @@ function CharacterGridPanel({ players, myCharacterName, aiCharacters = [] }) {
   if (all.length === 0) return null
 
   return (
-    <div className="container" style={{ marginTop: 12 }}>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
-          gap: 8,
-        }}
-      >
-        {all.map((c) => {
-          const isMe = c.name === myCharacterName
-          return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(80px, 1fr))',
+        gap: 8,
+      }}
+    >
+      {all.map((c) => {
+        const isMe = c.name === myCharacterName
+        return (
+          <div
+            key={c.name}
+            style={{
+              background: 'var(--bg-card)',
+              border: `1px solid ${isMe ? 'var(--border-accent)' : c.alive ? 'var(--border)' : 'transparent'}`,
+              borderRadius: 'var(--radius-md)',
+              padding: '8px 6px',
+              textAlign: 'center',
+              opacity: c.alive ? 1 : 0.4,
+            }}
+          >
+            <div style={{ fontSize: '1.25rem', marginBottom: 4 }}>
+              {c.alive ? (isMe ? '🙂' : '🧑') : '💀'}
+            </div>
             <div
-              key={c.name}
               style={{
-                background: 'var(--bg-card)',
-                border: `1px solid ${isMe ? 'var(--border-accent)' : c.alive ? 'var(--border)' : 'transparent'}`,
-                borderRadius: 'var(--radius-md)',
-                padding: '8px 6px',
-                textAlign: 'center',
-                opacity: c.alive ? 1 : 0.4,
+                fontSize: '0.6rem',
+                color: isMe ? 'var(--accent)' : 'var(--text-muted)',
+                fontWeight: isMe ? 600 : 400,
+                wordBreak: 'break-word',
+                lineHeight: 1.3,
               }}
             >
-              <div style={{ fontSize: '1.25rem', marginBottom: 4 }}>
-                {c.alive ? (isMe ? '🙂' : '🧑') : '💀'}
-              </div>
-              <div
-                style={{
-                  fontSize: '0.6rem',
-                  color: isMe ? 'var(--accent)' : 'var(--text-muted)',
-                  fontWeight: isMe ? 600 : 400,
-                  wordBreak: 'break-word',
-                  lineHeight: 1.3,
-                }}
-              >
-                {c.name.split(' ').slice(0, 2).join(' ')}
-              </div>
+              {c.name.split(' ').slice(0, 2).join(' ')}
             </div>
-          )
-        })}
-      </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -1171,6 +1169,7 @@ export default function GameScreen() {
   const [lobbySummary, setLobbySummary] = useState(null)
   const [sceneImage, setSceneImage] = useState(null)
   const [nightPanelReady, setNightPanelReady] = useState(false)
+  const [rosterCollapsed, setRosterCollapsed] = useState(false)
   const [dayHintDismissed, setDayHintDismissed] = useState(
     () => localStorage.getItem('dayHintSeen') === '1'
   )
@@ -1546,6 +1545,52 @@ export default function GameScreen() {
         </div>
       </div>
 
+      {/* ── Collapsible character roster ── */}
+      {showCharacterGrid && (
+        <div
+          style={{
+            background: 'var(--bg-card)',
+            borderBottom: '1px solid var(--border)',
+            position: 'sticky',
+            top: 49,
+            zIndex: 9,
+          }}
+        >
+          <button
+            onClick={() => setRosterCollapsed(prev => !prev)}
+            aria-expanded={!rosterCollapsed}
+            aria-label="Toggle character roster"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              width: '100%',
+              padding: '6px 16px',
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.08em',
+              cursor: 'pointer',
+            }}
+          >
+            <span>Characters</span>
+            <span style={{ fontSize: '0.65rem' }}>{rosterCollapsed ? '▸' : '▾'}</span>
+          </button>
+          {!rosterCollapsed && (
+            <div style={{ padding: '0 12px 8px' }}>
+              <CharacterGridPanel
+                players={players}
+                myCharacterName={characterName}
+                aiCharacters={aiCharacters}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Narrator audio bar ── */}
       {showNarratorBar && (
         <NarratorBar isPlaying={isPlaying} volume={volume} setVolume={setVolume} storyLog={storyLog} connectionStatus={connectionStatus} />
@@ -1659,14 +1704,6 @@ export default function GameScreen() {
           />
         )}
 
-        {/* Character grid */}
-        {showCharacterGrid && (
-          <CharacterGridPanel
-            players={players}
-            myCharacterName={characterName}
-            aiCharacters={aiCharacters}
-          />
-        )}
 
         {/* Day-phase hint — one-time contextual tip for first-timers (§ UX-day-hint) */}
         {phase === 'day_discussion' && !isEliminated && !dayHintDismissed && (
