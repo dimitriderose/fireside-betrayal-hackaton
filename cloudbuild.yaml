@@ -51,7 +51,7 @@ steps:
       - '3600'
       - '--no-cpu-throttling'
       - '--allow-unauthenticated'
-      - '--set-env-vars'
+      - '--update-env-vars'
       - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID,DEBUG=false'
 
 substitutions:
