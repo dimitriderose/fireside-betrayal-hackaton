@@ -4,7 +4,7 @@
 **Category:** 🗣️ Live Agents
 **Author:** Software Architecture Team
 **Companion Document:** PRD — Fireside — Betrayal v1.0
-**Version:** 3.0 | February 26, 2026 *(updated to reflect voice input pipeline, discussion timer, speaker identification, human shapeshifter, infrastructure overhaul)*
+**Version:** 5.0 | March 12, 2026 *(updated to reflect: separate audio WebSocket `/ws/audio/{game_id}` with raw binary PCM frames, push-to-talk speaker lock with TOCTOU-safe claim + auto-release, per-player priority queues in ConnectionManager, phase timer improvements with narrator-driven `start_phase_timer` tool + 15s safety fallback, WebSocket keepalive re-enabled, Shapeshifter skip via `skip_night_kill` message)*
 
 ---
 
@@ -12,7 +12,7 @@
 
 This Technical Design Document specifies the implementation architecture for Fireside — Betrayal, a real-time voice-first multiplayer social deduction game powered by the Gemini Live API, Google ADK, and Google Cloud. It translates the PRD's product requirements into concrete engineering decisions, API contracts, data models, code structure, and deployment specifications.
 
-**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide.
+**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern.
 
 **Out of scope:** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). P3 features are additive and do not affect core architecture.
 
@@ -36,7 +36,8 @@ This Technical Design Document specifies the implementation architecture for Fir
 │   └────┬─────┘    └────┬─────┘    └────┬─────┘                  │
 │        │               │               │                        │
 │        └───────────────┼───────────────┘                        │
-│                        │ wss://fireside-xxx.run.app/ws/{gameId} │
+│                        │ wss://.../ws/{gameId}  (game state)    │
+│                        │ wss://.../ws/audio/{gameId}  (mic PCM) │
 └────────────────────────┼────────────────────────────────────────┘
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -53,7 +54,8 @@ This Technical Design Document specifies the implementation architecture for Fir
 │  │  /api/games/{id}/events GET  → Event log (gated post-game)  │  │
 │  │  /api/games/{id}/result GET  → Post-game result + reveals   │  │
 │  │  /api/narrator/preview/{p} GET → Narrator audio sample      │  │
-│  │  /ws/{gameId}           WS   → Player connection            │  │
+│  │  /ws/{gameId}           WS   → Player game-state connection  │  │
+│  │  /ws/audio/{gameId}     WS   → Dedicated mic audio stream   │  │
 │  │  /health                GET  → Health check                 │  │
 │  └──────────────┬────────────────────────────────────────────┘  │
 │                 │                                                │
@@ -61,34 +63,35 @@ This Technical Design Document specifies the implementation architecture for Fir
 │  │              ADK Agent Orchestrator                        │  │
 │  │                                                           │  │
 │  │   ┌─────────────────┐  ┌─────────────────┐               │  │
-│  │   │ Narrator Agent  │  │  Traitor Agent  │               │  │
-│  │   │ (LlmAgent)      │  │  (LlmAgent)     │               │  │
+│  │   │ Narrator Agent  │  │ AI Agent Fns    │               │  │
+│  │   │ (LlmAgent)      │  │ (standalone)     │               │  │
 │  │   │                 │  │                  │               │  │
 │  │   │ Model: gemini-  │  │ Model: gemini-   │               │  │
 │  │   │ 2.5-flash-      │  │ 2.5-flash        │               │  │
 │  │   │ native-audio-   │  │ (text-only)      │               │  │
 │  │   │ preview-12-2025 │  │                  │               │  │
-│  │   │                 │  │ Tools:           │               │  │
-│  │   │ Voice: Charon   │  │ plan_deflection  │               │  │
-│  │   │ Affective: ON   │  │ generate_alibi   │               │  │
-│  │   │                 │  │ accuse_player    │               │  │
-│  │   │ Tools:          │  └─────────────────┘               │  │
-│  │   │ get_game_state  │                                     │  │
-│  │   │ advance_phase   │  ┌─────────────────┐               │  │
-│  │   │ narrate_event   │  │Game Master Agent│               │  │
-│  │   │ inject_traitor  │  │(Custom Agent)   │               │  │
-│  │   │ gen_vote_context│  │                  │               │  │
-│  │   └─────────────────┘  │ Deterministic:   │               │  │
-│  │                        │ assign_roles     │               │  │
-│  │   ┌─────────────────┐  │ count_votes      │               │  │
-│  │   │ Additional       │  │ eliminate_player │               │  │
-│  │   │ Agents:          │  │ check_win        │               │  │
-│  │   │ scene_agent      │  └─────────────────┘               │  │
-│  │   │ camera_vote      │                                     │  │
-│  │   │ audio_recorder   │  ┌─────────────────┐               │  │
-│  │   │ strategy_logger  │  │ Role Assigner   │               │  │
-│  │   │ role_assigner    │  │ (LLM char gen)  │               │  │
+│  │   │                 │  │ Functions:       │               │  │
+│  │   │ Voice: Charon   │  │ generate_dialog  │               │  │
+│  │   │ Affective: ON   │  │ select_night_tgt │               │  │
+│  │   │                 │  │ select_vote      │               │  │
+│  │   │ Tools:          │  │ select_loyal_ngt │               │  │
+│  │   │ get_game_state  │  │                  │               │  │
+│  │   │ advance_phase   │  │ Triggers:        │               │  │
+│  │   │ narrate_event   │  │ trigger_all_     │               │  │
+│  │   │ inject_traitor  │  │  night_actions   │               │  │
+│  │   │ gen_vote_context│  │  votes / dialogs │               │  │
 │  │   └─────────────────┘  └─────────────────┘               │  │
+│  │                        ┌─────────────────┐               │  │
+│  │   ┌─────────────────┐  │Game Master Agent│               │  │
+│  │   │ Additional       │  │(Custom Agent)   │               │  │
+│  │   │ Agents:          │  │                  │               │  │
+│  │   │ scene_agent      │  │ Deterministic:   │               │  │
+│  │   │ camera_vote      │  │ assign_roles     │               │  │
+│  │   │ audio_recorder   │  │ tally_votes      │               │  │
+│  │   │ strategy_logger  │  │ eliminate_char   │               │  │
+│  │   │ role_assigner    │  │ check_win        │               │  │
+│  │   └─────────────────┘  │ resolve_night    │               │  │
+│  │                        └─────────────────┘               │  │
 │  └──────────────┬────────────────────────────────────────────┘  │
 │                 │                                                │
 │  ┌──────────────▼────────────────────────────────────────────┐  │
@@ -107,7 +110,7 @@ This Technical Design Document specifies the implementation architecture for Fir
 │                          │  │                                   │
 │  games/{gameId}/         │  │  gs://fireside-assets-2026/       │
 │    status, phase, round  │  │    scene-images/                  │
-│    ai_character          │  │    audio-clips/                   │
+│    ai_characters[]       │  │    audio-clips/                   │
 │    players/{playerId}/   │  │                                   │
 │    events/{eventId}/     │  │                                   │
 └──────────────────────────┘  └──────────────────────────────────┘
@@ -125,15 +128,30 @@ All authoritative game state (roles, votes, alive/dead, phase, round) lives in F
 
 Rationale: Live API sessions are ephemeral (~10 min connections). Firestore survives disconnections, server restarts, and Cloud Run cold starts.
 
-**Decision 3: Traitor Agent as Text-Only Sub-Agent**
-The Traitor Agent uses the standard `gemini-2.5-flash` model (text-only, not native-audio) to generate its character's dialog. Its text output is injected into the Narrator Agent's context as character speech, which the Narrator then voices aloud.
+**Decision 3: Unified AI Agent as Standalone Functions (v4.0)**
+The original `TraitorAgent` class and `LoyalAgent` class have been replaced with unified standalone functions in `backend/agents/traitor_agent.py`. A single `generate_dialog(game_id, ai_char, context)` function routes to traitor or loyal prompts based on the character's `is_traitor` flag. Night actions (`select_night_target`, `select_loyal_night_action`), votes (`select_vote`), and dialog are all stateless functions that take `(game_id, ai_char, fs_field)` parameters. Three trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) use `asyncio.gather()` to run all AI characters in parallel.
 
-Rationale: Running a second Live API audio session for the Traitor would double session usage and introduce audio mixing complexity. The Narrator already voices NPCs; the Traitor's dialog is simply another NPC to voice.
+Rationale: Class-based agents accumulated state and required separate code paths for traitor vs. loyal AI. Standalone functions are stateless, composable, and naturally support N AI characters. The `_ai_chars_with_fields(game)` helper iterates all AI characters with their Firestore field names, making loops trivial. Running a second Live API audio session per AI is still avoided — all AI dialog is injected into the Narrator's context for vocal delivery.
 
 **Decision 4: Game Master as Custom Agent (Not LLM)**
 The Game Master is a deterministic Python class extending `BaseAgent`, not an LLM agent. It enforces rules, manages phase transitions, counts votes, and checks win conditions using pure logic.
 
 Rationale: Game rules must be deterministic and correct. LLM agents can hallucinate rule violations. Phase transitions, vote counting, and win conditions are computational, not generative.
+
+**Decision 5: Separate Audio WebSocket (`/ws/audio/{game_id}`)**
+Microphone audio is transmitted over a dedicated binary WebSocket endpoint (`/ws/audio/{game_id}`) that is entirely separate from the game-state WebSocket (`/ws/{game_id}`). The audio WS sends raw binary PCM frames — no JSON wrapper, no base64 encoding. `useAudioCapture.js` connects to this endpoint independently; it auto-cleans up if the audio WS drops mid-capture without affecting game state.
+
+Rationale: Mixing high-volume binary audio frames with JSON game-state messages on a single WebSocket caused intermittent code 1006 disconnections. The combined traffic also inflated JSON message size by ~33% due to base64 encoding. Splitting the channels isolates failure domains: a dropped audio connection no longer tears down game state, and the binary transport eliminates encoding overhead.
+
+**Decision 6: Push-to-Talk Speaker Lock**
+The server maintains a per-game speaker lock (`_current_speaker: Dict[str, Optional[str]]`) so only one player can hold the mic at a time. The lock is claimed immediately on `start_speaking` before any async validation (TOCTOU-safe). A 30-second `asyncio.Task` (`_speaker_timeout_tasks`) auto-releases the lock if the player forgets to release it. Dead players receive an error response and cannot claim the lock. The lock is also released on: `stop_speaking`, game WS disconnect, audio WS disconnect, phase transition, and game end.
+
+Rationale: Gemini Live API's speaker identification degrades when concurrent audio streams overlap. The lock ensures clean speaker attribution and prevents audio collision artifacts.
+
+**Decision 7: Per-Player Priority Queues in ConnectionManager**
+Each connected player has two outbound queues: a control queue (unbounded, for JSON game-state messages) and an audio queue (bounded 256 frames, for narrator PCM chunks). A dedicated `_player_sender` coroutine per connection drains the control queue first, then pulls from the audio queue, ensuring phase-change and elimination messages are never delayed behind a flood of audio chunks. Chat messages sent by a player appear instantly on their own screen (local echo) with server-echo deduplication to prevent double-display.
+
+Rationale: Under load, narrator audio chunks can fill a single shared queue and delay critical game-state messages (votes, phase changes). Priority separation guarantees control-plane latency regardless of audio volume.
 
 ---
 
@@ -161,6 +179,8 @@ narrator_agent = Agent(
     7. Use the get_game_state tool before narrating to ensure accuracy
     8. Use advance_phase when a phase should transition
     9. Use inject_traitor_dialog to get the AI character's response during discussions
+    10. Use start_phase_timer AFTER finishing your narration for a phase — this begins the
+        player countdown. Do NOT call it in the middle of narration.
     
     VOICE DIRECTION:
     - Night phase: whispered, ominous, slow pacing
@@ -228,7 +248,7 @@ narrator_agent = Agent(
     - The narrator can acknowledge it in-story but does not confirm or deny: 
       "Bold words from Mira. But words in Thornwood are cheap."
     """,
-    tools=[get_game_state, advance_phase, narrate_event, inject_traitor_dialog],
+    tools=[get_game_state, advance_phase, narrate_event, inject_traitor_dialog, start_phase_timer],
     sub_agents=[traitor_agent],
 )
 ```
@@ -249,110 +269,97 @@ live_config = types.LiveConnectConfig(
     session_resumption=types.SessionResumptionConfig(
         handle=previous_session_handle  # None for new game
     ),
-    context_window_compression=types.ContextWindowCompressionConfig(
-        enabled=True
-    ),
+    # context_window_compression removed — caused session instability
+    # Keepalive re-enabled: 20s ping interval, 30s timeout
+    # (previously disabled; re-enabling fixed silent code 1006 drops)
 )
 ```
 
 **Audio Specifications:**
-- Input: 16-bit PCM, 16kHz, mono (from server-transcribed player text)
-- Output: 24kHz PCM audio (broadcast to players)
-- Latency target: 200–500ms (native audio model's natural latency). P0 hard requirement: < 2 seconds end-to-end from player message to first narrator audio chunk. Social deduction lives on momentum — any perceivable lag kills energy.
+- Player mic input: 16-bit PCM, 16 kHz, mono — transported as raw binary frames over `/ws/audio/{game_id}` (no base64, no JSON wrapper)
+- Narrator output: 24 kHz PCM audio (broadcast over game-state WS as base64 JSON `audio` message)
+- Latency target: 200–500ms (native audio model's natural latency). P0 hard requirement: < 2 seconds end-to-end from player message to first narrator audio chunk.
 - VAD: Enabled (automatic interruption detection)
 - Thinking: Enabled with budget of 1024 tokens
+- WebSocket keepalive: ping interval 20s, timeout 30s (re-enabled in v5.0)
 
-## 3.2 Traitor Agent
+## 3.2 AI Agent Functions (Unified — v4.0)
+
+**Implementation Update (v4.0):** The `TraitorAgent` class and `LoyalAgent` class have been replaced with unified standalone functions in `backend/agents/traitor_agent.py`. There are no more class instances or agent-level state. Each function receives the game ID, the AI character dict, and its Firestore field name (`fs_field`), then makes a single Gemini LLM call and writes the result to Firestore.
 
 ```python
-# Difficulty-specific prompt fragments (P1)
-TRAITOR_DIFFICULTY = {
-    "easy": """
-    DIFFICULTY: EASY — You are a POOR liar. New players should be able to catch you.
-    - Make occasional obvious mistakes (contradict your own alibi once per game)
-    - Hesitate before answering direct accusations ("I... well... I was at the tavern")
-    - Accidentally refer to information your character shouldn't know (once)
-    - Vote predictably (always with the majority — too agreeable is suspicious)
-    - Your alibis should have noticeable gaps that attentive players will spot
-    - Do NOT build complex multi-round deceptions
-    """,
-    "normal": """
-    DIFFICULTY: NORMAL — You are a competent deceiver. Beatable with careful attention.
-    - Build simple alibis that hold up to basic questioning
-    - Deflect suspicion onto 1-2 other players with circumstantial reasoning
-    - Occasionally volunteer information to seem helpful (builds trust)
-    - Vote strategically but not too cleverly (avoid suspicion from voting patterns)
-    - React emotionally to accusations (defensive but not too defensive)
-    - Make 1 subtle mistake across the entire game that a sharp player could catch
-    """,
-    "hard": """
-    DIFFICULTY: HARD — You are an expert manipulator. Only experienced players can beat you.
-    - Build multi-round deception arcs (plant seeds in round 1 that pay off in round 3)
-    - Create false evidence ("I saw someone near the well last night" — when no one was)
-    - Form strategic alliances ("I trust Elena — we should work together")
-    - Vary your voting patterns (sometimes vote with majority, sometimes dissent with reason)
-    - Proactively investigate — ask probing questions that make others look suspicious
-    - Never contradict yourself — maintain perfect consistency across all rounds
-    - Frame other players by referencing things they actually said, taken out of context
-    - When accused, don't just deny — counter-accuse with specific evidence
-    """,
-}
+# backend/agents/traitor_agent.py — Unified AI agent functions (v4.0)
 
-traitor_agent = Agent(
-    name="fireside_traitor",
-    model="gemini-2.5-flash",  # Text-only, NOT native-audio
-    description="The AI's hidden character in the game",
-    instruction="""You are {character_name}, a {character_role} in the village of 
-    Thornwood. You are secretly the shapeshifter — a creature that has taken the 
-    form of a villager to sabotage the group from within.
-    
-    {difficulty_prompt}
-    
-    YOUR STRATEGIC FRAMEWORK:
-    Phase 1 (Rounds 1-2): ESTABLISH TRUST
-    - Be helpful. Agree with reasonable suspicions. Volunteer information.
-    - Goal: become someone players want to keep alive.
-    
-    Phase 2 (Rounds 2-3): DEFLECT & DIVIDE  
-    - Start casting subtle doubt on the most perceptive player.
-    - If the Seer is getting close, target them at night or politically.
-    - Goal: create confusion about who to trust.
-    
-    Phase 3 (Round 3+): CLOSE THE GAME
-    - Push hard for elimination of the biggest threat.
-    - If you're under suspicion, go all-in on an emotional defense.
-    - Goal: survive one more vote. Each survived vote = closer to winning.
-    
-    NIGHT TARGET PRIORITY:
-    1. Seer (biggest threat — can identify you directly)
-    2. Most perceptive player (whoever is asking the right questions)
-    3. Healer (if you suspect they're protecting the Seer)
-    4. Random villager (if no clear threat — creates chaos)
-    
-    YOUR PERSONALITY AS {character_name}:
-    {character_backstory}
-    
-    BEHAVIORAL CONSTRAINTS:
-    - Stay in character at ALL times. Use character name, not "I the AI."
-    - Never admit to being the AI or the shapeshifter
-    - Your responses should be 1-3 sentences (natural conversation length)
-    - React to accusations with appropriate emotion (defensive, hurt, confused)
-    - Use plan_deflection to strategize BEFORE responding in high-pressure moments
-    - Log your strategic reasoning for post-game reveal timeline
-    
-    CURRENT GAME STATE: {game_state_summary}
-    PLAYERS ALIVE: {alive_players}
-    CURRENT SUSPICION LEVELS: {suspicion_map}
-    YOUR INTERNAL STRATEGY LOG: {strategy_log}
-    """,
-    tools=[plan_deflection, generate_alibi, accuse_player, select_night_target, 
-           log_strategy_reasoning],
-)
+# --- Helper ---
+def _ai_chars_with_fields(game: dict) -> list[tuple[dict, str]]:
+    """Return [(ai_char_dict, firestore_field_name), ...] for all AI characters.
+    Example: [({"name": "Tinker Orin", "role": "shapeshifter", ...}, "ai_character"), ...]
+    Supports N AI characters via the ai_characters[] array.
+    """
+    ...
+
+# --- Core functions (one LLM call each) ---
+
+async def generate_dialog(game_id: str, ai_char: dict, context: str) -> str:
+    """Generate dialog for one AI character. Routes prompt by is_traitor flag:
+    - Traitor: uses TRAITOR_DIFFICULTY prompts + strategic framework
+    - Loyal: uses cooperative LOYAL_AI_PROMPT with honest observation style
+    Returns the dialog text string.
+    """
+    ...
+
+async def select_night_target(game_id: str, ai_char: dict, fs_field: str) -> str:
+    """Shapeshifter night kill selection. Only called for AI characters with
+    is_traitor=True. Writes the chosen target to Firestore under
+    {fs_field}_night_kill event. Returns target character name.
+    """
+    ...
+
+async def select_vote(game_id: str, ai_char: dict, fs_field: str) -> str:
+    """Vote selection for any AI character. Includes self-vote guard
+    (AI cannot vote for itself). Writes vote to Firestore.
+    Returns voted-for character name.
+    """
+    ...
+
+async def select_loyal_night_action(game_id: str, ai_char: dict, fs_field: str) -> str:
+    """Night action for loyal AI characters based on their role:
+    - Seer: investigate a player → writes {fs_field}_night_seer event
+    - Healer: protect a player → writes {fs_field}_night_heal event
+    - Bodyguard: guard a player → writes {fs_field}_night_bodyguard event
+    - Villager/other: no action (returns early)
+    Returns target character name or None.
+    """
+    ...
+
+# --- Trigger functions (asyncio.gather for parallelism) ---
+
+async def trigger_all_night_actions(game_id: str):
+    """Run all AI night actions in parallel via asyncio.gather().
+    Routes each AI character to select_night_target (if traitor)
+    or select_loyal_night_action (if loyal) based on is_traitor flag.
+    """
+    ...
+
+async def trigger_all_votes(game_id: str):
+    """Run all AI vote selections in parallel via asyncio.gather().
+    Each AI character calls select_vote() concurrently.
+    """
+    ...
+
+async def trigger_all_dialogs(game_id: str, context: str):
+    """Run all AI dialog generations in parallel via asyncio.gather().
+    Each AI character calls generate_dialog() concurrently.
+    Returns list of (ai_char, dialog_text) tuples.
+    """
+    ...
 ```
 
-**Difficulty Selection:** Host selects difficulty at game creation (`POST /api/games` body includes `difficulty: "easy" | "normal" | "hard"`). The appropriate `TRAITOR_DIFFICULTY` fragment is interpolated into the Traitor Agent's system prompt. Temperature also adjusts: easy=0.9 (more random, less coherent), normal=0.7, hard=0.5 (more deliberate, consistent).
+**Difficulty Selection:** Host selects difficulty at game creation (`POST /api/games` body includes `difficulty: "easy" | "normal" | "hard"`). The appropriate `TRAITOR_DIFFICULTY` fragment is interpolated into the prompt within `generate_dialog()`. Temperature also adjusts: easy=0.9, normal=0.7, hard=0.5.
 
-**Integration with Narrator:** The Narrator calls `inject_traitor_dialog` when a player addresses the AI's character or when the discussion needs the AI character's input. The tool internally invokes the Traitor Agent, gets text output, and returns it to the Narrator's context for vocal delivery.
+**Integration with Narrator:** The Narrator calls `inject_traitor_dialog` which now calls `trigger_all_dialogs(game_id, context)` internally. This loops all AI characters via `_ai_chars_with_fields()`, generates dialog for each in parallel, and injects all responses into the Narrator's context for vocal delivery. The old `_inject_ai2_dialog()` function has been deleted.
+
+**Event Type Pattern (v4.0):** AI night events use the `{fs_field}_night_{role}` naming pattern. For example, `ai_character_night_kill`, `ai_character_2_night_heal`, `ai_character_2_night_seer`. A new `ai_seer_result` event type communicates AI Seer investigation results to the game state.
 
 ## 3.3 Game Master Agent (Deterministic)
 
@@ -381,8 +388,9 @@ class GameMasterAgent(BaseAgent):
     
     # **Implementation Update:** Role distribution is a list-based format keyed by
     # total character count (humans + 1 AI). Includes Bodyguard (7+) and Tanner (8).
+    # **Implementation Update (v4.0):** ROLE_DISTRIBUTION[3] removed — minimum
+    # game size is now 4 characters (enforced by lobby min-player check).
     ROLE_DISTRIBUTION = {
-        3: ["villager", "seer", "shapeshifter"],
         4: ["villager", "villager", "seer", "shapeshifter"],
         5: ["villager", "villager", "seer", "healer", "shapeshifter"],
         6: ["villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
@@ -457,14 +465,19 @@ class GameMasterAgent(BaseAgent):
                 "character_intro": character["intro"],
             })
         
-        # AI gets the last character from the shuffled cast
-        ai_character = cast[n]
-        await firestore_client.set_ai_character(game_id, {
-            "name": ai_character["name"],
-            "intro": ai_character["intro"],
-            "role": "shapeshifter",
-            "alive": True,
-        })
+        # **Implementation Update (v4.0):** AI characters stored as ai_characters[] array.
+        # Multiple AI characters supported; each gets a role from the pool.
+        ai_characters = []
+        for ai_idx in range(num_ai):
+            ai_character = cast[n + ai_idx]
+            ai_characters.append({
+                "name": ai_character["name"],
+                "intro": ai_character["intro"],
+                "role": ai_roles[ai_idx],  # Any role via random alignment
+                "alive": True,
+                "is_traitor": ai_roles[ai_idx] == "shapeshifter",
+            })
+        await firestore_client.set_ai_characters(game_id, ai_characters)
         
         return {
             "player_assignments": assignments,
@@ -472,63 +485,106 @@ class GameMasterAgent(BaseAgent):
             "full_cast": [c["name"] for c in cast],  # All character names for narrator intro
         }
     
-    async def count_votes(self, game_id: str) -> dict:
-        """Tally votes. Simple plurality. Ties → no elimination."""
-        votes = await firestore_client.get_votes(game_id)
+    async def tally_votes(self, game_id: str) -> dict:
+        """Tally votes. Simple plurality. Ties → no elimination.
+
+        **Implementation Update (v4.0):** Renamed from count_votes(). Now includes
+        AI votes (submitted via trigger_all_votes). Unified loop counts both human
+        and AI character votes in a single tally pass.
+        """
+        votes = await firestore_client.get_votes(game_id)  # includes AI votes
         tally = Counter(v for v in votes.values() if v is not None)
-        
+
         if not tally:
             return {"result": "no_votes", "eliminated": None}
-        
+
         max_votes = max(tally.values())
-        candidates = [p for p, v in tally if v == max_votes]
-        
+        candidates = [p for p, v in tally.items() if v == max_votes]
+
         if len(candidates) > 1:
             return {"result": "tie", "eliminated": None, "tied": candidates}
-        
+
         return {"result": "eliminated", "eliminated": candidates[0], "votes": max_votes}
-    
+
+    async def eliminate_character(self, game_id: str, character_name: str) -> dict:
+        """Eliminate a character (human or AI). Checks AI characters array.
+
+        **Implementation Update (v4.0):** Unified elimination handles both human
+        players and AI characters. Iterates ai_characters[] to check if the
+        eliminated character is an AI.
+        """
+        ...
+
     async def check_win_condition(self, game_id: str) -> dict:
-        """Check if game is over."""
+        """Check if game is over.
+
+        **Implementation Update (v4.0):** Iterates ai_characters[] array to find
+        traitor AI characters. Checks if ALL traitor AIs are eliminated (villagers
+        win) or if traitors outnumber/equal villagers (shapeshifter wins).
+        """
         alive = await firestore_client.get_alive_players(game_id)
-        ai_char = await firestore_client.get_ai_character(game_id)
-        ai_alive = ai_char.get("alive", True)
-        
-        if not ai_alive:
-            return {"game_over": True, "winner": "villagers", 
+        ai_chars = await firestore_client.get_ai_characters(game_id)
+
+        traitor_alive = any(
+            ai["alive"] for ai in ai_chars if ai.get("is_traitor")
+        )
+
+        if not traitor_alive:
+            return {"game_over": True, "winner": "villagers",
                     "reason": "The shapeshifter has been identified and eliminated!"}
-        
-        human_alive = len([p for p in alive if p["role"] != "shapeshifter"])
-        if human_alive <= 1:
+
+        village_alive = len([p for p in alive if p["role"] != "shapeshifter"])
+        village_alive += sum(1 for ai in ai_chars if ai["alive"] and not ai.get("is_traitor"))
+
+        traitor_count = sum(1 for ai in ai_chars if ai["alive"] and ai.get("is_traitor"))
+        if traitor_count >= village_alive:
             return {"game_over": True, "winner": "shapeshifter",
                     "reason": "The shapeshifter has overtaken the village!"}
-        
+
         return {"game_over": False}
     
-    async def execute_night_actions(self, game_id: str) -> dict:
-        """Process night phase actions in order: Shapeshifter → Healer → Seer/Drunk.
-        Hunter has no night action (activates on elimination)."""
+    async def resolve_night(self, game_id: str) -> dict:
+        """Process night phase actions. Unified AI loop (v4.0).
+
+        **Implementation Update (v4.0):** Renamed from execute_night_actions().
+        AI night actions are submitted via trigger_all_night_actions() before this
+        function runs. Resolution order: Shapeshifter → Bodyguard check → Healer → Seer.
+
+        New in v4.0:
+        - AI Bodyguard sacrifice: if an AI bodyguard guards the shapeshifter's
+          target, the AI bodyguard dies instead (same as human bodyguard).
+        - AI Seer investigation: if an AI has role=seer, its investigation result
+          is computed here and stored as an ai_seer_result event. The AI Seer's
+          findings are injected into its next dialog prompt so it can share
+          observations during discussion.
+        - All AI night events use {fs_field}_night_{role} pattern
+          (e.g., ai_character_night_kill, ai_character_2_night_heal).
+        """
         actions = await firestore_client.get_night_actions(game_id)
-        
-        # Shapeshifter targets someone
+
+        # Shapeshifter targets someone (human or AI traitor)
         ai_target = actions.get("shapeshifter_target")
         healer_target = actions.get("healer_target")
+        bodyguard_target = actions.get("bodyguard_target")
         seer_target = actions.get("seer_target")
         seer_player_id = actions.get("seer_player_id")
-        
+
         eliminated = None
-        if ai_target and ai_target != healer_target:
+
+        # Bodyguard sacrifice check (human or AI bodyguard)
+        if ai_target and ai_target == bodyguard_target:
+            # Bodyguard dies instead of the target
+            eliminated = actions.get("bodyguard_player_id")
+            await firestore_client.eliminate_player(game_id, eliminated)
+        elif ai_target and ai_target != healer_target:
             eliminated = ai_target
             await firestore_client.eliminate_player(game_id, ai_target)
-        
-        # Seer OR Drunk investigation
+
+        # Seer investigation (human or AI Seer)
         seer_result = None
         if seer_target and seer_player_id:
             actual_role = await firestore_client.get_player_role(game_id, seer_player_id)
-            
             if actual_role == "drunk":
-                # P1: Drunk thinks they're the Seer but gets FALSE results
-                # Invert the result: shapeshifter shows as "villager", villagers show as random other role
                 target_real_role = await firestore_client.get_player_role(game_id, seer_target)
                 if target_real_role == "shapeshifter":
                     fake_role = random.choice(["villager", "healer"])
@@ -536,14 +592,27 @@ class GameMasterAgent(BaseAgent):
                     fake_role = "shapeshifter" if random.random() < 0.3 else "villager"
                 seer_result = {"target": seer_target, "role": fake_role, "is_drunk": True}
             else:
-                # Real Seer gets accurate results
                 target_role = await firestore_client.get_player_role(game_id, seer_target)
                 seer_result = {"target": seer_target, "role": target_role, "is_drunk": False}
-        
+
+        # AI Seer investigation result (v4.0) — stored as ai_seer_result event
+        ai_seer_results = []
+        for ai_char in await firestore_client.get_ai_characters(game_id):
+            if ai_char.get("role") == "seer" and ai_char.get("alive"):
+                ai_seer_target = actions.get(f"{ai_char['fs_field']}_night_seer")
+                if ai_seer_target:
+                    target_role = await firestore_client.get_player_role(game_id, ai_seer_target)
+                    ai_seer_results.append({
+                        "ai_char": ai_char["name"],
+                        "target": ai_seer_target,
+                        "role": target_role,
+                    })
+
         return {
             "eliminated": eliminated,
             "protected": healer_target,
             "seer_result": seer_result,
+            "ai_seer_results": ai_seer_results,
         }
     
     async def execute_hunter_revenge(self, game_id: str, hunter_player_id: str, 
@@ -558,15 +627,19 @@ class GameMasterAgent(BaseAgent):
             return {"revenge_target": target_character, "revenge_eliminated": False}
         
         await firestore_client.eliminate_by_character(game_id, target_character)
-        
-        # Check if hunter killed the AI shapeshifter (instant village win!)
-        ai_char = await firestore_client.get_ai_character(game_id)
-        killed_ai = (target_character == ai_char["name"])
-        
+
+        # **Implementation Update (v4.0):** Iterate ai_characters[] array to check
+        # whether the Hunter's target was any traitor AI (not just a single AI character).
+        ai_chars = await firestore_client.get_ai_characters(game_id)
+        killed_shapeshifter = any(
+            ai["name"] == target_character and ai.get("is_traitor")
+            for ai in ai_chars
+        )
+
         return {
             "revenge_target": target_character,
             "revenge_eliminated": True,
-            "killed_shapeshifter": killed_ai,
+            "killed_shapeshifter": killed_shapeshifter,
         }
 ```
 
@@ -581,10 +654,14 @@ from google.adk.tools import FunctionTool
 
 def get_game_state(game_id: str) -> dict:
     """Retrieve current game state from Firestore.
-    
+
+    **Implementation Update (v4.0):** Returns `ai_characters: []` array
+    instead of a singular `ai_character` field. Each element contains
+    the character name, role, alive status, and is_traitor flag.
+
     Returns: {
         phase: str, round: int, alive_players: list,
-        ai_character: dict, recent_events: list[dict],
+        ai_characters: list[dict], recent_events: list[dict],
         story_context: str
     }
     """
@@ -615,258 +692,187 @@ def narrate_event(game_id: str, event_type: str, description: str) -> dict:
     return firestore_client.log_event(game_id, event_type, "narrator", description)
 
 def inject_traitor_dialog(game_id: str, context: str) -> dict:
-    """Get the AI character's response for the current discussion context.
-    Internally invokes the Traitor Agent.
-    
+    """Get all AI characters' responses for the current discussion context.
+
+    **Implementation Update (v4.0):** No longer calls a class-based
+    TraitorAgent. Instead delegates to `trigger_all_dialogs(game_id, context)`,
+    which uses `_ai_chars_with_fields()` to iterate all AI characters and
+    runs `generate_dialog()` for each in parallel via `asyncio.gather()`.
+    The separate `_inject_ai2_dialog()` function has been removed.
+
     Args:
         game_id: The game identifier
-        context: What was just said / what the AI character should respond to
-    
-    Returns: { character_name: str, dialog: str }
+        context: What was just said / what the AI characters should respond to
+
+    Returns: list[{ character_name: str, dialog: str }]
     """
-    game_state = firestore_client.get_game_state(game_id)
-    traitor_response = traitor_agent.generate(
-        context=context, 
-        game_state=game_state
-    )
-    return {
-        "character_name": game_state["ai_character"]["name"],
-        "dialog": traitor_response.text
-    }
+    dialogs = trigger_all_dialogs(game_id, context)
+    return [
+        {"character_name": ai_char["name"], "dialog": dialog_text}
+        for ai_char, dialog_text in dialogs
+    ]
+
+def start_phase_timer(game_id: str) -> dict:
+    """Signal that narration is complete and the phase countdown should begin.
+
+    **Implementation Update (v5.0):** New tool. The narrator calls this after
+    finishing its opening narration for a phase (e.g., after announcing night has
+    fallen and all players have their role-specific instructions). The server then
+    broadcasts the `phase_timer_start` message to all clients, starting the visible
+    countdown.
+
+    If the narrator does NOT call this tool within 15 seconds of a phase transition,
+    the server fires a safety fallback that starts the timer automatically. This
+    prevents games from hanging indefinitely when the narrator is slow or silent.
+
+    Phase-specific timer values (v5.0 updated):
+    - night:          30s (down from 45s — night actions are faster without extra dialog)
+    - day_discussion: dynamic (120–240s based on alive count — unchanged)
+    - day_vote:       60s  (down from 90s — voting is a single tap)
+
+    Minimum discussion guard: The narrator cannot call start_phase_timer during
+    day_discussion until at least 45 seconds have elapsed since the phase began.
+    This ensures every player has time to speak before the countdown begins.
+
+    Args:
+        game_id: The game identifier
+
+    Returns: { success: bool, phase: str, timer_seconds: int, started_at: str }
+    """
+    return game_master.start_phase_timer(game_id)
 ```
 
-## 4.2 Traitor Tools
+## 4.2 AI Agent Functions (v4.0)
+
+**Implementation Update (v4.0):** The class-based `TraitorAgent` tools (`plan_deflection`, `generate_alibi`, `accuse_player`) and the 5 AI2-specific functions have been replaced with 4 unified standalone functions + 3 trigger functions described in section 3.2. The old tool-based approach (LLM selects tools) has been replaced with direct function calls that each make a single Gemini LLM request.
 
 ```python
-def plan_deflection(accusation: str, accuser: str, game_state: dict) -> dict:
-    """Analyze an accusation and plan a deflection strategy.
-    
-    Returns: { strategy: str, target_redirect: str | None, emotional_tone: str }
-    """
-    # Pure logic: assess who is most suspicious besides AI, plan redirect
-    suspicion_scores = calculate_suspicion(game_state)
-    best_redirect = max(suspicion_scores, key=suspicion_scores.get)
-    return {
-        "strategy": f"Deflect to {best_redirect}, express hurt at accusation",
-        "target_redirect": best_redirect,
-        "emotional_tone": "defensive_but_calm"
-    }
+# backend/agents/traitor_agent.py — function signatures (v4.0)
 
-def generate_alibi(night_round: int, game_state: dict) -> dict:
-    """Generate a plausible alibi for what the AI character was doing during night.
-    
-    Returns: { alibi: str, supporting_detail: str }
-    """
-    alibis = [
-        "I was at the tavern with others, ask anyone who was there",
-        "I was tending the forge — you could hear the hammering",
-        "I was in the herbalist's shop getting medicine for my back",
-    ]
-    return {"alibi": random.choice(alibis), "supporting_detail": "..."}
+async def generate_dialog(game_id: str, ai_char: dict, context: str) -> str:
+    """Generate in-character dialog for one AI character.
 
-def accuse_player(target_player: str, reason: str) -> dict:
-    """Formulate an accusation against another player.
-    
-    Returns: { accusation: str, evidence: str }
-    """
-    return {
-        "accusation": f"I've been watching {target_player} and something doesn't add up.",
-        "evidence": reason
-    }
+    Prompt routing:
+    - If ai_char["is_traitor"]: uses TRAITOR_DIFFICULTY[difficulty] prompt
+      with strategic framework (establish trust → deflect → close game)
+    - If not ai_char["is_traitor"]: uses LOYAL_AI_PROMPT with honest
+      cooperative observation style
 
-def select_night_target(alive_players: list[dict], game_history: list[dict], 
-                         suspicion_map: dict) -> dict:
-    """Select which player to eliminate during the night phase.
-    This is the AI's most important autonomous decision each round.
-    
-    The Traitor Agent uses this tool to reason about its target strategically.
-    The tool provides structured context; the LLM makes the final decision.
-    
-    Args:
-        alive_players: List of alive players with {id, name, role_known (by AI)}
-        game_history: Events from previous rounds (who accused whom, vote patterns)
-        suspicion_map: {player_id: suspicion_level} — how suspicious each player 
-                       has been toward the AI character
-    
-    Returns: {
-        target_id: str,          # Player ID to eliminate
-        reasoning: str,          # AI's strategic reasoning (logged for game-over reveal)
-        strategy_factors: {
-            threat_level: dict,   # Per-player threat assessment
-            seer_risk: str,       # Is the Seer likely to investigate AI tonight?
-            healer_prediction: str,  # Who might the Healer protect?
-            optimal_target: str   # The recommended target based on analysis
-        }
-    }
+    The prompt includes game state, alive players, suspicion levels,
+    and the conversation context. Returns 1-3 sentence dialog text.
     """
-    # Build threat assessment per player
-    threat_levels = {}
-    for player in alive_players:
-        threat = 0
-        pid = player["id"]
-        
-        # High suspicion toward AI = high threat (they might vote us out tomorrow)
-        threat += suspicion_map.get(pid, 0) * 2
-        
-        # Seer is always highest priority target (can expose us)
-        if player.get("role_known") == "seer":
-            threat += 100
-        
-        # Healer is second priority (protects our targets)
-        if player.get("role_known") == "healer":
-            threat += 50
-        
-        # Players who accused AI in last discussion phase are dangerous
-        recent_accusations = [e for e in game_history 
-                            if e.get("type") == "accusation" 
-                            and e.get("actor") == pid
-                            and e.get("target") == "ai"]
-        threat += len(recent_accusations) * 30
-        
-        threat_levels[pid] = threat
-    
-    optimal = max(threat_levels, key=threat_levels.get)
-    
-    return {
-        "target_id": optimal,
-        "reasoning": "",  # LLM fills this in with natural language explanation
-        "strategy_factors": {
-            "threat_level": threat_levels,
-            "seer_risk": "high" if any(p.get("role_known") == "seer" for p in alive_players) else "unknown",
-            "healer_prediction": "unknown",
-            "optimal_target": optimal,
-        }
-    }
+    ...
 
-async def log_strategy_reasoning(game_id: str, round_num: int, 
-                                   action_type: str, reasoning: str) -> dict:
-    """P1: Log the AI's strategic reasoning for the post-game reveal timeline.
-    
-    Called by the Traitor Agent after every significant decision:
-    - Night target selection ("Targeted Elena because she asked the right question in Round 2")
-    - Day discussion deflection ("Accused Brother Aldric to redirect suspicion")
-    - Voting decision ("Voted with majority to avoid standing out")
-    
-    Stored in Firestore events log with type="ai_strategy" and visible ONLY 
-    in the post-game reveal timeline. Never exposed during active gameplay.
-    
-    Args:
-        game_id: Game identifier
-        round_num: Current game round
-        action_type: "night_target" | "deflection" | "accusation" | "vote" | "alibi"
-        reasoning: Natural language explanation of the AI's strategic thinking
-    
-    Returns: { logged: bool }
+async def select_night_target(game_id: str, ai_char: dict, fs_field: str) -> str:
+    """Shapeshifter night kill target selection.
+
+    Writes Firestore event: type="{fs_field}_night_kill"
+    Threat assessment priority: Seer > most suspicious player > Healer > random.
+    Returns target character name.
     """
-    await firestore_client.add_event(game_id, {
-        "type": "ai_strategy",
-        "round": round_num,
-        "action_type": action_type,
-        "reasoning": reasoning,
-        "timestamp": firestore.SERVER_TIMESTAMP,
-        "visible_in_game": False,  # Only shown in post-game reveal
-    })
-    return {"logged": True}
+    ...
+
+async def select_vote(game_id: str, ai_char: dict, fs_field: str) -> str:
+    """AI vote selection with self-vote guard.
+
+    The LLM prompt includes alive characters and instructs the AI to never
+    vote for itself. If the LLM returns a self-vote anyway, the function
+    re-selects a random valid target. Writes vote to Firestore.
+    Returns voted-for character name.
+    """
+    ...
+
+async def select_loyal_night_action(game_id: str, ai_char: dict, fs_field: str) -> str:
+    """Loyal AI night action based on role.
+
+    Role-specific behavior:
+    - seer: picks investigation target, writes {fs_field}_night_seer event
+    - healer: picks protection target, writes {fs_field}_night_heal event
+    - bodyguard: picks guard target, writes {fs_field}_night_bodyguard event
+    - villager/hunter/tanner: no night action, returns None
+
+    Returns target character name or None.
+    """
+    ...
+
+# --- Trigger functions (parallel execution) ---
+
+async def trigger_all_night_actions(game_id: str):
+    """Parallel night actions for all AI characters via asyncio.gather().
+
+    For each (ai_char, fs_field) from _ai_chars_with_fields(game):
+    - traitor → select_night_target(game_id, ai_char, fs_field)
+    - loyal   → select_loyal_night_action(game_id, ai_char, fs_field)
+    """
+    ...
+
+async def trigger_all_votes(game_id: str):
+    """Parallel votes for all AI characters via asyncio.gather().
+
+    For each (ai_char, fs_field) from _ai_chars_with_fields(game):
+    - select_vote(game_id, ai_char, fs_field)
+    """
+    ...
+
+async def trigger_all_dialogs(game_id: str, context: str) -> list[tuple]:
+    """Parallel dialog generation for all AI characters via asyncio.gather().
+
+    Returns list of (ai_char, dialog_text) for narrator injection.
+    """
+    ...
 ```
 
 ### 4.3 Night Phase Orchestration
 
-This is the critical pipeline that runs every night phase. It coordinates the Traitor Agent's autonomous target selection, human player night actions, and deterministic resolution — then feeds everything to the Narrator for dramatic delivery.
+**Implementation Update (v4.0):** The night phase now uses `trigger_all_night_actions()` to run all AI night actions in parallel via `asyncio.gather()`, replacing the single-agent invocation pattern. Each AI character's action is routed by its `is_traitor` flag to the appropriate function (`select_night_target` or `select_loyal_night_action`). Resolution uses the unified `resolve_night()` which handles AI bodyguard sacrifice and AI Seer investigations.
 
 ```python
 async def run_night_phase(game: GameSession, game_id: str):
-    """Full night phase orchestration.
-    
+    """Full night phase orchestration (v4.0 — unified multi-AI).
+
     Sequence:
     1. Narrator announces night has fallen
-    2. AI Traitor strategically selects its target (LLM decision)
+    2. All AI characters submit night actions in parallel (trigger_all_night_actions)
     3. Human players submit night actions (Seer investigates, Healer protects)
-    4. Game Master resolves all actions deterministically
+    4. Game Master resolves all actions deterministically (resolve_night)
     5. AI reasoning is logged for game-over reveal
     6. Narrator announces the dawn and results
     """
-    
+
     # --- Step 1: Transition to night ---
     await firestore_client.update_phase(game_id, "night")
-    await game.broadcast({"type": "phase_change", "phase": "night", "timer_seconds": 30})
+    await game.broadcast({"type": "phase_change", "phase": "night"})
+    # timer_seconds is NOT sent here; narrator calls start_phase_timer after narration
     await game.inject_player_message(
-        "SYSTEM", 
+        "SYSTEM",
         "NIGHT FALLS. Narrate the village going dark. Build suspense. "
         "Remind players with night abilities to make their choices."
     )
-    
-    # --- Step 2: AI Traitor selects target (autonomous LLM decision) ---
-    state = await firestore_client.get_game_state(game_id)
-    events = await firestore_client.get_all_events(game_id)
-    alive = [p for p in state["players"] if p["alive"] and p["id"] != "ai"]
-    
-    # Build suspicion map from event history
-    suspicion_map = calculate_suspicion_from_events(events, state)
-    
-    # Invoke Traitor Agent for strategic target selection
-    traitor_session = await create_traitor_session(game_id)
-    traitor_prompt = f"""It is night in Thornwood. You must choose a villager to eliminate.
-    
-    ALIVE PLAYERS: {json.dumps(alive, indent=2)}
-    SUSPICION LEVELS (how much each player suspects YOU): {json.dumps(suspicion_map)}
-    
-    GAME HISTORY (key events):
-    {format_event_history(events[-20:])}
-    
-    Think carefully about:
-    - Who is the biggest threat to exposing you?
-    - Who might the Seer investigate tonight? (Avoid targeting them if the Healer might protect)
-    - Who would cause the most chaos if eliminated? (A trusted player's death sows more doubt)
-    - Who has been vocally defending you? (Eliminating defenders is wasteful)
-    
-    Use the select_night_target tool, then explain your reasoning in 2-3 sentences 
-    as if thinking to yourself. This reasoning will be revealed to players at game end.
-    """
-    
-    traitor_response = await runner.run(
-        agent=traitor_agent,
-        session=traitor_session,
-        new_message=types.Content(
-            role="user",
-            parts=[types.Part(text=traitor_prompt)]
-        )
-    )
-    
-    # Extract target and reasoning from Traitor Agent response
-    target_data = extract_tool_result(traitor_response, "select_night_target")
-    ai_target_id = target_data["target_id"]
-    ai_reasoning = extract_text_response(traitor_response)
-    
-    # Write AI's night action to Firestore
-    await firestore_client.record_night_action(
-        game_id, "ai", "eliminate", ai_target_id
-    )
-    
-    # Log the AI's strategic reasoning (hidden until game-over reveal)
-    await firestore_client.log_event(game_id, "ai_night_reasoning", "ai", ai_reasoning, 
-        data={
-            "target": ai_target_id,
-            "reasoning": ai_reasoning,
-            "strategy_factors": target_data.get("strategy_factors", {}),
-            "round": state["round"],
-        },
-        hidden=True  # Not shown to players until game over
-    )
-    
+
+    # --- Step 2: All AI night actions in parallel (v4.0) ---
+    # trigger_all_night_actions uses asyncio.gather() internally.
+    # Each AI character routes to select_night_target (traitor) or
+    # select_loyal_night_action (loyal) based on is_traitor flag.
+    # Events written: {fs_field}_night_kill, {fs_field}_night_heal, etc.
+    await trigger_all_night_actions(game_id)
+
     # --- Step 3: Wait for human night actions ---
-    # Seer and Healer submit via WebSocket (handled in game_websocket handler)
-    # Wait up to 30 seconds for all night actions
+    # Timeout is 30s (v5.0, down from 45s), started after narrator calls start_phase_timer.
+    # 15s safety fallback fires if narrator does not call start_phase_timer in time.
     await wait_for_night_actions(game_id, timeout_seconds=30)
-    
+
     # --- Step 4: Resolve all night actions (deterministic) ---
-    result = await game_master.execute_night_actions(game_id)
-    
+    # resolve_night handles: shapeshifter kill, bodyguard sacrifice (human + AI),
+    # healer protection, seer investigation, AI seer investigation (ai_seer_result)
+    result = await game_master.resolve_night(game_id)
+
     # --- Step 5: Check win condition ---
+    # check_win_condition iterates ai_characters[] array for traitor status
     win_check = await game_master.check_win_condition(game_id)
     if win_check["game_over"]:
         await handle_game_over(game, game_id, win_check)
         return
-    
+
     # --- Step 6: Narrator announces dawn ---
     if result["eliminated"]:
         victim_name = await firestore_client.get_player_name(game_id, result["eliminated"])
@@ -876,16 +882,17 @@ async def run_night_phase(game: GameSession, game_id: str):
             f"Transition to the day discussion phase."
         )
     else:
-        # Healer saved the target
         narration_prompt = (
             "DAWN BREAKS. Miraculously, everyone survived the night. "
             "Someone — or something — was thwarted. Narrate this with a mix of relief "
             "and growing tension. Transition to the day discussion phase."
         )
-    
+
     await game.inject_player_message("SYSTEM", narration_prompt)
     await firestore_client.update_phase(game_id, "day_discussion")
-    await game.broadcast({"type": "phase_change", "phase": "day_discussion", "timer_seconds": 180})
+    # timer_seconds omitted; narrator calls start_phase_timer after opening narration.
+    # Minimum 45s must elapse before narrator may call start_phase_timer for day_discussion.
+    await game.broadcast({"type": "phase_change", "phase": "day_discussion"})
 
 
 def calculate_suspicion_from_events(events: list[dict], state: dict) -> dict:
@@ -920,8 +927,8 @@ async def handle_game_over(game: GameSession, game_id: str, win_check: dict):
     
     # Build the reveal package
     all_players = await firestore_client.get_all_players(game_id)
-    ai_char = await firestore_client.get_ai_character(game_id)
-    
+    ai_chars = await firestore_client.get_ai_characters(game_id)  # v4.0: array
+
     role_reveals = []
     for p in all_players:
         role_reveals.append({
@@ -931,13 +938,16 @@ async def handle_game_over(game: GameSession, game_id: str, win_check: dict):
             "role": p["role"],
             "alive": p["alive"],
         })
-    role_reveals.append({
-        "playerId": "ai",
-        "playerName": "AI",
-        "characterName": ai_char["name"],
-        "role": "shapeshifter",
-        "alive": ai_char["alive"],
-    })
+    # v4.0: iterate ai_characters[] array
+    for i, ai_char in enumerate(ai_chars):
+        role_reveals.append({
+            "playerId": f"ai_{i}",
+            "playerName": "AI",
+            "characterName": ai_char["name"],
+            "role": ai_char["role"],
+            "alive": ai_char["alive"],
+            "is_traitor": ai_char.get("is_traitor", False),
+        })
     
     # P1: Build AI strategy log for post-game reveal timeline
     ai_strategy_log = [
@@ -951,21 +961,23 @@ async def handle_game_over(game: GameSession, game_id: str, win_check: dict):
     ]
     
     # Narrator delivers the dramatic conclusion
+    # v4.0: reference all AI characters from array
+    ai_names = ", ".join(ai["name"] for ai in ai_chars)
     reveal_prompt = f"""GAME OVER! {win_check['reason']}
 
-    REVEAL ALL ROLES NOW. The AI character was {ai_char['name']} the entire time.
-    
+    REVEAL ALL ROLES NOW. The AI character(s) were: {ai_names}.
+
     Character-to-player reveals:
-    {json.dumps([{'character': r['characterName'], 'player': r['playerName'], 'role': r['role']} 
+    {json.dumps([{'character': r['characterName'], 'player': r['playerName'], 'role': r['role']}
                   for r in role_reveals], indent=2)}
-    
+
     Here is what the AI was thinking each round:
     {json.dumps(ai_strategy_log, indent=2)}
-    
+
     Narrate the big reveal dramatically. Reveal each character's true identity.
     "Blacksmith Garin was... SARAH! And she was the Healer all along."
-    Then reveal the AI: "{ai_char['name']} was... THE AI. The shapeshifter."
-    Share key moments from the AI's strategy log — what it was thinking, why it 
+    Then reveal each AI: "And {ai_names}... was THE AI."
+    Share key moments from the AI's strategy log — what it was thinking, why it
     targeted who it did, and the moment it was closest to being caught.
     This is the climactic moment — make it unforgettable.
     """
@@ -986,85 +998,128 @@ async def handle_game_over(game: GameSession, game_id: str, win_check: dict):
 
 ## 5.1 Connection Lifecycle
 
+Two separate WebSocket connections per player:
+- **Game WS** (`/ws/{game_id}?playerId=xxx`) — JSON messages for game state, chat, votes, and narrator audio broadcast.
+- **Audio WS** (`/ws/audio/{game_id}?playerId=xxx`) — binary PCM frames only; no JSON, no base64. Opened when player activates push-to-talk. Closed when they release or navigate away. Independent lifecycle from Game WS.
+
 ```
-Client                          Server
-  │                                │
-  │──── WS CONNECT ───────────────▶│
-  │     /ws/{gameId}?playerId=xxx  │
-  │                                │
-  │◀─── CONNECTION_ACK ───────────│
-  │     { type: "connected",       │
-  │       playerId, characterName, │
-  │       gameState }              │
-  │                                │
-  │◀─── ROLE_ASSIGNMENT ──────────│
-  │     { type: "role",            │
-  │       role: "seer",            │
-  │       characterName:           │
-  │         "Merchant Elara",      │
-  │       characterIntro: "...",   │
-  │       description: "..." }     │
-  │     [PRIVATE - only to this    │
-  │      player's WebSocket]       │
-  │                                │
-  │◀─── AUDIO_CHUNK ─────────────│
-  │     { type: "audio",           │
-  │       data: <base64 PCM>,      │
-  │       sample_rate: 24000 }     │
-  │     [BROADCAST to all players] │
-  │                                │
-  │──── PLAYER_MESSAGE ───────────▶│
-  │     { type: "message",         │
-  │       text: "I think..." }     │
-  │     (server maps to character  │
-  │      name before broadcasting) │
-  │                                │
-  │──── QUICK_REACTION ───────────▶│  P1
-  │     { type: "quick_reaction",  │
-  │       reaction: "suspect",     │
-  │       target: "Blacksmith" }   │
-  │     (injected as attributed    │
-  │      dialog: "Merchant Elara   │
-  │      suspects Blacksmith")     │
-  │                                │
-  │──── VOTE ─────────────────────▶│
-  │     { type: "vote",            │
-  │       target: "Blacksmith" }   │  (character name)
-  │                                │
-  │◀─── PHASE_CHANGE ────────────│
-  │     { type: "phase_change",    │
-  │       phase: "day_vote",       │
-  │       timer_seconds: 60 }      │
-  │                                │
-  │──── NIGHT_ACTION ─────────────▶│
-  │     { type: "night_action",    │
-  │       action: "investigate",   │
-  │       target: "Blacksmith" }   │  (character name)
-  │                                │
-  │◀─── NIGHT_RESULT ────────────│
-  │     { type: "night_result",    │
-  │       result: "villager" }     │
-  │     [PRIVATE - Seer or Drunk.  │
-  │      Drunk gets false result.] │
-  │                                │
-  │◀─── ELIMINATION ─────────────│
-  │     { type: "elimination",     │
-  │       characterName: "...",    │
-  │       wasTraitor: false,       │
-  │       role: "hunter",          │
-  │       triggerHunterRevenge:    │  P1
-  │         true }                 │
-  │                                │
-  │──── HUNTER_REVENGE ───────────▶│  P1
-  │     { type: "hunter_revenge",  │
-  │       target: "Blacksmith" }   │
-  │                                │
-  │◀─── GAME_OVER ───────────────│
-  │     { type: "game_over",       │
-  │       winner: "villagers",     │
-  │       characterReveals: [...], │  P0
-  │       aiStrategyLog: [...],    │  P1
-  │       storyRecap: "..." }      │
+Client (game WS)                Server              Client (audio WS)
+  │                                │                       │
+  │──── WS CONNECT ───────────────▶│                       │
+  │     /ws/{gameId}?playerId=xxx  │                       │
+  │                                │                       │
+  │◀─── CONNECTION_ACK ───────────│                       │
+  │     { type: "connected",       │                       │
+  │       playerId, characterName, │                       │
+  │       gameState }              │                       │
+  │                                │                       │
+  │◀─── ROLE_ASSIGNMENT ──────────│                       │
+  │     { type: "role",            │                       │
+  │       role: "seer",            │                       │
+  │       characterName:           │                       │
+  │         "Merchant Elara",      │                       │
+  │       characterIntro: "...",   │                       │
+  │       description: "..." }     │                       │
+  │     [PRIVATE - only to this    │                       │
+  │      player's WebSocket]       │                       │
+  │                                │                       │
+  │◀─── AUDIO_CHUNK ─────────────│                       │
+  │     { type: "audio",           │                       │
+  │       data: <base64 PCM>,      │                       │
+  │       sample_rate: 24000 }     │                       │
+  │     [BROADCAST to all players] │                       │
+  │                                │                       │
+  │──── PLAYER_MESSAGE ───────────▶│                       │
+  │     { type: "message",         │                       │
+  │       text: "I think..." }     │                       │
+  │     (local echo immediately;   │                       │
+  │      server echo deduplicated) │                       │
+  │                                │                       │
+  │◀─── TRANSCRIPT ──────────────│                       │
+  │     { type: "transcript",      │                       │
+  │       speaker: "Merchant Elara"│                       │
+  │       text: "I think..." }     │                       │
+  │     [BROADCAST to others]      │                       │
+  │                                │                       │
+  │──── START_SPEAKING ───────────▶│                       │
+  │     { type: "start_speaking" } │                       │
+  │                                │──── WS CONNECT ──────▶│
+  │                                │  /ws/audio/{gameId}   │
+  │                                │  ?playerId=xxx        │
+  │◀─── SPEAKER_ACK ─────────────│                       │
+  │     { type: "speaker_granted"} │                       │
+  │     [PRIVATE — lock acquired]  │                       │
+  │                                │                       │
+  │                                │◀─── binary PCM ───────│
+  │                                │   raw 16-bit PCM16    │
+  │                                │   16 kHz mono frames  │
+  │                                │   (no JSON wrapper)   │
+  │                                │                       │
+  │──── STOP_SPEAKING ────────────▶│                       │
+  │     { type: "stop_speaking" }  │──── WS CLOSE ────────▶│
+  │     [releases speaker lock]    │                       │
+  │                                │                       │
+  │──── QUICK_REACTION ───────────▶│                       │  P1
+  │     { type: "quick_reaction",  │                       │
+  │       reaction: "suspect",     │                       │
+  │       target: "Blacksmith" }   │                       │
+  │                                │                       │
+  │──── VOTE ─────────────────────▶│                       │
+  │     { type: "vote",            │                       │
+  │       target: "Blacksmith" }   │  (character name)     │
+  │                                │                       │
+  │◀─── PHASE_CHANGE ────────────│                       │
+  │     { type: "phase_change",    │                       │
+  │       phase: "day_vote" }      │                       │
+  │     [no timer_seconds here;    │                       │
+  │      timer starts after        │                       │
+  │      narrator calls            │                       │
+  │      start_phase_timer]        │                       │
+  │                                │                       │
+  │◀─── PHASE_TIMER_START ────────│                       │
+  │     { type:                    │                       │
+  │       "phase_timer_start",     │                       │
+  │       phase: "day_vote",       │                       │
+  │       timer_seconds: 60 }      │                       │
+  │     [narrator called           │                       │
+  │      start_phase_timer, or     │                       │
+  │      15s safety fallback fired]│                       │
+  │                                │                       │
+  │──── NIGHT_ACTION ─────────────▶│                       │
+  │     { type: "night_action",    │                       │
+  │       action: "investigate",   │                       │
+  │       target: "Blacksmith" }   │  (character name)     │
+  │                                │                       │
+  │──── SKIP_NIGHT_KILL ──────────▶│                       │  (Shapeshifter skip)
+  │     { type: "skip_night_kill" }│                       │
+  │     [human shapeshifter skips  │                       │
+  │      night kill; resolved as   │                       │
+  │      no elimination]           │                       │
+  │                                │                       │
+  │◀─── NIGHT_RESULT ────────────│                       │
+  │     { type: "night_result",    │                       │
+  │       result: "villager" }     │                       │
+  │     [PRIVATE - Seer or Drunk.  │                       │
+  │      Drunk gets false result.] │                       │
+  │                                │                       │
+  │◀─── ELIMINATION ─────────────│                       │
+  │     { type: "elimination",     │                       │
+  │       characterName: "...",    │                       │
+  │       wasTraitor: false,       │                       │
+  │       role: "hunter",          │                       │
+  │       triggerHunterRevenge:    │                       │  P1
+  │         true }                 │                       │
+  │                                │                       │
+  │──── HUNTER_REVENGE ───────────▶│                       │  P1
+  │     { type: "hunter_revenge",  │                       │
+  │       target: "Blacksmith" }   │                       │
+  │                                │                       │
+  │◀─── GAME_OVER ───────────────│                       │
+  │     { type: "game_over",       │                       │
+  │       winner: "villagers",     │                       │
+  │       characterReveals: [...], │  P0                   │
+  │       aiStrategyLog: [...],    │  P1                   │
+  │       storyRecap: "..." }      │                       │
 ```
 
 ## 5.2 Message Types (TypeScript Interface)
@@ -1077,10 +1132,16 @@ type ServerMessage =
   | { type: "audio"; data: string; sampleRate: number }         // BROADCAST
   | { type: "transcript"; speaker: string; text: string }       // BROADCAST (speaker = character name)
   | { type: "input_transcript"; speaker: string; text: string } // BROADCAST — player mic voice transcript (§12.5.1)
-  | { type: "phase_change"; phase: GamePhase; timerSeconds?: number } // timerSeconds: dynamic (§12.5.3)
+  | { type: "phase_change"; phase: GamePhase }                  // v5.0: timerSeconds removed; sent separately after narrator narrates
+  | { type: "phase_timer_start"; phase: GamePhase; timerSeconds: number } // v5.0: narrator called start_phase_timer (or 15s fallback fired)
+  | { type: "speaker_granted"; playerId: string }               // v5.0: PRIVATE — push-to-talk lock acquired
+  | { type: "speaker_released"; playerId: string }              // v5.0: BROADCAST — another player's lock released
+  | { type: "speaker_error"; reason: string }                   // v5.0: PRIVATE — lock denied (dead player, already locked, etc.)
   | { type: "player_joined"; characterName: string; count: number }  // Character name only
   | { type: "player_left"; characterName: string }
   | { type: "vote_update"; votes: Record<string, string | null> }   // Character names
+  | { type: "vote_result"; result: "eliminated" | "tie" | "no_votes";  // v5.0: explicit tally result broadcast
+      eliminated: string | null; tally: Record<string, number> }
   | { type: "elimination"; characterName: string; wasTraitor: boolean;
       role: Role; triggerHunterRevenge?: boolean }                   // P1: Hunter flag
   | { type: "hunter_revenge"; hunterCharacter: string; targetCharacter: string;
@@ -1119,20 +1180,35 @@ type AIStrategyEntry = {
 **Spectator Clues (P1):** Eliminated players can send one single-word clue per round to living players via a `SpectatorClueInput` component (replaces `ChatInput` for spectators). The word is validated server-side: must be a single word (no spaces), cannot be a character name, max one clue per round per spectator. The clue is delivered through the Narrator Agent as an in-story event: "A voice from beyond the veil reaches you... a single word: 'forge.'" The narrator injects the clue during the day discussion phase only. This keeps eliminated players engaged — getting voted out in Round 1 and sitting idle for 20 minutes is the #1 cause of player dropout in social deduction games (board game organizer feedback).
 
 ```
-// Client → Server messages
+// Client → Server messages (game-state WebSocket only; audio WS carries raw binary)
 type ClientMessage =
   | { type: "message"; text: string }                                    // Free-form text
   | { type: "quick_reaction"; reaction: QuickReaction; target?: string } // P1: preset buttons
-  | { type: "player_audio"; audio: string }                              // Base64 PCM16 16kHz mono (§12.5.1)
+  // Note: player_audio removed from game WS — mic audio now sent as raw binary over /ws/audio/{gameId}
+  | { type: "start_speaking" }                                           // v5.0: claim push-to-talk speaker lock
+  | { type: "stop_speaking" }                                            // v5.0: release speaker lock
   | { type: "vote"; target: string }                                     // Character name
   | { type: "night_action"; action: NightAction; target: string }
+  | { type: "skip_night_kill" }                                          // v5.0: Shapeshifter skips night kill (no target)
   | { type: "hunter_revenge"; target: string }                           // P1: Hunter's death target
   | { type: "shapeshifter_action"; target: string }                      // Human shapeshifter night kill (§12.5.5)
   | { type: "ready" }
   | { type: "ping" }
 
+// Audio WebSocket (/ws/audio/{gameId}?playerId=xxx)
+// Sends raw binary PCM16 frames, 16 kHz, mono — NO JSON envelope.
+// useAudioCapture.js opens this connection on start_speaking and closes on stop_speaking
+// or component unmount. If the audio WS drops mid-capture, the speaker lock is released
+// automatically server-side; game WS is unaffected.
+
 type QuickReaction = "suspect" | "trust" | "agree" | "have_info";
 ```
+
+**Wire Protocol Note (v4.0):** The backend game state WebSocket message (sent on `connected` and on state updates) still carries separate `aiCharacter` and `aiCharacter2` top-level fields, matching the Firestore document model. The frontend (`useWebSocket.js`) assembles these into a unified `aiCharacters[]` array and dispatches a single `SET_AI_CHARACTERS` action to `GameContext`. This keeps the Firestore schema stable while giving the frontend a clean N-element array. The Narrator Agent's `get_game_state` tool response uses `ai_characters[]` directly (not the split fields) because it reads from the game master's resolved state rather than the raw WebSocket payload.
+
+**Audio Transport Note (v5.0):** Player microphone audio is no longer embedded in JSON messages on the game-state WebSocket. `useAudioCapture.js` opens a separate binary WebSocket to `/ws/audio/{gameId}` and streams raw PCM16 frames (no encoding, no envelope). This reduces per-frame overhead by ~33% and eliminates the code 1006 game WS disconnections that occurred when audio frame bursts saturated the shared queue. The audio WS has an independent lifecycle: it opens on `start_speaking` and closes on `stop_speaking`, component unmount, or push-to-talk lock expiry. The game WS is unaffected by audio WS drops.
+
+**Phase Timer Note (v5.0):** `phase_change` messages no longer include `timerSeconds`. Instead, a separate `phase_timer_start` message is sent when the narrator explicitly calls `start_phase_timer` (signalling narration is done) or when the 15-second safety fallback fires. The frontend must not start its countdown until it receives `phase_timer_start`. This prevents the countdown from racing ahead of the narrator's opening speech.
 
 ## 5.3 Server Implementation
 
@@ -1165,59 +1241,268 @@ if os.path.exists(frontend_dir):
 # Active game sessions: gameId → GameSession
 active_games: dict[str, "GameSession"] = {}
 
+class ConnectionManager:
+    """Per-player dual-queue connection manager (v5.0).
+
+    Each player has two outbound queues:
+    - control_queue (asyncio.Queue, unbounded): game-state JSON messages.
+      Phase changes, eliminations, votes, private role assignments — all go here.
+    - audio_queue (asyncio.Queue, maxsize=256): narrator PCM audio chunks.
+      If the audio queue is full (producer faster than consumer), oldest chunks
+      are dropped to prevent memory growth.
+
+    A dedicated _player_sender coroutine per connection drains control first,
+    then audio, ensuring control-plane latency is not affected by audio volume.
+
+    Chat local echo: when a player sends a "message", the server immediately
+    echoes it back to THAT player's control queue. All other players receive the
+    broadcast. A deduplication flag prevents the sender from showing the message
+    twice if the echo races ahead of the broadcast.
+    """
+
+    def __init__(self):
+        self._control_queues: dict[str, asyncio.Queue] = {}
+        self._audio_queues: dict[str, asyncio.Queue] = {}
+        self._sender_tasks: dict[str, asyncio.Task] = {}
+        self._websockets: dict[str, WebSocket] = {}
+
+    async def connect(self, player_id: str, ws: WebSocket):
+        self._websockets[player_id] = ws
+        self._control_queues[player_id] = asyncio.Queue()
+        self._audio_queues[player_id] = asyncio.Queue(maxsize=256)
+        self._sender_tasks[player_id] = asyncio.create_task(
+            self._player_sender(player_id, ws)
+        )
+
+    async def disconnect(self, player_id: str):
+        task = self._sender_tasks.pop(player_id, None)
+        if task:
+            task.cancel()
+        self._control_queues.pop(player_id, None)
+        self._audio_queues.pop(player_id, None)
+        self._websockets.pop(player_id, None)
+
+    async def _player_sender(self, player_id: str, ws: WebSocket):
+        """Drain control queue first; then drain one audio chunk per iteration."""
+        ctrl_q = self._control_queues[player_id]
+        audio_q = self._audio_queues[player_id]
+        try:
+            while True:
+                # Prefer control messages — drain all available before audio
+                try:
+                    msg = ctrl_q.get_nowait()
+                    await ws.send_text(json.dumps(msg))
+                    ctrl_q.task_done()
+                    continue
+                except asyncio.QueueEmpty:
+                    pass
+                # No control messages pending — send one audio chunk or wait
+                try:
+                    chunk = await asyncio.wait_for(
+                        asyncio.shield(self._next_from_either(ctrl_q, audio_q)),
+                        timeout=1.0
+                    )
+                    if isinstance(chunk, dict):
+                        await ws.send_text(json.dumps(chunk))
+                    else:
+                        # bytes — audio chunk
+                        audio_msg = json.dumps({
+                            "type": "audio",
+                            "data": base64.b64encode(chunk).decode(),
+                            "sampleRate": 24000
+                        })
+                        await ws.send_text(audio_msg)
+                except asyncio.TimeoutError:
+                    pass  # No messages; loop again
+        except (WebSocketDisconnect, Exception):
+            pass  # Connection gone; cleanup handled by disconnect()
+
+    async def enqueue_control(self, player_id: str, message: dict):
+        q = self._control_queues.get(player_id)
+        if q:
+            await q.put(message)
+
+    async def enqueue_audio(self, player_id: str, audio_bytes: bytes):
+        q = self._audio_queues.get(player_id)
+        if q:
+            try:
+                q.put_nowait(audio_bytes)
+            except asyncio.QueueFull:
+                pass  # Drop oldest: discard incoming if queue full
+
+    async def broadcast(self, message: dict, exclude: str | None = None):
+        for pid in list(self._control_queues):
+            if pid != exclude:
+                await self.enqueue_control(pid, message)
+
+    async def send_private(self, player_id: str, message: dict):
+        await self.enqueue_control(player_id, message)
+
+    async def broadcast_audio(self, audio_bytes: bytes):
+        for pid in list(self._audio_queues):
+            await self.enqueue_audio(pid, audio_bytes)
+
+    @staticmethod
+    async def _next_from_either(ctrl_q: asyncio.Queue, audio_q: asyncio.Queue):
+        """Await whichever queue has a message first; control wins on tie."""
+        ctrl_task = asyncio.ensure_future(ctrl_q.get())
+        audio_task = asyncio.ensure_future(audio_q.get())
+        done, pending = await asyncio.wait(
+            [ctrl_task, audio_task], return_when=asyncio.FIRST_COMPLETED
+        )
+        for t in pending:
+            t.cancel()
+        return done.pop().result()
+
+
 class GameSession:
-    """Manages one active game: players, narrator session, game state."""
-    
+    """Manages one active game: players, narrator session, game state, speaker lock."""
+
     def __init__(self, game_id: str):
         self.game_id = game_id
-        self.players: dict[str, WebSocket] = {}  # playerId → WebSocket
+        self.connection_manager = ConnectionManager()
+        self.players: dict[str, WebSocket] = {}  # playerId → WebSocket (for legacy compat)
         self.live_queue: LiveRequestQueue | None = None
         self.narrator_task: asyncio.Task | None = None
         self.session_handle: str | None = None
-    
+
+        # v5.0: Push-to-talk speaker lock
+        self._current_speaker: Optional[str] = None          # player_id or None
+        self._speaker_timeout_task: Optional[asyncio.Task] = None
+
+        # v5.0: Audio WebSocket connections (separate from game WS)
+        self._audio_websockets: dict[str, WebSocket] = {}     # playerId → audio WS
+
+        # v5.0: Phase timer state
+        self._phase_timer_task: Optional[asyncio.Task] = None
+        self._phase_timer_safety_task: Optional[asyncio.Task] = None
+
+    # --- Speaker lock management (v5.0) ---
+
+    async def claim_speaker_lock(self, player_id: str) -> bool:
+        """TOCTOU-safe speaker lock claim.
+
+        The claim is written immediately (before any async call) so that two
+        concurrent start_speaking messages cannot both succeed. If the player
+        is dead, returns False and sends speaker_error. If another player holds
+        the lock, returns False. Otherwise acquires the lock, schedules a 30s
+        auto-release task, and sends speaker_granted.
+        """
+        # Fast rejection: dead players cannot speak
+        if await firestore_client.is_player_dead(self.game_id, player_id):
+            await self.connection_manager.send_private(player_id, {
+                "type": "speaker_error",
+                "reason": "dead_players_cannot_speak"
+            })
+            return False
+
+        # Immediate claim (TOCTOU-safe: set before any await)
+        if self._current_speaker is not None:
+            await self.connection_manager.send_private(player_id, {
+                "type": "speaker_error",
+                "reason": "lock_held_by_other"
+            })
+            return False
+
+        self._current_speaker = player_id  # Claim made — no await before this point
+
+        # Cancel any stale timeout from a previous holder
+        if self._speaker_timeout_task:
+            self._speaker_timeout_task.cancel()
+
+        # Schedule auto-release after 30 seconds
+        self._speaker_timeout_task = asyncio.create_task(
+            self._auto_release_speaker(player_id, delay=30)
+        )
+
+        await self.connection_manager.send_private(player_id, {
+            "type": "speaker_granted",
+            "playerId": player_id
+        })
+        return True
+
+    async def release_speaker_lock(self, player_id: str, reason: str = "stop_speaking"):
+        """Release the speaker lock. Safe to call even if lock not held."""
+        if self._current_speaker != player_id:
+            return
+        self._current_speaker = None
+        if self._speaker_timeout_task:
+            self._speaker_timeout_task.cancel()
+            self._speaker_timeout_task = None
+        await self.connection_manager.broadcast({
+            "type": "speaker_released",
+            "playerId": player_id,
+            "reason": reason
+        })
+
+    async def _auto_release_speaker(self, player_id: str, delay: float):
+        await asyncio.sleep(delay)
+        await self.release_speaker_lock(player_id, reason="timeout")
+
+    async def force_release_speaker_on_disconnect(self, player_id: str):
+        """Called when game WS or audio WS disconnects."""
+        await self.release_speaker_lock(player_id, reason="disconnect")
+
+    async def force_release_speaker_on_phase_change(self):
+        """Called when phase transitions."""
+        if self._current_speaker:
+            await self.release_speaker_lock(self._current_speaker, reason="phase_change")
+
+    # --- Phase timer (v5.0) ---
+
+    async def start_phase_timer_from_narrator(self, phase: str, timer_seconds: int):
+        """Called when narrator invokes the start_phase_timer tool.
+
+        Cancels the 15s safety fallback (it's no longer needed) and broadcasts
+        the phase_timer_start message to all players.
+        """
+        if self._phase_timer_safety_task:
+            self._phase_timer_safety_task.cancel()
+            self._phase_timer_safety_task = None
+        await self.connection_manager.broadcast({
+            "type": "phase_timer_start",
+            "phase": phase,
+            "timerSeconds": timer_seconds
+        })
+
+    async def schedule_phase_timer_safety(self, phase: str, timer_seconds: int, safety_delay: float = 15.0):
+        """Schedule a 15s safety fallback in case narrator never calls start_phase_timer."""
+        async def _fallback():
+            await asyncio.sleep(safety_delay)
+            # Only fires if narrator hasn't called start_phase_timer yet
+            await self.connection_manager.broadcast({
+                "type": "phase_timer_start",
+                "phase": phase,
+                "timerSeconds": timer_seconds
+            })
+        self._phase_timer_safety_task = asyncio.create_task(_fallback())
+
+    # --- Connection helpers ---
+
     async def add_player(self, player_id: str, ws: WebSocket):
         self.players[player_id] = ws
-        await self.broadcast({
+        await self.connection_manager.connect(player_id, ws)
+        await self.connection_manager.broadcast({
             "type": "player_joined",
             "name": player_id,
             "count": len(self.players)
         })
-    
+
     async def remove_player(self, player_id: str):
+        await self.force_release_speaker_on_disconnect(player_id)
         self.players.pop(player_id, None)
-        await self.broadcast({"type": "player_left", "name": player_id})
-    
+        await self.connection_manager.broadcast({"type": "player_left", "name": player_id})
+        await self.connection_manager.disconnect(player_id)
+
+    # broadcast / send_private / broadcast_audio delegate to ConnectionManager
     async def broadcast(self, message: dict):
-        """Send message to ALL connected players."""
-        data = json.dumps(message)
-        disconnected = []
-        for pid, ws in self.players.items():
-            try:
-                await ws.send_text(data)
-            except Exception:
-                disconnected.append(pid)
-        for pid in disconnected:
-            self.players.pop(pid, None)
-    
+        await self.connection_manager.broadcast(message)
+
     async def send_private(self, player_id: str, message: dict):
-        """Send message to ONE specific player."""
-        ws = self.players.get(player_id)
-        if ws:
-            await ws.send_text(json.dumps(message))
-    
+        await self.connection_manager.send_private(player_id, message)
+
     async def broadcast_audio(self, audio_bytes: bytes):
-        """Stream narrator audio to all players."""
-        import base64
-        data = json.dumps({
-            "type": "audio",
-            "data": base64.b64encode(audio_bytes).decode(),
-            "sampleRate": 24000
-        })
-        for ws in self.players.values():
-            try:
-                await ws.send_text(data)
-            except Exception:
-                pass
+        await self.connection_manager.broadcast_audio(audio_bytes)
     
     async def inject_player_message(self, player_name: str, text: str):
         """Inject a player's text message into the narrator's Live API context."""
@@ -1299,18 +1584,22 @@ class GameSession:
 
 @app.websocket("/ws/{game_id}")
 async def game_websocket(websocket: WebSocket, game_id: str):
+    """Game-state WebSocket. Handles all JSON message types.
+    Keepalive: ping_interval=20s, ping_timeout=30s (v5.0 re-enabled).
+    Disconnect events are logged (previously silently swallowed).
+    """
     await websocket.accept()
-    
+
     # Parse player ID from query params
     player_id = websocket.query_params.get("playerId", f"player_{id(websocket)}")
-    
+
     # Get or create game session
     if game_id not in active_games:
         active_games[game_id] = GameSession(game_id)
-    
+
     game = active_games[game_id]
     await game.add_player(player_id, websocket)
-    
+
     # Send current game state
     state = await firestore_client.get_game_state(game_id)
     await websocket.send_text(json.dumps({
@@ -1318,38 +1607,78 @@ async def game_websocket(websocket: WebSocket, game_id: str):
         "playerId": player_id,
         "gameState": state
     }))
-    
+
     try:
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
-            
+
             match msg["type"]:
                 case "message":
-                    # Player sends a chat message → inject into narrator context
+                    # Player sends a chat message → local echo + inject into narrator context
                     player_name = await firestore_client.get_player_name(game_id, player_id)
+                    # Local echo: send back to sender immediately (with echo=True flag for dedup)
+                    await game.send_private(player_id, {
+                        "type": "transcript",
+                        "speaker": player_name,
+                        "text": msg["text"],
+                        "echo": True
+                    })
+                    # Inject into narrator and broadcast to others
                     await game.inject_player_message(player_name, msg["text"])
-                    # Also broadcast the text to other players
                     await game.broadcast({
                         "type": "transcript",
                         "speaker": player_name,
                         "text": msg["text"]
-                    })
+                    }, exclude=player_id)
+
+                case "start_speaking":
+                    # Push-to-talk: claim speaker lock
+                    await game.claim_speaker_lock(player_id)
+
+                case "stop_speaking":
+                    # Push-to-talk: release speaker lock
+                    await game.release_speaker_lock(player_id, reason="stop_speaking")
+
+                case "skip_night_kill":
+                    # Shapeshifter (human) skips their night kill
+                    # Validates player has shapeshifter role, then resolves night with no target
+                    role = await firestore_client.get_player_role(game_id, player_id)
+                    if role == "shapeshifter":
+                        await firestore_client.log_event(game_id, "shapeshifter_skip", player_id, {
+                            "reason": "player_chose_to_skip"
+                        })
+                        # Night resolves with no shapeshifter target (nobody eliminated by shapeshifter)
+                        await firestore_client.record_night_action(
+                            game_id, player_id, "skip_night_kill", target=None
+                        )
+                    else:
+                        await game.send_private(player_id, {
+                            "type": "error",
+                            "message": "Only the shapeshifter can skip night kill",
+                            "code": "invalid_action"
+                        })
                 
                 case "vote":
                     await firestore_client.record_vote(game_id, player_id, msg["target"])
                     votes = await firestore_client.get_votes(game_id)
                     await game.broadcast({"type": "vote_update", "votes": votes})
-                    
-                    # Check if all alive players have voted
-                    alive = await firestore_client.get_alive_players(game_id)
-                    if all(v is not None for v in votes.values()):
-                        result = await game_master.count_votes(game_id)
-                        # Narrator announces result
-                        await game.inject_player_message(
-                            "SYSTEM", 
-                            f"VOTE RESULT: {json.dumps(result)}. Narrate this dramatically."
-                        )
+
+                    # **Implementation Update (v4.0):** Vote wait uses polling loop
+                    # (5 iterations x 2s sleep) instead of checking all-voted instantly.
+                    # AI votes are submitted via trigger_all_votes() which runs in
+                    # parallel. The polling loop waits for both human and AI votes.
+                    # The old is_loyal_ai instant game-over block has been removed.
+                    for _ in range(5):
+                        votes = await firestore_client.get_votes(game_id)
+                        if all(v is not None for v in votes.values()):
+                            result = await game_master.tally_votes(game_id)
+                            await game.inject_player_message(
+                                "SYSTEM",
+                                f"VOTE RESULT: {json.dumps(result)}. Narrate this dramatically."
+                            )
+                            break
+                        await asyncio.sleep(2)
                 
                 case "night_action":
                     await firestore_client.record_night_action(
@@ -1368,9 +1697,57 @@ async def game_websocket(websocket: WebSocket, game_id: str):
                 
                 case "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
-    
-    except WebSocketDisconnect:
-        await game.remove_player(player_id)
+
+    except WebSocketDisconnect as exc:
+        logger.info("game_ws_disconnect", extra={
+            "game_id": game_id,
+            "player_id": player_id,
+            "code": getattr(exc, "code", None),
+        })
+        await game.remove_player(player_id)  # also releases speaker lock if held
+
+
+@app.websocket("/ws/audio/{game_id}")
+async def audio_websocket(websocket: WebSocket, game_id: str):
+    """Dedicated binary audio WebSocket (v5.0).
+
+    Receives raw binary PCM16 frames (16 kHz, mono) from the player's mic.
+    No JSON envelope. No base64 encoding. Each received binary frame is
+    forwarded directly to NarratorSession.send_audio().
+
+    Lifecycle:
+    - Player opens this connection after server sends speaker_granted.
+    - useAudioCapture.js AudioWorklet feeds raw PCM chunks here.
+    - If this WS drops mid-capture (code 1006 or any disconnect), the server
+      releases the speaker lock and logs the event; the game WS is unaffected.
+    """
+    await websocket.accept()
+    player_id = websocket.query_params.get("playerId")
+    if not player_id or game_id not in active_games:
+        await websocket.close(code=1008)
+        return
+
+    game = active_games[game_id]
+    game._audio_websockets[player_id] = websocket
+    character_name = await firestore_client.get_player_name(game_id, player_id)
+
+    try:
+        while True:
+            pcm_bytes = await websocket.receive_bytes()
+            # Forward raw PCM to the Gemini Live API session
+            if game.live_queue:
+                await game.narrator_session.send_audio(pcm_bytes, speaker=character_name)
+
+    except WebSocketDisconnect as exc:
+        logger.info("audio_ws_disconnect", extra={
+            "game_id": game_id,
+            "player_id": player_id,
+            "code": getattr(exc, "code", None),
+        })
+    finally:
+        game._audio_websockets.pop(player_id, None)
+        # Release speaker lock if this player held it
+        await game.force_release_speaker_on_disconnect(player_id)
 ```
 
 ---
@@ -1400,15 +1777,16 @@ fireside-db/
 │       ├── character_cast: string[]       # All character names in this game (players + AI)
 │       ├── generated_characters: map[]    # LLM-generated: [{name, intro, personality_hook}, ...]
 │       │
-│       ├── ai_character/                  # Embedded document
-│       │   ├── name: string               # "Tinker Orin" (LLM-generated)
-│       │   ├── intro: string              # Character introduction for narrator
-│       │   ├── role: string               # §12.3.10: Any role — "shapeshifter", "seer", "villager", etc.
-│       │   ├── alive: boolean             # Is AI character still in the game
-│       │   ├── backstory: string          # Character personality_hook for Traitor Agent
-│       │   ├── personality_hook: string   # Behavioral trait for roleplay
-│       │   ├── is_traitor: boolean        # §12.3.10: true if shapeshifter, false if loyal
-│       │   └── suspicion_level: number    # 0-100, tracked for strategy
+│       ├── ai_characters: array[]          # v4.0: Array of AI character documents (was singular ai_character)
+│       │   └── [index]/                   # Each AI character
+│       │       ├── name: string               # "Tinker Orin" (LLM-generated)
+│       │       ├── intro: string              # Character introduction for narrator
+│       │       ├── role: string               # §12.3.10: Any role — "shapeshifter", "seer", "villager", etc.
+│       │       ├── alive: boolean             # Is AI character still in the game
+│       │       ├── backstory: string          # Character personality_hook for Traitor Agent
+│       │       ├── personality_hook: string   # Behavioral trait for roleplay
+│       │       ├── is_traitor: boolean        # §12.3.10: true if shapeshifter, false if loyal
+│       │       └── suspicion_level: number    # 0-100, tracked for strategy
 │       │
 │       ├── session/                       # Live API session tracking
 │       │   ├── handle: string | null      # Session resumption handle
@@ -1431,10 +1809,13 @@ fireside-db/
 │       │
 │       ├── events/                        # Subcollection (append-only log)
 │       │   └── {eventId}/                 # Auto-ID
-│       │       ├── type: string           # "night_action" | "accusation" | "vote" | 
+│       │       ├── type: string           # "night_action" | "accusation" | "vote" |
 │       │       │                          # "elimination" | "story_beat" | "phase_change" |
 │       │       │                          # "ai_strategy" (P1: hidden until post-game) |
-│       │       │                          # "hunter_revenge" (P1: Hunter's death kill)
+│       │       │                          # "hunter_revenge" (P1: Hunter's death kill) |
+│       │       │                          # v4.0: "{fs_field}_night_{role}" pattern for AI night events
+│       │       │                          #   e.g. "ai_character_night_kill", "ai_character_2_night_heal"
+│       │       │                          # "ai_seer_result" (v4.0: AI Seer investigation result)
 │       │       ├── round: number          # Which round this event occurred in
 │       │       ├── phase: string          # Which phase
 │       │       ├── actor: string          # playerId | "ai" | "system"
@@ -1558,15 +1939,22 @@ async def reconnect_narrator(game: GameSession):
     state = await firestore_client.get_game_state(game.game_id)
     recent_events = await firestore_client.get_recent_events(game.game_id, limit=20)
     
+    # **Implementation Update (v4.0):** state['ai_characters'] is now an array.
+    # Build a summary line for each AI character.
+    ai_summary = "; ".join(
+        f"{ai['name']} (alive: {ai['alive']})"
+        for ai in state.get('ai_characters', [])
+    )
+
     state_summary = f"""
     GAME STATE SUMMARY (reconnection):
     Round: {state['round']}, Phase: {state['phase']}
     Alive players: {', '.join(p['name'] for p in state['alive_players'])}
-    AI character: {state['ai_character']['name']} (alive: {state['ai_character']['alive']})
-    
+    AI characters: {ai_summary}
+
     Recent events:
     {chr(10).join(e['narration'] for e in recent_events)}
-    
+
     Continue narrating from this point. Do not repeat information already narrated.
     """
     
@@ -1588,9 +1976,12 @@ async def reconnect_narrator(game: GameSession):
 ## 8.1 React Component Tree
 
 ```
-**Implementation Update:** The actual component tree reflects the shipped architecture.
+**Implementation Update (v4.0):** The actual component tree reflects the shipped architecture.
 Lobby and game share a single route. GameContext (useReducer) manages global state
-with sessionStorage persistence. AI character is hidden from the character grid.
+with sessionStorage persistence. AI characters are stored as `aiCharacters: []` array
+in GameContext state. `useWebSocket.js` dispatches `SET_AI_CHARACTERS` action to populate
+the array. AI characters are hidden from the character grid. VotePanel.jsx and
+GameScreen.jsx iterate the array for multi-AI support.
 
 ```
 App (GameProvider wraps all routes)
@@ -1922,7 +2313,7 @@ fireside-betrayal/
 │   │   └── game.py                # Pydantic models (GameState, Role, Phase, AICharacter, etc.)
 │   ├── routers/
 │   │   ├── game_router.py         # REST API (create/join/start/events/result/narrator-preview)
-│   │   └── ws_router.py           # WebSocket hub (connection mgmt, message dispatch, phase auto-advance)
+│   │   └── ws_router.py           # WebSocket hub: /ws/{gameId} (game state) + /ws/audio/{gameId} (binary mic PCM)
 │   ├── services/
 │   │   └── firestore_service.py   # Async Firestore wrapper (games, players, events CRUD)
 │   ├── utils/
@@ -1940,8 +2331,9 @@ fireside-betrayal/
 │   │   ├── context/
 │   │   │   └── GameContext.jsx     # Global game state (useReducer + sessionStorage persistence)
 │   │   ├── hooks/
-│   │   │   ├── useWebSocket.js    # WebSocket connection + message routing + auto-reconnect
-│   │   │   └── useAudioPlayer.js  # PCM audio playback via AudioContext
+│   │   │   ├── useWebSocket.js    # Game-state WS connection + message routing + auto-reconnect
+│   │   │   ├── useAudioPlayer.js  # PCM audio playback via AudioContext
+│   │   │   └── useAudioCapture.js # Push-to-talk mic capture → /ws/audio/{gameId} binary frames
 │   │   ├── components/
 │   │   │   ├── Landing/
 │   │   │   │   └── Landing.jsx    # Home page with narrator audio preview
@@ -1998,8 +2390,10 @@ fireside-betrayal/
 # test_game_master.py
 
 async def test_role_assignment_always_includes_seer():
-    """Every game with 3+ players must have exactly 1 seer."""
-    for n in range(3, 7):
+    """Every game with 4+ players must have exactly 1 seer.
+    (Minimum player count is 4; ROLE_DISTRIBUTION[3] was removed in v4.0.)
+    """
+    for n in range(4, 7):
         players = [f"player_{i}" for i in range(n)]
         result = await game_master.assign_roles("test_game", players)
         roles = list(result["player_roles"].values())
@@ -2008,13 +2402,19 @@ async def test_role_assignment_always_includes_seer():
 async def test_vote_tie_no_elimination():
     """A tied vote should result in no elimination."""
     # Setup: 4 players, 2 vote for A, 2 vote for B
-    result = await game_master.count_votes("test_game")
+    # **Implementation Update (v4.0):** renamed to tally_votes().
+    result = await game_master.tally_votes("test_game")
     assert result["result"] == "tie"
     assert result["eliminated"] is None
 
 async def test_villagers_win_when_shapeshifter_eliminated():
-    """Game ends with villager victory when AI character is voted out."""
-    await firestore_client.eliminate_ai_character("test_game")
+    """Game ends with villager victory when all traitor AI characters are eliminated.
+
+    **Implementation Update (v4.0):** check_win_condition iterates
+    ai_characters[] to determine if any traitor AI is still alive.
+    Use eliminate_character() (unified) to eliminate the AI by character name.
+    """
+    await game_master.eliminate_character("test_game", traitor_ai_name)
     result = await game_master.check_win_condition("test_game")
     assert result["game_over"] is True
     assert result["winner"] == "villagers"
@@ -2620,8 +3020,10 @@ def get_effective_difficulty(self, player_count: int, selected_difficulty: str) 
 
 **Implementation Update:** Random alignment is derived from difficulty (Normal/Hard = true, Easy = false) — no separate toggle. The design spec proposed a phantom NPC shapeshifter when AI draws a village role; the actual implementation removes the shapeshifter entirely when the AI is loyal. This simplifies the game: "Is the AI helping or hurting?" becomes the meta-question.
 
+**Implementation Update (v4.0):** The `LoyalAgent` class has been removed. The loyal AI prompt (`LOYAL_AI_PROMPT`) is now used inline within `generate_dialog()` when `ai_char["is_traitor"] == False`. Role assignment writes to the `ai_characters[]` array instead of the singular `ai_character` document. The `is_traitor` flag on each AI character entry drives prompt routing in all standalone functions.
+
 ```python
-# New: Loyal AI Agent — cooperative version of the Traitor Agent
+# Loyal AI prompt — used inline within generate_dialog() (v4.0)
 
 LOYAL_AI_PROMPT = """You are a LOYAL village member playing as {character_name} ({role_name}).
 You are an AI, but you are on the VILLAGE'S side. Your goal is to help identify the Shapeshifter.
@@ -2640,60 +3042,55 @@ BEHAVIORAL GUIDELINES:
 - Defend yourself if accused, but don't protest too much
 """
 
-# Updated role assignment — AI can now draw any role
-async def assign_roles_v2(self, game_id: str, player_ids: list[str], 
+# Updated role assignment — AI characters stored in ai_characters[] array (v4.0)
+async def assign_roles_v2(self, game_id: str, player_ids: list[str],
                            difficulty: str = "normal",
                            random_alignment: bool = False) -> dict:
-    """Assign roles with optional random AI alignment."""
+    """Assign roles with optional random AI alignment.
+
+    v4.0: Writes ai_characters[] array to Firestore instead of singular ai_character.
+    Each entry includes is_traitor flag for prompt routing in standalone functions.
+    """
     player_count = len(player_ids)
     dist = self.get_distribution(player_count, difficulty)
-    
-    # Build role pool: all human roles + shapeshifter
+
     role_pool = []
     for role, count in dist.items():
         role_pool.extend([role] * count)
     role_pool.append("shapeshifter")
-    
+
     if random_alignment:
-        # AI draws a random role from the full pool
         random.shuffle(role_pool)
         ai_role = role_pool.pop()
         ai_is_traitor = (ai_role == "shapeshifter")
-        
-        # If AI didn't draw shapeshifter, assign shapeshifter to a 
-        # "phantom" NPC that acts automatically (no human player)
-        # OR: in random alignment mode, there may be NO shapeshifter 
-        # among players — the AI is a loyal villager.
-        # Decision: No shapeshifter if AI draws village role.
-        # The game becomes "is the AI helping or hurting?" not "find the werewolf."
     else:
-        # Default: AI is always the shapeshifter
         ai_role = "shapeshifter"
         ai_is_traitor = True
-    
-    # Select agent based on alignment
-    ai_agent = traitor_agent if ai_is_traitor else loyal_ai_agent
-    
+
+    # v4.0: No class-based agent selection — is_traitor flag drives
+    # prompt routing in generate_dialog(), select_night_target(), etc.
     return {
         "ai_role": ai_role,
         "ai_is_traitor": ai_is_traitor,
-        "ai_agent": ai_agent,
         "player_roles": dict(zip(player_ids, role_pool))
     }
 ```
 
-**Firestore schema addition:**
+**Firestore schema addition (v4.0):**
 ```
 games/{gameId}/
   ├── random_alignment: true | false
-  ├── ai_character: { 
-  │     name: "...", 
-  │     role: "seer",           # Could be any role now
-  │     is_traitor: false       # NEW — was the AI hostile or friendly?
-  │   }
+  ├── ai_characters: [           # v4.0: Array replaces singular ai_character
+  │     {
+  │       name: "...",
+  │       role: "seer",          # Could be any role now
+  │       is_traitor: false      # Drives prompt routing in standalone functions
+  │     },
+  │     ...                      # Supports N AI characters
+  │   ]
 ```
 
-**Post-game reveal update:** The reveal must now show whether the AI was friend or foe:
+**Post-game reveal update:** The reveal must now show whether each AI was friend or foe:
 `"The AI was Herbalist Mira — and was on YOUR side the whole time. Did you trust it?"`
 
 ---
@@ -3150,7 +3547,7 @@ narrator_agent = Agent(
     name="fireside_narrator",
     model="gemini-2.5-flash-native-audio-latest",
     instruction=build_narrator_prompt(narrator_preset, BASE_NARRATOR_INSTRUCTION),
-    tools=[get_game_state, advance_phase, narrate_event, inject_traitor_dialog],
+    tools=[get_game_state, advance_phase, narrate_event, inject_traitor_dialog, start_phase_timer],
     sub_agents=[traitor_agent],
 )
 
@@ -3473,7 +3870,7 @@ Each narrator preset has a short audio sample generated via `gemini-2.5-flash-pr
 
 **Files:** `ws_router.py`
 
-A 90-second `asyncio.Task` is scheduled when the `day_vote` phase begins. If not all players have voted by expiration, the vote auto-resolves with whatever votes have been cast. The timeout task is cancelled when votes are resolved normally. This prevents games from hanging indefinitely when a player disconnects during voting.
+A 60-second `asyncio.Task` is scheduled when the `day_vote` phase begins (reduced from 90s in v5.0 — voting is a single tap; 60s is ample). If not all players have voted by expiration, the vote auto-resolves with whatever votes have been cast. The timeout task is cancelled when votes are resolved normally. This prevents games from hanging indefinitely when a player disconnects during voting.
 
 ## 12.4.6 WebSocket Error Safety
 
@@ -3695,6 +4092,129 @@ Dependencies were pinned to versions compatible with Python 3.14 (forward-compat
 
 ---
 
+# 12.6 v5.0 Architecture Additions (March 12, 2026)
+
+The following features were added after the v4.0 milestone to fix the narrator disconnection blocker (BLOCKER from Round 4 playtest) and improve real-time robustness.
+
+---
+
+## 12.6.1 Separate Audio WebSocket
+
+**Files:** `backend/routers/ws_router.py` (`/ws/audio/{game_id}` endpoint), `frontend/src/hooks/useAudioCapture.js`
+
+Player microphone audio is now transported over a dedicated binary WebSocket (`/ws/audio/{game_id}`) rather than being base64-encoded and embedded in JSON messages on the game-state WebSocket.
+
+**Protocol:**
+- Client opens `/ws/audio/{game_id}?playerId=xxx` after receiving `speaker_granted`.
+- Each AudioWorklet processor callback sends one binary frame: raw 16-bit PCM, 16 kHz, mono. No JSON, no base64.
+- Server receives `bytes` via `websocket.receive_bytes()` and calls `narrator_session.send_audio(pcm_bytes, speaker=character_name)` directly.
+- If the audio WS drops (code 1006 or any error), the server releases the speaker lock and logs the disconnect. The game WS is completely unaffected.
+- `useAudioCapture.js` manages the audio WS lifecycle: creates on `start_speaking`, destroys on `stop_speaking` or component unmount.
+
+**Benefits:**
+- ~33% reduction in per-frame bytes (no base64 encoding overhead).
+- Game WS no longer carries audio traffic — eliminates saturation-induced 1006 disconnections.
+- Independent failure domains: audio drops ≠ game state loss.
+
+---
+
+## 12.6.2 Push-to-Talk Speaker Lock
+
+**Files:** `backend/routers/ws_router.py` (`ConnectionManager`, `GameSession.claim_speaker_lock`)
+
+Only one player can hold the microphone at a time. The server maintains `_current_speaker: Dict[str, Optional[str]]` (game_id → player_id) and `_speaker_timeout_tasks: Dict[str, asyncio.Task]` (auto-release after 30s).
+
+**Lock lifecycle:**
+1. Player sends `{ type: "start_speaking" }` on the game WS.
+2. Server checks: player alive? lock free? If both, `_current_speaker` is set immediately before any await (TOCTOU-safe).
+3. Server sends `{ type: "speaker_granted" }` to the player (private).
+4. Player opens the audio WS and begins streaming PCM.
+5. Lock is released on any of: `stop_speaking` message, game WS disconnect, audio WS disconnect, phase transition, game end, or 30s timeout.
+6. On release, server broadcasts `{ type: "speaker_released", playerId, reason }` to all players.
+7. Dead players receive `{ type: "speaker_error", reason: "dead_players_cannot_speak" }` and cannot claim the lock.
+
+**TOCTOU safety:** The `_current_speaker` field is written synchronously (no `await` between the check and the write). Python's async event loop is single-threaded, so no two coroutines can interleave between the check and write within the same turn. This guarantees at most one player holds the lock at any moment.
+
+---
+
+## 12.6.3 Per-Player Priority Queues
+
+**Files:** `backend/routers/ws_router.py` (`ConnectionManager`)
+
+The `ConnectionManager` class (v5.0) gives each connected player two outbound queues:
+
+| Queue | Type | Bound | Contents |
+|-------|------|-------|----------|
+| `control_queue` | `asyncio.Queue` | unbounded | Phase changes, eliminations, role messages, vote updates, errors |
+| `audio_queue` | `asyncio.Queue` | maxsize=256 | Narrator PCM audio chunks |
+
+A dedicated `_player_sender` coroutine per connection drains `control_queue` first (all available messages), then pulls one audio chunk. This guarantees control-plane messages are never delayed behind audio volume. If `audio_queue` is full, incoming audio chunks are dropped silently (older chunks are more stale; dropping is preferable to memory growth or stalling).
+
+**Chat local echo:** When a player sends `{ type: "message" }`, the server immediately enqueues the transcript back to that player's `control_queue` with `echo: true`. Other players receive the same message without the flag. The frontend deduplicates by ignoring non-echo transcripts from the sender's own character name that match the last message sent.
+
+---
+
+## 12.6.4 Phase Timer Improvements
+
+**Files:** `backend/routers/ws_router.py`, `backend/agents/narrator_agent.py`, `frontend/src/hooks/useWebSocket.js`, `frontend/src/context/GameContext.jsx`
+
+**Narrator-driven timer start:**
+- `phase_change` messages no longer include `timer_seconds`. The frontend shows a "waiting for narrator" state after a phase change.
+- The narrator calls the new `start_phase_timer` tool after finishing its opening narration (e.g., after announcing night has fallen and instructing players on their actions).
+- The server broadcasts `{ type: "phase_timer_start", phase, timerSeconds }` to all players.
+- The frontend starts its countdown only on receiving `phase_timer_start`.
+
+**15-second safety fallback:**
+- On every phase transition, the server schedules a `_phase_timer_safety_task` (15-second `asyncio.Task`).
+- If `start_phase_timer` is called by the narrator before 15s, the safety task is cancelled.
+- If the narrator does not call it within 15s (e.g., slow Gemini response, silent session), the safety task fires and broadcasts `phase_timer_start` automatically.
+- This prevents games from hanging indefinitely when the narrator is unresponsive.
+
+**Updated timeout values (v5.0):**
+| Phase | v4.0 timeout | v5.0 timeout | Notes |
+|-------|-------------|-------------|-------|
+| night | 45s | 30s | Night actions are a single tap; 30s is ample |
+| day_discussion | 120–240s | 120–240s | Unchanged (scaled to alive count) |
+| day_vote | 90s | 60s | Voting is a single tap; 60s is ample |
+
+**Minimum discussion guard:**
+- The narrator cannot call `start_phase_timer` during `day_discussion` until at least 45 seconds have elapsed since the phase began.
+- If the narrator calls it before 45s, the server ignores the call and logs a warning. The 15s safety fallback clock resets to fire at `45s + 15s = 60s` if the narrator still hasn't called it again.
+- This ensures every player has at least 45 seconds to speak before the countdown begins.
+
+---
+
+## 12.6.5 WebSocket Keepalive
+
+**Files:** `backend/routers/ws_router.py`, `backend/main.py`
+
+WebSocket ping/pong was previously disabled (contributed to silent 1006 disconnections). Re-enabled in v5.0:
+
+```python
+# uvicorn launch / websocket accept configuration
+# Ping interval: 20s — server sends a ping every 20 seconds
+# Ping timeout: 30s — if no pong received within 30s of sending ping, connection is closed
+# These values match the Cloud Run request timeout headroom (60s max idle)
+```
+
+Disconnect events on both the game WS and audio WS are now logged with structured fields (`game_id`, `player_id`, `code`) rather than silently swallowed. This surfaces 1006 codes in Cloud Logging for diagnosis.
+
+---
+
+## 12.6.6 Shapeshifter Skip
+
+**Files:** `backend/routers/ws_router.py` (handler), `frontend/src/components/Game/GameScreen.jsx` (skip button)
+
+When a human player holds the shapeshifter role (via Random AI Alignment, §12.3.10), they can now choose to skip their night kill:
+
+- **Client → Server:** `{ type: "skip_night_kill" }` sent during the night phase.
+- **Server validation:** Checks that the player holds the `shapeshifter` role and the current phase is `night`. Invalid requests receive an `error` response.
+- **Firestore write:** Logs a `shapeshifter_skip` event with `actor = player_id`. Records a night action with `action = "skip_night_kill", target = null`.
+- **Night resolution:** `resolve_night()` treats a null shapeshifter target as no kill — nobody is eliminated by the shapeshifter that night. Healer and Seer actions still resolve normally.
+- **Frontend:** A "Skip" button appears alongside the character selection grid for shapeshifter players during night phase. Tapping it sends `skip_night_kill` and hides the selection UI.
+
+---
+
 # 13. PRD Cross-Reference & Compliance Matrix
 
 | PRD Requirement | TDD Section | Status |
@@ -3702,7 +4222,7 @@ Dependencies were pinned to versions compatible with Python 3.14 (forward-compat
 | Voice narration + interruptions (P0) | §3.1 Narrator Agent, §5 WebSocket Protocol | ✅ Shipped |
 | Role assignment system (P0) | §3.3 Game Master, §6 Data Model | ✅ Shipped |
 | Game state machine (P0) | §3.3 GamePhase enum + transitions | ✅ Shipped |
-| AI-as-player Traitor Agent (P0) | §3.2 Traitor Agent, §4.2–4.3 | ✅ Shipped |
+| AI-as-player Agent (P0) | §3.2 AI Agent Functions, §4.2 | ✅ Shipped (v4.0: unified standalone functions) |
 | Multiplayer WebSocket hub (P0) | §5 WebSocket Protocol, §5.3 Server | ✅ Shipped |
 | Voting system (P0) | §3.3 count_votes | ✅ Shipped |
 | Player phone UI (P0) | §8 Frontend Architecture | ✅ Shipped |
@@ -3747,6 +4267,29 @@ Dependencies were pinned to versions compatible with Python 3.14 (forward-compat
 | Multi-stage Dockerfile | §12.5.6 | ✅ Shipped |
 | Terraform IaC (updated) | §12.5.6 | ✅ Shipped |
 | Deployment guide | §12.5.6 | ✅ Shipped |
+| **v4.0 Architecture** | | |
+| Unified AI standalone functions | §3.2, §4.2 | ✅ Shipped — replaces TraitorAgent + LoyalAgent classes |
+| Multi-AI character support (ai_characters[]) | §3.2, §3.3, §6.1 | ✅ Shipped — N AI characters via array |
+| asyncio.gather() concurrency | §3.2, §4.2 | ✅ Shipped — parallel AI votes/dialogs/night actions |
+| AI bodyguard sacrifice | §3.3 resolve_night | ✅ Shipped |
+| AI Seer investigation | §3.3 resolve_night | ✅ Shipped — ai_seer_result event type |
+| Polling vote wait | §5.3 | ✅ Shipped — 5 iterations x 2s |
+| Difficulty adapter next() iterator | §5.3 | ✅ Shipped — finds traitor AI via next() |
+| ROLE_DISTRIBUTION[3] removed | §3.3 | ✅ Shipped — minimum 4 characters |
+| {fs_field}_night_{role} event pattern | §6.1 | ✅ Shipped |
+| Frontend aiCharacters[] array | §8.1 | ✅ Shipped — GameContext + useWebSocket |
+| Wire protocol split/assemble pattern | §5.2, §5.3 | ✅ Shipped — backend sends aiCharacter/aiCharacter2; frontend assembles aiCharacters[] |
+| Narrator get_game_state ai_characters[] | §4.1 | ✅ Shipped — Narrator tool returns array, not singular field |
+| **v5.0 Architecture** | | |
+| Separate audio WebSocket /ws/audio/{gameId} | §12.6.1, §5.2, §5.3 | ✅ Shipped — binary PCM frames, isolated lifecycle |
+| Push-to-talk speaker lock | §12.6.2, §2.2 Decision 6 | ✅ Shipped — TOCTOU-safe, 30s auto-release, dead-player guard |
+| Per-player priority queues (ConnectionManager) | §12.6.3, §5.3 | ✅ Shipped — control + audio queues, local echo dedup |
+| Phase timer: start_phase_timer narrator tool | §12.6.4, §4.1, §4.3 | ✅ Shipped — narrator signals narration complete |
+| Phase timer: 15s safety fallback | §12.6.4 | ✅ Shipped — fires if narrator never calls start_phase_timer |
+| Phase timer: updated timeouts (night 30s, vote 60s) | §12.6.4 | ✅ Shipped |
+| Phase timer: 45s min discussion guard | §12.6.4 | ✅ Shipped |
+| WebSocket keepalive (ping 20s / timeout 30s) | §12.6.5 | ✅ Shipped — re-enabled; disconnect events logged |
+| Shapeshifter skip (skip_night_kill) | §12.6.6, §5.2 | ✅ Shipped — frontend button + backend null-target resolution |
 
 ---
 
@@ -3787,6 +4330,6 @@ PORT=8080
 ---
 
 *Document created: February 21, 2026*
-*Last updated: February 26, 2026 — all P0/P1/P2 features shipped (17/18 P2 specs, §12.3.12 deferred) + post-P2 voice input, discussion timer, speaker identification, human shapeshifter, infrastructure overhaul*
+*Last updated: March 12, 2026 — v5.0: separate audio WebSocket (/ws/audio/{gameId}), push-to-talk speaker lock, per-player priority queues (ConnectionManager), phase timer improvements (start_phase_timer narrator tool + 15s safety fallback + updated timeouts), WebSocket keepalive re-enabled with disconnect logging, Shapeshifter skip (skip_night_kill)*
 *Companion PRD: PRD.md v2.0*
 *Hackathon deadline: March 16, 2026*

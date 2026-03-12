@@ -3,6 +3,8 @@ graph TB
         P1["Player 1<br/>Mobile Browser<br/>AudioWorklet Mic Capture"]
         P2["Player 2<br/>Mobile Browser<br/>AudioWorklet Mic Capture"]
         P3["Player N<br/>Mobile Browser"]
+        FE_STATE["Frontend State<br/>aiCharacters: [] array<br/>(variable-count AI chars)"]
+        PTT["Push-to-Talk<br/>Speaker Lock<br/>(one active speaker at a time)"]
     end
 
     subgraph CloudRun["Google Cloud Run"]
@@ -11,7 +13,10 @@ graph TB
 
         subgraph Agents["AI Agents"]
             NA["Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy<br/>Dual-Mode: Theatrical + Moderator"]
-            TA["Traitor Agent<br/>gemini-2.5-flash<br/>Deception Strategy<br/>Difficulty: Easy/Normal/Hard<br/>Voice-Optimized Dialog"]
+            subgraph AIFuncs["traitor_agent.py — Unified AI Functions"]
+                TRIGGER["Trigger Functions<br/>trigger_all_night_actions()<br/>trigger_all_votes()<br/>trigger_all_dialogs()<br/>asyncio.gather parallel exec"]
+                INDIV["Individual AI Functions<br/>generate_dialog()<br/>select_night_target()<br/>select_vote()<br/>select_loyal_night_action()<br/>Loops via _ai_chars_with_fields()"]
+            end
             GM["Game Master<br/>Deterministic Python<br/>Role Assignment + Phase Transitions<br/>Win Conditions + Vote Resolution<br/>Human Shapeshifter Support"]
             SA["Scene Agent<br/>Image Generation<br/>Phase Transition Illustrations"]
             CV["Camera Vote Agent<br/>Gemini Vision<br/>Hand-Counting (In-Person)"]
@@ -19,8 +24,9 @@ graph TB
             SL["Strategy Logger<br/>Cross-Game Learning<br/>Intelligence Brief"]
         end
 
-        subgraph VoicePipeline["Player Voice Input Pipeline"]
-            DECODE["Base64 Decode<br/>+ Speaker Lookup"]
+        subgraph VoicePipeline["Player Voice Input Pipeline (Audio WS only)"]
+            AWS["Audio WS Handler<br/>/ws/audio/{game_id}<br/>Binary PCM frames<br/>Speaker lock enforced"]
+            DECODE["Binary PCM Decode<br/>+ Speaker Lookup"]
             SPKR["Speaker Identification<br/>Character Name Annotation<br/>end_of_turn=False"]
             TBUF["Transcript Buffer<br/>0.8s Debounce Flush"]
         end
@@ -41,14 +47,18 @@ graph TB
         DOCK["Multi-Stage Dockerfile<br/>node:18-slim -> python:3.11-slim"]
     end
 
-    %% Player connections
-    P1 <-->|"WebSocket /ws/gameId<br/>text + audio + votes"| API
-    P2 <-->|"WebSocket<br/>text + audio + votes"| API
+    %% Player connections — two separate WebSocket paths per player
+    P1 <-->|"WS /ws/{game_id}<br/>game state · chat · votes · phase changes"| API
+    P2 <-->|"WS /ws/{game_id}<br/>game state · chat · votes · phase changes"| API
     P3 <-->|"REST /api/*"| API
 
-    %% Voice input flow: Player mic -> Server decode -> Speaker ID -> Gemini
-    P1 -.->|"player_audio<br/>Base64 PCM16 16kHz"| DECODE
-    P2 -.->|"player_audio<br/>Base64 PCM16 16kHz"| DECODE
+    %% Audio WebSocket — separate connection, binary PCM only
+    P1 -.->|"WS /ws/audio/{game_id}<br/>binary PCM16 16kHz frames<br/>(push-to-talk, speaker lock)"| AWS
+    P2 -.->|"WS /ws/audio/{game_id}<br/>binary PCM16 16kHz frames<br/>(push-to-talk, speaker lock)"| AWS
+    PTT -.->|"grants / revokes<br/>speaker lock"| AWS
+
+    %% Voice input flow: Audio WS -> Decode -> Speaker ID -> Narrator only
+    AWS -->|"raw PCM bytes + player_id"| DECODE
     DECODE -->|"PCM bytes + character_name"| SPKR
     SPKR -->|"[VOICE] Speaker annotation<br/>+ raw PCM"| NA
 
@@ -58,7 +68,6 @@ graph TB
 
     %% Agent connections
     API --> NA
-    API --> TA
     API --> GM
     API --> SA
     API --> CV
@@ -66,9 +75,15 @@ graph TB
     API --> SL
     API --> DT
 
+    %% Unified AI function flow
+    GM -->|"night/vote/discussion phases"| TRIGGER
+    API -->|"ws_router calls"| TRIGGER
+    NA -->|"narrator triggers"| TRIGGER
+    TRIGGER -->|"asyncio.gather<br/>parallel per AI char"| INDIV
+
     %% Gemini connections
     NA <-->|"Bidirectional Voice<br/>+ Speaker Annotations"| GLive
-    TA -->|"Text Completions"| GFlash
+    INDIV -->|"Text Completions<br/>all AI characters"| GFlash
     NA -->|"Audio Previews"| GTTS
     SA -->|"Image Gen"| GFlash
     CV -->|"Vision Analysis"| GFlash
@@ -97,11 +112,11 @@ graph TB
     classDef infra fill:#374151,stroke:#6b7280,color:#fff
     classDef timer fill:#92400e,stroke:#d97706,color:#fff
 
-    class P1,P2,P3 player
+    class P1,P2,P3,FE_STATE,PTT player
     class API cloud
-    class NA,TA,GM,SA,CV,AR,SL agent
+    class NA,TRIGGER,INDIV,GM,SA,CV,AR,SL agent
     class FS gcp
     class GLive,GFlash,GTTS gemini
-    class DECODE,SPKR,TBUF voice
+    class AWS,DECODE,SPKR,TBUF voice
     class TF,DOCK infra
     class DT timer

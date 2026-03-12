@@ -250,14 +250,19 @@ gcloud services enable \
   firestore.googleapis.com \
   aiplatform.googleapis.com
 
+# Create Artifact Registry repo (if needed)
+gcloud artifacts repositories create fireside \
+  --repository-format=docker \
+  --location=us-central1 \
+  --project=$PROJECT_ID 2>/dev/null || true
+
 # Build and push to Artifact Registry
-gcloud builds submit \
-  --tag gcr.io/$PROJECT_ID/fireside-betrayal \
-  --timeout=600
+export IMAGE=us-central1-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal:latest
+gcloud builds submit --tag $IMAGE --timeout=600
 
 # Deploy to Cloud Run
 gcloud run deploy fireside-betrayal \
-  --image gcr.io/$PROJECT_ID/fireside-betrayal \
+  --image $IMAGE \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
@@ -267,13 +272,18 @@ gcloud run deploy fireside-betrayal \
   --min-instances 0 \
   --max-instances 10 \
   --session-affinity \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GEMINI_API_KEY=your-key,EXTRA_ORIGIN=https://fireside-betrayal-HASH.run.app"
+  --timeout 3600 \
+  --no-cpu-throttling \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GEMINI_API_KEY=your-key,DEBUG=false"
 ```
 
 **Critical flags:**
 - `--session-affinity` — Required for WebSocket connections. Without this, subsequent WS frames may route to a different instance.
 - `--port 8000` — Matches Dockerfile `EXPOSE 8000`
-- `EXTRA_ORIGIN` — Set this to your Cloud Run URL so CORS allows it. Get the URL after first deploy, then update.
+- `--no-cpu-throttling` — Keeps CPU allocated between requests, required for long-lived WebSocket connections and background AI tasks.
+- `--timeout 3600` — 1-hour request timeout for WebSocket connections (default 300s is too short for game sessions).
+
+> **Tip:** Use `./deploy.sh` instead of running these commands manually. It handles API enablement, Artifact Registry creation, Firestore provisioning, image build, deployment, and automatically sets `EXTRA_ORIGIN` to the Cloud Run URL for CORS.
 
 ### 2.5 Post-Deploy: Set CORS Origin
 
@@ -303,6 +313,7 @@ Follow the DNS verification steps in the output.
 |----------|----------|---------|-------------|
 | `GOOGLE_CLOUD_PROJECT` | Yes | `""` | GCP project ID for Firestore |
 | `GEMINI_API_KEY` | Yes | `""` | Gemini API key for all AI agents |
+| `GCP_REGION` | No | `us-central1` | GCP region for Cloud Run, Firestore, and Artifact Registry |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Local only | `""` | Path to service account JSON |
 | `FIRESTORE_EMULATOR_HOST` | No | `None` | Set to `localhost:8080` for emulator |
 | `NARRATOR_MODEL` | No | `gemini-2.5-flash-native-audio-latest` | Narrator voice model |
@@ -310,7 +321,7 @@ Follow the DNS verification steps in the output.
 | `NARRATOR_PREVIEW_MODEL` | No | `gemini-2.5-flash-preview-tts` | TTS for narrator preset previews |
 | `NARRATOR_VOICE` | No | `Charon` | Default narrator voice name |
 | `ALLOWED_ORIGINS` | No | `localhost:5173,localhost:3000` | CORS origins (comma-separated) |
-| `EXTRA_ORIGIN` | No | `""` | Production Cloud Run URL for CORS |
+| `EXTRA_ORIGIN` | No | `""` | Production Cloud Run URL for CORS (set automatically by `deploy.sh`) |
 | `DEBUG` | No | `false` | Enable debug logging |
 
 ---
@@ -487,3 +498,14 @@ terraform destroy   # Removes all provisioned resources
 | `--workers 1` in Dockerfile | Required — WebSocket state is per-process | Do not increase workers; scale via Cloud Run instances instead |
 | `terraform plan` fails with auth error | Not authenticated with GCP | Run `gcloud auth application-default login` |
 | `terraform apply` — image not found | Docker image not pushed yet | Build and push the image first (see §5.3), then `terraform apply` |
+
+---
+
+## Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-03-12 | Updated deployment docs: manual deploy now uses Artifact Registry (not GCR), added `--no-cpu-throttling` and `--timeout 3600` flags, added `GCP_REGION` to env var reference |
+| 2026-03-12 | Unified AI architecture refactor: narrator and traitor agents consolidated into a single AI pipeline. No deployment changes required — same env vars, same Docker image, same Cloud Run config |
+| 2026-03-09 | Added Cloud Build pipeline (`cloudbuild.yaml`) and one-command deploy script (`deploy.sh`) |
+| 2026-03-08 | Initial deployment guide with Cloud Run, Terraform IaC, and Firestore setup |
