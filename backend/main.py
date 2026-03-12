@@ -69,6 +69,6 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "main:app", host="0.0.0.0", port=8000, reload=True,
-        ws_ping_interval=None,  # Disable — continuous audio is the heartbeat
-        ws_ping_timeout=None,
+        ws_ping_interval=20,   # Keep Cloud Run proxy alive (idle timeout)
+        ws_ping_timeout=30,   # Generous pong timeout for slow mobile connections
     )

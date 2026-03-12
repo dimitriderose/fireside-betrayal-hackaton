@@ -368,6 +368,15 @@ function NightActionPanel({ role, candidates, onAction }) {
               <span style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>{label} →</span>
             </button>
           ))}
+          {role === 'shapeshifter' && (
+            <button
+              className="btn btn-ghost"
+              style={{ justifyContent: 'center', padding: '12px 16px', color: 'var(--text-muted)', borderStyle: 'dashed' }}
+              onClick={() => onAction('skip')}
+            >
+              No Kill Tonight
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -1267,7 +1276,7 @@ export default function GameScreen() {
         {phase === 'night' && !isEliminated && nightActionSubmitted && ROLE_INFO[role]?.action && (
           <div className="container" style={{ paddingTop: 12, textAlign: 'center' }}>
             <p style={{ color: 'var(--success)', fontSize: '0.875rem' }}>
-              ✓ {nightActionTarget ? `You targeted ${nightActionTarget}.` : 'Your action has been submitted.'} Rest now…
+              ✓ {nightActionTarget === 'skip' ? 'You chose not to kill tonight.' : nightActionTarget ? `You targeted ${nightActionTarget}.` : 'Your action has been submitted.'} Rest now…
             </p>
             <div style={{ marginTop: 8 }}>
               <div className="pulse-glow" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--accent)', margin: '0 auto 6px' }} />

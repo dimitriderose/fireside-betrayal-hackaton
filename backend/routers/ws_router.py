@@ -190,7 +190,7 @@ def reset_tracker(game_id: str) -> None:
 _resolving_votes: Set[str] = set()
 
 # Vote timeout tasks — one per active day_vote phase.
-# Cancelled when votes resolve normally; fires _resolve_vote_and_advance after 90s
+# Cancelled when votes resolve normally; fires _resolve_vote_and_advance after 60s
 # to prevent a game hanging indefinitely if a player disconnects mid-vote.
 _vote_timeout_tasks: Dict[str, asyncio.Task] = {}
 
@@ -212,6 +212,17 @@ _NARRATOR_TIMEOUT_DELAYS: Dict[Phase, int] = {
 
 # Discussion warning tasks — sends narrator a wrap-up prompt before timeout
 _discussion_warning_tasks: Dict[str, asyncio.Task] = {}
+
+# Minimum discussion time — narrator cannot advance before this many seconds of
+# interactive discussion time (measured from when start_phase_timer is called).
+MIN_DISCUSSION_SECONDS = 45
+
+# Tracks when interactive timers actually started (after narrator's opening narration).
+# Used to enforce MIN_DISCUSSION_SECONDS.
+_phase_timer_start_times: Dict[str, float] = {}
+
+# Safety fallback tasks — auto-start timers if narrator doesn't call start_phase_timer
+_timer_fallback_tasks: Dict[str, asyncio.Task] = {}
 
 
 def _discussion_timeout(alive_count: int) -> int:
@@ -274,7 +285,7 @@ def _cancel_narrator_timeout(game_id: str) -> None:
 # Night action timeout — auto-resolves night if not all players have submitted.
 # Fires BEFORE narrator's 60s timeout so night resolution happens properly.
 _night_action_timeout_tasks: Dict[str, asyncio.Task] = {}
-_NIGHT_ACTION_TIMEOUT = 45  # seconds
+_NIGHT_ACTION_TIMEOUT = 30  # seconds
 
 
 async def _night_action_timeout(game_id: str, delay: int) -> None:
@@ -304,7 +315,7 @@ def _cancel_night_action_timeout(game_id: str) -> None:
         task.cancel()
 
 
-async def _vote_timeout(game_id: str, fs, delay: int = 90) -> None:
+async def _vote_timeout(game_id: str, fs, delay: int = 60) -> None:
     """Auto-advance day_vote phase after `delay` seconds if not already resolved."""
     await asyncio.sleep(delay)
     _vote_timeout_tasks.pop(game_id, None)
@@ -312,6 +323,96 @@ async def _vote_timeout(game_id: str, fs, delay: int = 90) -> None:
     if game and game.phase == Phase.DAY_VOTE:
         logger.info("[%s] Vote timeout fired — auto-advancing phase", game_id)
         await _resolve_vote_and_advance(game_id, fs)
+
+
+# ── Phase timer start (called by narrator after opening narration) ────────────
+
+async def start_phase_timers(game_id: str) -> Dict[str, Any]:
+    """
+    Start the interactive phase timer. Called by narrator's start_phase_timer tool
+    after its opening narration. Schedules the appropriate timers and broadcasts
+    timer_start to clients.
+    """
+    # Cancel safety fallback — narrator called in time
+    fallback = _timer_fallback_tasks.pop(game_id, None)
+    if fallback and not fallback.done():
+        fallback.cancel()
+
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        return {"error": "Game not found"}
+
+    phase = game.phase
+    _phase_timer_start_times[game_id] = time.time()
+
+    timer_seconds = 0
+
+    if phase == Phase.DAY_DISCUSSION:
+        alive = await fs.get_alive_players(game_id)
+        timer_seconds = _discussion_timeout(len(alive))
+        # Schedule narrator safety timeout with scaled duration
+        _cancel_narrator_timeout(game_id)
+        _narrator_timeout_tasks[game_id] = asyncio.create_task(
+            _narrator_phase_timeout(game_id, phase, timer_seconds)
+        )
+        # Schedule 30s warning to narrator before hard timeout
+        warn_task = _discussion_warning_tasks.pop(game_id, None)
+        if warn_task and not warn_task.done():
+            warn_task.cancel()
+        if timer_seconds > 30:
+            _discussion_warning_tasks[game_id] = asyncio.create_task(
+                _discussion_warning(game_id, timer_seconds - 30)
+            )
+
+    elif phase == Phase.NIGHT:
+        timer_seconds = _NIGHT_ACTION_TIMEOUT
+        _schedule_night_action_timeout(game_id)
+
+    elif phase == Phase.DAY_VOTE:
+        timer_seconds = 60
+        _cancel_narrator_timeout(game_id)  # Cancel narrator timeout — vote timeout handles this
+        existing = _vote_timeout_tasks.pop(game_id, None)
+        if existing and not existing.done():
+            existing.cancel()
+        _vote_timeout_tasks[game_id] = asyncio.create_task(
+            _vote_timeout(game_id, fs)
+        )
+
+    # Broadcast timer_start to all clients so they can show the countdown
+    if timer_seconds > 0:
+        await manager.broadcast(game_id, {
+            "type": "timer_start",
+            "phase": phase.value,
+            "timer_seconds": timer_seconds,
+        })
+
+    logger.info("[%s] Phase timers started for %s (%ds)", game_id, phase.value, timer_seconds)
+    return {"result": "timers_started", "phase": phase.value, "timer_seconds": timer_seconds}
+
+
+_TIMER_FALLBACK_DELAY = 15  # seconds — auto-start timers if narrator doesn't call start_phase_timer
+
+
+async def _timer_start_fallback(game_id: str) -> None:
+    """Safety net: auto-start phase timers if narrator doesn't call start_phase_timer."""
+    await asyncio.sleep(_TIMER_FALLBACK_DELAY)
+    _timer_fallback_tasks.pop(game_id, None)
+    # start_phase_timers is idempotent (cancels + reschedules), safe to call even if
+    # narrator already called it (the fallback task would have been cancelled in that case,
+    # but handle the race gracefully).
+    logger.warning("[%s] Timer fallback fired — narrator didn't call start_phase_timer within %ds", game_id, _TIMER_FALLBACK_DELAY)
+    await start_phase_timers(game_id)
+
+
+def _schedule_timer_fallback(game_id: str) -> None:
+    """Schedule a safety fallback that auto-starts phase timers."""
+    existing = _timer_fallback_tasks.pop(game_id, None)
+    if existing and not existing.done():
+        existing.cancel()
+    _timer_fallback_tasks[game_id] = asyncio.create_task(
+        _timer_start_fallback(game_id)
+    )
 
 
 # ── Hand-raise queue (§12.3.8 — large group conversation structure) ────────────
@@ -582,8 +683,9 @@ class ConnectionManager:
         await self._send_candidates(game_id, Phase.NIGHT)
         # Schedule narrator safety timeout for the initial NIGHT phase
         _schedule_narrator_timeout(game_id, Phase.NIGHT)
-        # Schedule night action timeout — auto-resolves if players don't submit in time
-        _schedule_night_action_timeout(game_id)
+        # Schedule safety fallback for initial NIGHT — narrator should call start_phase_timer
+        # after its opening narration to begin the night action countdown
+        _schedule_timer_fallback(game_id)
 
         # §12.3.14: Fire scene image for opening night
         from agents.scene_agent import trigger_scene_image
@@ -602,26 +704,6 @@ class ConnectionManager:
             "round": round,
         }
 
-        # Dynamic discussion timeout — scale by alive player count
-        if phase == Phase.DAY_DISCUSSION:
-            fs = get_firestore_service()
-            alive = await fs.get_alive_players(game_id)
-            timeout = _discussion_timeout(len(alive))
-            msg["timer_seconds"] = timeout
-            # Schedule narrator safety timeout with scaled duration
-            _cancel_narrator_timeout(game_id)
-            _narrator_timeout_tasks[game_id] = asyncio.create_task(
-                _narrator_phase_timeout(game_id, phase, timeout)
-            )
-            # Schedule 30s warning to narrator before hard timeout
-            warn_task = _discussion_warning_tasks.pop(game_id, None)
-            if warn_task and not warn_task.done():
-                warn_task.cancel()
-            if timeout > 30:
-                _discussion_warning_tasks[game_id] = asyncio.create_task(
-                    _discussion_warning(game_id, timeout - 30)
-                )
-
         await self.broadcast(game_id, msg, reliable=True)
 
         # Send per-player candidate lists for night/vote phases.
@@ -629,23 +711,14 @@ class ConnectionManager:
         if phase in (Phase.NIGHT, Phase.DAY_VOTE):
             await self._send_candidates(game_id, phase)
 
-        # Schedule vote timeout when entering day_vote (cancels on normal resolution)
-        if phase == Phase.DAY_VOTE:
-            existing = _vote_timeout_tasks.pop(game_id, None)
-            if existing and not existing.done():
-                existing.cancel()
-            fs_ref = get_firestore_service()
-            _vote_timeout_tasks[game_id] = asyncio.create_task(
-                _vote_timeout(game_id, fs_ref)
-            )
-
         # Schedule narrator safety timeout for non-discussion narrator-controlled phases
         if phase in _NARRATOR_TIMEOUT_DELAYS:
             _schedule_narrator_timeout(game_id, phase)
 
-        # Schedule night action timeout when entering NIGHT (rounds 2+)
-        if phase == Phase.NIGHT:
-            _schedule_night_action_timeout(game_id)
+        # Schedule safety fallback — auto-start timers if narrator doesn't call
+        # start_phase_timer within 15 seconds (e.g. narrator session crashed)
+        if phase in (Phase.NIGHT, Phase.DAY_DISCUSSION, Phase.DAY_VOTE):
+            _schedule_timer_fallback(game_id)
 
     async def _send_candidates(self, game_id: str, phase: Phase) -> None:
         """Send per-player candidate lists for night actions or voting.
@@ -872,10 +945,10 @@ async def websocket_endpoint(
             inner_data = data.get("data") if isinstance(data.get("data"), dict) else {}
             await _handle_message(game_id, playerId, msg_type, inner_data, fs)
 
-    except (WebSocketDisconnect, RuntimeError):
-        # RuntimeError: "WebSocket is not connected" can occur when the
-        # client drops without a clean close frame (common with disabled pings).
-        pass
+    except WebSocketDisconnect as e:
+        logger.info("[%s] %s disconnected: code=%s", game_id, playerId, e.code)
+    except RuntimeError as e:
+        logger.warning("[%s] %s WS RuntimeError: %s", game_id, playerId, e)
     finally:
         # Only clean up if this WS is still the current connection for this player.
         # A stale WS (from refresh/StrictMode) closing must NOT remove the newer connection.
@@ -1323,6 +1396,27 @@ async def _on_night_action(
         return
 
     target = str(data.get("target", "")).strip()
+
+    # Shapeshifter can skip their kill by sending target="skip"
+    if player.role == Role.SHAPESHIFTER and target == "skip":
+        await fs.set_night_action(game_id, player_id, "skip")
+        await manager.send_to(game_id, player_id, {
+            "type": "night_action_received",
+            "action": "skip",
+            "target": "skip",
+        })
+        logger.info("[%s] Shapeshifter %s chose to skip kill", game_id, player.character_name)
+        # Check if all role-players have submitted
+        all_players_fresh = await fs.get_all_players(game_id)
+        night_role_players = [
+            p for p in all_players_fresh
+            if p.alive and p.role in {Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD, Role.SHAPESHIFTER}
+        ]
+        all_acted = all(p.night_action for p in night_role_players)
+        if all_acted:
+            asyncio.create_task(_resolve_night_and_notify_narrator(game_id, fs))
+        return
+
     if not target:
         await manager.send_to(game_id, player_id, {
             "type": "error",
@@ -1969,12 +2063,21 @@ async def _end_game(
         "winner": winner,
         "reason": reason,
     })
-    # Release per-game tracker, hand queue, difficulty adapter, and vote timeout memory
+    # Release per-game tracker, hand queue, difficulty adapter, and timer memory
     _trackers.pop(game_id, None)
     _hand_queues.pop(game_id, None)
+    _phase_timer_start_times.pop(game_id, None)
     timeout_task = _vote_timeout_tasks.pop(game_id, None)
     if timeout_task and not timeout_task.done():
         timeout_task.cancel()
+    fallback = _timer_fallback_tasks.pop(game_id, None)
+    if fallback and not fallback.done():
+        fallback.cancel()
+    _cancel_night_action_timeout(game_id)
+    _cancel_narrator_timeout(game_id)
+    warn = _discussion_warning_tasks.pop(game_id, None)
+    if warn and not warn.done():
+        warn.cancel()
     try:
         from agents.traitor_agent import clear_difficulty_adapter
         clear_difficulty_adapter(game_id)

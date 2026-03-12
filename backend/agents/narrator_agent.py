@@ -47,6 +47,7 @@ YOUR PHASE RESPONSIBILITIES:
 
 1. GAME START → NIGHT (Round 1):
    - Open with a 2–3 sentence atmospheric monologue setting the dark scene.
+   - Call start_phase_timer to begin the night action countdown.
    - Call get_game_state to confirm who is present.
 
 2. NIGHT_RESOLVED signal received:
@@ -58,6 +59,7 @@ YOUR PHASE RESPONSIBILITIES:
    (only you hear their voice) or type text messages (prefixed with [PLAYER]).
 
    OPENING: Briefly set the morning mood (1–2 sentences). Reference tensions from last night.
+   Then call start_phase_timer to begin the discussion countdown.
 
    YOUR JOB:
    a) RELAY: When a player speaks, briefly echo their point so everyone hears it through you.
@@ -93,7 +95,7 @@ YOUR PHASE RESPONSIBILITIES:
    - Always call get_game_state after advancing to NIGHT to see who is alive.
    - Check the night_role_players_count from the advance_phase response.
    - If night_role_players_count is 0, no one has night actions — narrate a brief night scene and call advance_phase again immediately to start the day.
-   - Otherwise, narrate the night scene and wait for the NIGHT_RESOLVED signal.
+   - Otherwise, narrate the night scene, then call start_phase_timer to begin the night action countdown, and wait for the NIGHT_RESOLVED signal.
 
 6. GAME_OVER signal received:
    - Deliver a 3–4 sentence epilogue revealing the full story.
@@ -112,6 +114,9 @@ TOOLS:
 - get_game_state: Returns phase, round, alive characters, and recent chat messages.
 - advance_phase: Moves NIGHT→DAY_DISCUSSION, DAY_DISCUSSION→DAY_VOTE, or ELIMINATION→NIGHT.
   Do NOT call during DAY_VOTE (those transitions are automatic).
+- start_phase_timer: MUST be called after your opening narration for each phase. This starts
+  the interactive countdown for players. Without this call, players cannot act! Call it
+  immediately after your opening monologue — do not delay.
 - inject_traitor_dialog: Generate an in-character spoken line from the AI Shapeshifter character
   during DAY_DISCUSSION. Call this when the AI character is addressed directly by name, or when
   the AI character should naturally contribute to the conversation. The AI character's name is
@@ -319,7 +324,22 @@ def _make_tool_declarations():
             ),
         )
 
-        return [get_state, advance, inject_traitor, vote_context]
+        start_timer = types.FunctionDeclaration(
+            name="start_phase_timer",
+            description=(
+                "Start the interactive phase timer. Call this AFTER finishing your opening "
+                "narration for each phase (NIGHT, DAY_DISCUSSION, DAY_VOTE). "
+                "This begins the countdown for players to act — night actions, discussion, "
+                "or voting. Do NOT delay calling this; call it immediately after your "
+                "opening monologue so players get their full interactive time."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={},
+            ),
+        )
+
+        return [get_state, advance, inject_traitor, vote_context, start_timer]
     except ImportError:
         logger.warning("google-genai not installed — tool declarations unavailable")
         return []
@@ -399,6 +419,32 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                 )
             }
 
+        # Enforce minimum discussion time
+        if game.phase == Phase.DAY_DISCUSSION:
+            import time
+            from routers.ws_router import _phase_timer_start_times, MIN_DISCUSSION_SECONDS
+            start_time = _phase_timer_start_times.get(game_id)
+            if start_time:
+                elapsed = time.time() - start_time
+                remaining = int(MIN_DISCUSSION_SECONDS - elapsed)
+                if remaining > 0:
+                    logger.info(
+                        "[%s] Narrator tried to advance discussion early (%ds elapsed, %ds minimum)",
+                        game_id, int(elapsed), MIN_DISCUSSION_SECONDS,
+                    )
+                    # Send a prompt to keep the narrator facilitating
+                    session = narrator_manager._sessions.get(game_id)
+                    if session:
+                        await session.send(
+                            f"[SYSTEM] Discussion must continue for at least {remaining} more seconds. "
+                            "Keep facilitating — ask players who haven't spoken for their thoughts, "
+                            "or challenge existing accusations."
+                        )
+                    return {
+                        "error": f"Discussion must continue for {remaining} more seconds before voting.",
+                        "remaining_seconds": remaining,
+                    }
+
         next_phase = await game_master.advance_phase(game_id)
 
         # Cancel narrator safety timeout + discussion warning — we advanced successfully
@@ -469,6 +515,17 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
         return result
     finally:
         _advancing_phase.discard(game_id)
+
+
+async def handle_start_phase_timer(game_id: str) -> Dict[str, Any]:
+    """
+    Start the interactive phase timer. Called by the narrator after its opening
+    narration so players get their full interactive time.
+    """
+    from routers.ws_router import start_phase_timers
+    result = await start_phase_timers(game_id)
+    logger.info("[%s] Narrator called start_phase_timer", game_id)
+    return result
 
 
 async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, Any]:
@@ -949,6 +1006,8 @@ class NarratorSession:
                     )
                 elif fc.name == "generate_vote_context":
                     result = await handle_generate_vote_context(self.game_id)
+                elif fc.name == "start_phase_timer":
+                    result = await handle_start_phase_timer(self.game_id)
                 else:
                     result = {"error": f"Unknown tool: {fc.name}"}
                     logger.warning(
