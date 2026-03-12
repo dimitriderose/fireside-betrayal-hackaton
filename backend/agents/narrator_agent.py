@@ -414,11 +414,11 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
         if not game:
             return {"error": "Game not found"}
 
-        narrator_phases = {Phase.NIGHT, Phase.DAY_DISCUSSION, Phase.ELIMINATION}
+        narrator_phases = {Phase.NIGHT, Phase.DAY_DISCUSSION, Phase.ELIMINATION, Phase.SEANCE}
         if game.phase not in narrator_phases:
             return {
                 "error": (
-                    f"advance_phase is available during NIGHT, DAY_DISCUSSION, or ELIMINATION. "
+                    f"advance_phase is available during NIGHT, DAY_DISCUSSION, ELIMINATION, or SEANCE. "
                     f"Current phase: {game.phase.value}"
                 )
             }
@@ -449,11 +449,20 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                         "remaining_seconds": remaining,
                     }
 
+        # Check for séance trigger when leaving ELIMINATION or NIGHT (after a kill)
+        if game.phase in (Phase.ELIMINATION, Phase.NIGHT):
+            from routers.ws_router import _check_seance_trigger
+            seance_fired = await _check_seance_trigger(game_id)
+            if seance_fired:
+                logger.info("[%s] Séance triggered from %s — redirecting to SEANCE", game_id, game.phase.value)
+                return {"result": "advanced", "new_phase": "seance"}
+
         next_phase = await game_master.advance_phase(game_id)
 
-        # Cancel narrator safety timeout + discussion warning — we advanced successfully
-        from routers.ws_router import _cancel_narrator_timeout, _discussion_warning_tasks
+        # Cancel narrator safety timeout + discussion warning + séance timeout — we advanced successfully
+        from routers.ws_router import _cancel_narrator_timeout, _discussion_warning_tasks, _cancel_seance_timeout
         _cancel_narrator_timeout(game_id)
+        _cancel_seance_timeout(game_id)
         warn_task = _discussion_warning_tasks.pop(game_id, None)
         if warn_task and not warn_task.done():
             warn_task.cancel()
@@ -482,6 +491,22 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                 asyncio.create_task(trigger_all_dialogs(game_id, context="The day discussion has just begun."))
             except Exception:
                 logger.warning("[%s] Could not trigger AI dialogs", game_id, exc_info=True)
+
+            # Feed ghost accusations from the previous night to the narrator
+            try:
+                accuse_events = [
+                    e for e in await fs.get_events(game_id, round=game.round)
+                    if e.type == "ghost_accuse"
+                ]
+                if accuse_events:
+                    targets: Dict[str, int] = {}
+                    for e in accuse_events:
+                        targets[e.target] = targets.get(e.target, 0) + 1
+                    await narrator_manager.send_phase_event(
+                        game_id, "ghost_accusations", {"accusations": targets}
+                    )
+            except Exception:
+                logger.warning("[%s] Could not send ghost accusations to narrator", game_id, exc_info=True)
 
         # When entering NIGHT: fire traitor night selection + inform narrator about role-players
         if next_phase == Phase.NIGHT:
@@ -1160,7 +1185,7 @@ class NarratorManager:
         # Start a new audio segment so narration is grouped by phase event (§12.3.15).
         # Skip transient events (hand_raised, spectator_clue) to avoid fragmenting
         # the current phase's audio into short useless clips.
-        _SEGMENT_SKIP = {"hand_raised", "spectator_clue"}
+        _SEGMENT_SKIP = {"hand_raised", "spectator_clue", "ghost_accusations"}
         if event_type not in _SEGMENT_SKIP:
             try:
                 from agents.audio_recorder import get_recorder, segment_description
@@ -1365,6 +1390,44 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
         return (
             f"[HUNTER REVENGE] The fallen {hunter} drags {target} down with them "
             "as their last act. Narrate this dramatic death in 1–2 sentences."
+        )
+
+    if event_type == "seance_triggered":
+        dead_names = data.get("dead_characters", [])
+        dead_list = ", ".join(dead_names) if dead_names else "the fallen"
+        return (
+            f"[SEANCE — THE VEIL GROWS THIN] A séance has been triggered. "
+            f"The dead characters are: {dead_list}.\n"
+            "Announce dramatically: 'The veil between worlds grows thin... the spirits wish to speak.'\n"
+            f"Then call on each dead character by name: {dead_list}.\n"
+            "For each ghost, say: 'Spirit of [name], the village listens — who do you suspect and why?'\n"
+            "Wait for each ghost to speak (they have push-to-talk). If silent after 10 seconds, move to the next.\n"
+            "After all ghosts have spoken or 45 seconds total, close the veil:\n"
+            "'The spirits fade... but their words linger in the minds of the living.'\n"
+            "Then call advance_phase to return to day_discussion.\n"
+            "CRITICAL: If an AI ghost speaks, their testimony must be atmospheric and suggestive, "
+            "never declarative facts. Use phrases like 'I sense darkness near...' not 'Player X is the shapeshifter.'"
+        )
+
+    if event_type == "ghost_accusations":
+        accusations = data.get("accusations", {})
+        lines = []
+        for target, count in accusations.items():
+            if count > 1:
+                lines.append(
+                    f"Multiple spirits fixate on {target}... their combined unease is palpable."
+                )
+            else:
+                lines.append(
+                    f"The spirits seem restless around {target}... a cold wind follows them wherever they go."
+                )
+        accusation_text = "\n".join(lines)
+        return (
+            f"[GHOST ACCUSATIONS] The spirits of the fallen stir with unease.\n"
+            f"{accusation_text}\n"
+            "Weave this into the opening of the discussion naturally. "
+            "Do not reveal which ghosts made the accusations — "
+            "the living only feel the spirits' restless presence."
         )
 
     if event_type == "spectator_clue":

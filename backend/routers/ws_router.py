@@ -199,6 +199,10 @@ _vote_timeout_tasks: Dict[str, asyncio.Task] = {}
 # (acceptable for hackathon: if the server restarts mid-game, the clue limit resets).
 _spectator_clues_sent: Set[str] = set()
 
+# Tracks which dead players have used their Haunt (Accuse) action per round.
+# Key: "{game_id}:{round}", value: set of player_ids who've haunted this round.
+_haunts_used: Dict[str, Set[str]] = {}
+
 # Narrator phase safety timeouts — prevents game from hanging if the narrator
 # fails to call advance_phase (session crash, Gemini timeout, etc.).
 _narrator_timeout_tasks: Dict[str, asyncio.Task] = {}
@@ -1073,6 +1077,12 @@ async def _dispatch_message(
     elif msg_type == "spectator_clue":
         await _on_spectator_clue(game_id, player_id, data, fs)
 
+    elif msg_type == "ghost_message":
+        await _on_ghost_message(game_id, player_id, data, fs)
+
+    elif msg_type == "haunt_action":
+        await _on_haunt_action(game_id, player_id, data, fs)
+
     elif msg_type == "raise_hand":
         await _on_raise_hand(game_id, player_id, data, fs)
 
@@ -1836,6 +1846,230 @@ async def _on_spectator_clue(
     logger.info("[%s] Spectator clue from %s (round %d): '%s'", game_id, character_name, game.round, word)
 
 
+# ── Haunt Action (dead player accuses during night) ──────────────────────────
+
+
+async def _on_haunt_action(
+    game_id: str, player_id: str, data: Dict, fs
+) -> None:
+    """
+    Dead player accuses a living character during NIGHT phase.
+    The narrator raises suspicion about the target in the next discussion.
+    One accusation per dead player per round.
+    """
+    from models.game import GameEvent
+
+    # Only during NIGHT phase
+    game = await fs.get_game(game_id)
+    if not game or game.phase != Phase.NIGHT:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Haunt actions can only be used during the night phase",
+            "code": "WRONG_PHASE",
+        })
+        return
+
+    if game.status != GameStatus.IN_PROGRESS:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Game is not in progress",
+            "code": "GAME_NOT_ACTIVE",
+        })
+        return
+
+    # Only for eliminated players
+    player = await fs.get_player(game_id, player_id)
+    if not player or player.alive:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Only eliminated players can use haunt actions",
+            "code": "PLAYER_NOT_DEAD",
+        })
+        return
+
+    # One haunt per dead player per round
+    haunt_key = f"{game_id}:{game.round}"
+    if player_id in _haunts_used.get(haunt_key, set()):
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "You have already used your haunt action this round",
+            "code": "HAUNT_ALREADY_USED",
+        })
+        return
+
+    # Validate target is alive (human or AI)
+    target = str(data.get("target", "")).strip()
+    if not target:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Invalid haunt target",
+            "code": "INVALID_TARGET",
+        })
+        return
+
+    alive_players = await fs.get_alive_players(game_id)
+    alive_names = {p.character_name for p in alive_players}
+    alive_names.update(_alive_ai_names(game))
+    if target not in alive_names:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": f"{target} is not an alive character",
+            "code": "TARGET_NOT_ALIVE",
+        })
+        return
+
+    # Log ghost_accuse event (hidden from game timeline)
+    event = GameEvent(
+        type="ghost_accuse",
+        round=game.round,
+        phase=Phase.NIGHT,
+        actor=player.character_name,
+        target=target,
+        data={},
+        visible_in_game=False,
+    )
+    await fs.log_event(game_id, event)
+
+    # Track usage
+    _haunts_used.setdefault(haunt_key, set()).add(player_id)
+
+    # Confirm to the ghost player only
+    await manager.send_to(game_id, player_id, {
+        "type": "haunt_confirmed",
+        "target": target,
+        "action": "accuse",
+    })
+    logger.info("[%s] Ghost accuse from %s (round %d): target=%s",
+                game_id, player.character_name, game.round, target)
+
+
+# ── Ghost Council (dead player chat) ─────────────────────────────────────────
+
+
+async def broadcast_to_dead(game_id: str, message: Dict) -> None:
+    """Broadcast a message to all dead players only."""
+    fs = get_firestore_service()
+    all_players = await fs.get_all_players(game_id)
+    dead_ids = {p.id for p in all_players if not p.alive}
+
+    game_conns = manager._games.get(game_id, {})
+    for pid in list(game_conns.keys()):
+        if pid in dead_ids:
+            ctrl_q = manager._ctrl_queues.get(game_id, {}).get(pid)
+            if ctrl_q is not None:
+                ctrl_q.put_nowait(message)
+
+
+async def _on_ghost_message(
+    game_id: str, player_id: str, data: Dict, fs
+) -> None:
+    """
+    Dead player sends a message to the Ghost Council.
+    Only dead players can send and receive ghost messages.
+    """
+    text = str(data.get("text", "")).strip()[:500]
+    if not text:
+        return
+
+    game = await fs.get_game(game_id)
+    if not game or game.status != GameStatus.IN_PROGRESS:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Ghost messages can only be sent during an active game",
+            "code": "WRONG_STATUS",
+        })
+        return
+
+    player = await fs.get_player(game_id, player_id)
+    if not player or player.alive:
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Only dead players can send ghost messages",
+            "code": "PLAYER_NOT_DEAD",
+        })
+        return
+
+    speaker = player.character_name or player_id
+
+    # Store in Firestore
+    msg = ChatMessage(
+        speaker=speaker,
+        speaker_player_id=player_id,
+        text=text,
+        source="ghost",
+        phase=game.phase,
+        round=game.round,
+    )
+    await fs.add_ghost_message(game_id, msg)
+
+    # Broadcast to all dead players
+    await broadcast_to_dead(game_id, {
+        "type": "ghost_message",
+        "speaker": speaker,
+        "text": text,
+        "timestamp": msg.timestamp.isoformat(),
+    })
+
+    logger.info("[%s] Ghost message from %s: %r", game_id, speaker, text[:80])
+
+    # Trigger AI ghost responses from dead AI characters
+    try:
+        all_players = await fs.get_all_players(game_id)
+        dead_ai_chars = []
+        for ai_char in _all_ai_chars(game):
+            if not ai_char.alive:
+                dead_ai_chars.append(ai_char)
+
+        if dead_ai_chars:
+            asyncio.create_task(_trigger_ghost_ai_responses(game_id, dead_ai_chars))
+    except Exception:
+        logger.exception("[%s] Failed to trigger ghost AI responses", game_id)
+
+
+async def _trigger_ghost_ai_responses(game_id: str, dead_ai_chars: list) -> None:
+    """Generate and broadcast ghost dialog from dead AI characters."""
+    from agents.traitor_agent import generate_ghost_dialog
+
+    fs = get_firestore_service()
+    for ai_char in dead_ai_chars:
+        try:
+            # Determine the fs_field for this AI character
+            game = await fs.get_game(game_id)
+            if not game:
+                return
+            fs_field = "ai_character"
+            if game.ai_character_2 and game.ai_character_2.name == ai_char.name:
+                fs_field = "ai_character_2"
+
+            result = await generate_ghost_dialog(game_id, ai_char, fs_field)
+            dialog = result.get("dialog", "")
+            if not dialog or dialog == "...":
+                continue
+
+            # Store the AI ghost message
+            msg = ChatMessage(
+                speaker=ai_char.name,
+                text=dialog,
+                source="ai_ghost",
+                phase=game.phase,
+                round=game.round,
+            )
+            await fs.add_ghost_message(game_id, msg)
+
+            # Broadcast to dead players
+            await broadcast_to_dead(game_id, {
+                "type": "ghost_message",
+                "speaker": ai_char.name,
+                "text": dialog,
+                "timestamp": msg.timestamp.isoformat(),
+            })
+
+            # Small delay between AI ghost messages to feel natural
+            await asyncio.sleep(2)
+        except Exception:
+            logger.exception("[%s] Ghost dialog failed for %s", game_id, ai_char.name)
+
+
 async def _on_raise_hand(
     game_id: str, player_id: str, data: Dict, fs
 ) -> None:
@@ -1993,6 +2227,99 @@ async def _on_in_person_vote_frame(
         await _resolve_vote_and_advance(game_id, fs)
 
 
+# ── Séance logic ─────────────────────────────────────────────────────────────
+
+_SEANCE_DURATION = 45  # seconds
+_seance_timeout_tasks: Dict[str, asyncio.Task] = {}
+
+
+async def _check_seance_trigger(game_id: str) -> bool:
+    """
+    Check if a séance should be triggered after an elimination.
+    Condition: dead_count >= total_count / 2 and séance hasn't been used yet.
+    Returns True if séance was triggered.
+    """
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game or game.seance_used:
+        return False
+
+    # Count total and dead characters (humans + AIs)
+    all_players = await fs.get_all_players(game_id)
+    total_count = len(game.character_cast)
+    dead_human = sum(1 for p in all_players if not p.alive)
+    dead_ai = sum(
+        1 for ai in [game.ai_character, game.ai_character_2]
+        if ai and not ai.alive
+    )
+    dead_count = dead_human + dead_ai
+
+    if dead_count < total_count / 2:
+        return False
+
+    # Trigger séance
+    await fs.update_game(game_id, {"seance_used": True})
+    await fs.set_phase(game_id, Phase.SEANCE)
+
+    # Collect dead character names for the narrator
+    dead_names = [p.character_name for p in all_players if not p.alive]
+    for ai in [game.ai_character, game.ai_character_2]:
+        if ai and not ai.alive:
+            dead_names.append(ai.name)
+
+    # Broadcast phase change to all clients
+    await manager.broadcast_phase_change(game_id, Phase.SEANCE)
+
+    # Broadcast séance timer to clients
+    await manager.broadcast(game_id, {
+        "type": "timer_start",
+        "phase": "seance",
+        "timer_seconds": _SEANCE_DURATION,
+    })
+
+    # Notify narrator to begin the séance
+    await narrator_manager.send_phase_event(game_id, "seance_triggered", {
+        "dead_characters": dead_names,
+    })
+
+    # Schedule hard timeout — force-close séance after 45 seconds
+    _cancel_seance_timeout(game_id)
+    _seance_timeout_tasks[game_id] = asyncio.create_task(
+        _seance_timeout(game_id, _SEANCE_DURATION)
+    )
+
+    logger.info("[%s] Séance triggered — %d dead of %d total, ghosts: %s",
+                game_id, dead_count, total_count, dead_names)
+    return True
+
+
+async def _seance_timeout(game_id: str, delay: int) -> None:
+    """Hard backstop: force-close séance after delay seconds."""
+    await asyncio.sleep(delay)
+    _seance_timeout_tasks.pop(game_id, None)
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if game and game.phase == Phase.SEANCE:
+        logger.info("[%s] Séance timeout — force-closing after %ds", game_id, delay)
+        # Release any speaker lock
+        _current_speaker[game_id] = None
+        await manager.broadcast(game_id, {
+            "type": "speaker_changed",
+            "speaker": None,
+            "playerId": None,
+        })
+        # Advance to DAY_DISCUSSION via narrator handler
+        from agents.narrator_agent import handle_advance_phase
+        await handle_advance_phase(game_id)
+
+
+def _cancel_seance_timeout(game_id: str) -> None:
+    """Cancel a pending séance timeout."""
+    task = _seance_timeout_tasks.pop(game_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
 async def _on_start_speaking(game_id: str, player_id: str, fs) -> None:
     """Player requests the speaking slot (push-to-talk)."""
     current = _current_speaker.get(game_id)
@@ -2009,25 +2336,43 @@ async def _on_start_speaking(game_id: str, player_id: str, fs) -> None:
     _current_speaker[game_id] = player_id
 
     game = await fs.get_game(game_id)
-    if not game or game.phase != Phase.DAY_DISCUSSION:
+    speaking_phases = {Phase.DAY_DISCUSSION, Phase.SEANCE}
+    if not game or game.phase not in speaking_phases:
         _current_speaker[game_id] = None  # roll back
         await manager.send_to(game_id, player_id, {
             "type": "error",
-            "message": "You can only speak during the discussion phase.",
+            "message": "You can only speak during the discussion or séance phase.",
             "code": "WRONG_PHASE",
         })
         return
 
     player = await fs.get_player(game_id, player_id)
-    if not player or not player.alive:
-        _current_speaker[game_id] = None  # roll back
-        if player and not player.alive:
+
+    # During SEANCE: only dead players can speak; living players must listen
+    if game.phase == Phase.SEANCE:
+        if not player:
+            _current_speaker[game_id] = None
+            return
+        if player.alive:
+            _current_speaker[game_id] = None
             await manager.send_to(game_id, player_id, {
                 "type": "error",
-                "message": "Eliminated players cannot speak.",
-                "code": "PLAYER_DEAD",
+                "message": "The spirits are speaking... listen.",
+                "code": "SEANCE_LIVING_BLOCKED",
             })
-        return
+            return
+        # Dead player during séance — allowed to speak
+    else:
+        # Normal DAY_DISCUSSION: only alive players can speak
+        if not player or not player.alive:
+            _current_speaker[game_id] = None  # roll back
+            if player and not player.alive:
+                await manager.send_to(game_id, player_id, {
+                    "type": "error",
+                    "message": "Eliminated players cannot speak.",
+                    "code": "PLAYER_DEAD",
+                })
+            return
 
     speaker_name = player.character_name or player_id
     logger.info("[%s] %s (%s) started speaking", game_id, speaker_name, player_id)
@@ -2040,10 +2385,12 @@ async def _on_start_speaking(game_id: str, player_id: str, fs) -> None:
     })
 
     # Notify narrator who is speaking
+    phase_str = "seance" if game.phase == Phase.SEANCE else "day_discussion"
+    voice_label = f"[GHOST VOICE] Spirit of {speaker_name}" if game.phase == Phase.SEANCE else f"[VOICE] {speaker_name}"
     await narrator_manager.forward_player_message(
         game_id, speaker_name,
-        f"[VOICE] {speaker_name} is now speaking via microphone.",
-        "day_discussion",
+        f"{voice_label} is now speaking via microphone.",
+        phase_str,
     )
 
     # Schedule auto-release after MAX_SPEAKING_SECONDS
@@ -2250,6 +2597,7 @@ async def _end_game(
         fallback.cancel()
     _cancel_night_action_timeout(game_id)
     _cancel_narrator_timeout(game_id)
+    _cancel_seance_timeout(game_id)
     _current_speaker.pop(game_id, None)
     speaker_timeout = _speaker_timeout_tasks.pop(game_id, None)
     if speaker_timeout and not speaker_timeout.done():

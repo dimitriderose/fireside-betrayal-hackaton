@@ -125,6 +125,11 @@ export function useWebSocket(gameId, playerId) {
         dispatch({ type: 'PHASE_CHANGE', phase: msg.phase, round: msg.round, timerSeconds: msg.timer_seconds })
         break
 
+      case 'timer_start':
+        // msg: { type, phase, timer_seconds } — update timer for the current phase
+        dispatch({ type: 'SET_TIMER', phase: msg.phase, timerSeconds: msg.timer_seconds })
+        break
+
       case 'vote_update':
         // msg: { type, votes: { charName: votedFor|null }, tally: { charName: count } }
         dispatch({ type: 'VOTE_UPDATE', voteMap: msg.votes, tally: msg.tally ?? {} })
@@ -196,6 +201,23 @@ export function useWebSocket(gameId, playerId) {
       case 'clue_accepted':
         // msg: { type, word } — server confirms clue was delivered to narrator
         dispatch({ type: 'CLUE_SENT' })
+        break
+
+      case 'haunt_confirmed':
+        // msg: { type, target, action } — server confirms ghost accusation was recorded
+        dispatch({ type: 'HAUNT_CONFIRMED' })
+        break
+
+      case 'ghost_message':
+        // msg: { type, speaker, text, timestamp } — Ghost Council message (dead players only)
+        dispatch({
+          type: 'ADD_GHOST_MESSAGE',
+          message: {
+            speaker: msg.speaker,
+            text: msg.text,
+            timestamp: msg.timestamp,
+          },
+        })
         break
 
       case 'camera_vote_result':

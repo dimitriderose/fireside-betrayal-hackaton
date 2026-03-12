@@ -85,6 +85,10 @@ class GameMaster:
         if current == Phase.SETUP:
             next_phase = Phase.NIGHT
             new_round = 1
+        elif current == Phase.SEANCE:
+            # Séance always returns to DAY_DISCUSSION
+            next_phase = Phase.DAY_DISCUSSION
+            new_round = game.round
         else:
             try:
                 idx = self.PHASE_CYCLE.index(current)

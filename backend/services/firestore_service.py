@@ -207,6 +207,22 @@ class FirestoreService:
         )
         return [ChatMessage(**d.to_dict()) for d in docs]
 
+    # ── Ghost messages (Ghost Council — dead players only) ─────────────────
+
+    def _ghost_ref(self, game_id: str):
+        return self._game_ref(game_id).collection("ghost_messages")
+
+    async def add_ghost_message(self, game_id: str, message: ChatMessage):
+        data = message.model_dump()
+        data["timestamp"] = data["timestamp"].isoformat()
+        await self._run(lambda: self._ghost_ref(game_id).document(message.id).set(data))
+
+    async def get_ghost_messages(self, game_id: str, limit: int = 50) -> List[ChatMessage]:
+        docs = await self._run(
+            lambda: self._ghost_ref(game_id).order_by("timestamp").limit_to_last(limit).get()
+        )
+        return [ChatMessage(**d.to_dict()) for d in docs]
+
 
 _firestore_service: Optional["FirestoreService"] = None
 

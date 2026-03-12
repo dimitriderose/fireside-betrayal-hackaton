@@ -15,6 +15,7 @@ const PHASE_LABELS = {
   day_discussion: '☀ Discussion',
   day_vote: '⚖ Vote',
   elimination: '⚰ Verdict',
+  seance: '👻 The Veil Is Thin...',
   game_over: 'Game Over',
 }
 
@@ -23,6 +24,7 @@ const PHASE_CLASS = {
   day_discussion: 'phase-day',
   day_vote: 'phase-vote',
   elimination: 'phase-elimination',
+  seance: 'phase-seance',
 }
 
 const ROLE_INFO = {
@@ -494,6 +496,252 @@ function SpectatorCluePanel({ onSubmitClue, clueSent }) {
 }
 
 
+function HauntPanel({ candidates, onAccuse, hauntUsed }) {
+  const [confirmTarget, setConfirmTarget] = useState(null)
+
+  if (hauntUsed) {
+    return (
+      <div className="container" style={{ paddingTop: 12 }}>
+        <div
+          className="card fade-in"
+          style={{
+            textAlign: 'center',
+            borderColor: 'rgba(168, 85, 247, 0.4)',
+            background: 'rgba(168, 85, 247, 0.05)',
+            padding: '16px',
+          }}
+        >
+          <div style={{ fontSize: '1.25rem', marginBottom: 8 }}>👻</div>
+          <p style={{ fontSize: '0.875rem', color: 'rgba(168, 85, 247, 0.9)', margin: 0 }}>
+            Your accusation echoes through the veil...
+          </p>
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: 6 }}>
+            Wait for the dawn.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="container" style={{ marginTop: 16 }}>
+      <div
+        className="card"
+        style={{
+          borderColor: 'rgba(168, 85, 247, 0.4)',
+          background: 'rgba(168, 85, 247, 0.05)',
+        }}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <span
+            className="phase-indicator"
+            style={{
+              background: 'rgba(168, 85, 247, 0.15)',
+              color: 'rgba(168, 85, 247, 0.9)',
+              border: '1px solid rgba(168, 85, 247, 0.3)',
+            }}
+          >
+            👻 Accuse from Beyond
+          </span>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
+            Choose a living character to cast suspicion upon. The narrator will raise doubt about them at dawn.
+          </div>
+        </div>
+
+        {confirmTarget ? (
+          <div className="fade-in" style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: '0.875rem', color: 'rgba(168, 85, 247, 0.9)', marginBottom: 12 }}>
+              Accuse <strong>{confirmTarget}</strong>?
+            </p>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: 12 }}>
+              The narrator will raise suspicion about them.
+            </p>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button
+                className="btn"
+                style={{
+                  padding: '10px 20px',
+                  background: 'rgba(168, 85, 247, 0.2)',
+                  color: 'rgba(168, 85, 247, 0.9)',
+                  border: '1px solid rgba(168, 85, 247, 0.4)',
+                }}
+                onClick={() => {
+                  onAccuse(confirmTarget)
+                }}
+              >
+                Confirm
+              </button>
+              <button
+                className="btn btn-ghost"
+                style={{ padding: '10px 20px' }}
+                onClick={() => setConfirmTarget(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {candidates.map((name) => (
+              <button
+                key={name}
+                className="btn btn-ghost"
+                style={{
+                  justifyContent: 'space-between',
+                  padding: '12px 16px',
+                  borderColor: 'rgba(168, 85, 247, 0.2)',
+                }}
+                onClick={() => setConfirmTarget(name)}
+              >
+                <span>{name}</span>
+                <span style={{ fontSize: '0.75rem', color: 'rgba(168, 85, 247, 0.7)' }}>
+                  Accuse →
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+function GhostRealmPanel({ ghostMessages, onSendGhostMessage }) {
+  const [text, setText] = useState('')
+  const [collapsed, setCollapsed] = useState(false)
+  const ghostLogRef = useRef(null)
+
+  // Auto-scroll to bottom on new messages
+  useEffect(() => {
+    if (ghostLogRef.current && !collapsed) {
+      ghostLogRef.current.scrollTop = ghostLogRef.current.scrollHeight
+    }
+  }, [ghostMessages, collapsed])
+
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    const trimmed = text.trim()
+    if (!trimmed) return
+    onSendGhostMessage(trimmed)
+    setText('')
+  }
+
+  return (
+    <div className="container" style={{ paddingTop: 12 }}>
+      <div
+        style={{
+          background: '#1a0a2e',
+          border: '1px solid #6b21a8',
+          borderRadius: 8,
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header — click to collapse/expand */}
+        <button
+          onClick={() => setCollapsed(c => !c)}
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '10px 14px',
+            background: 'rgba(107, 33, 168, 0.2)',
+            border: 'none',
+            borderBottom: collapsed ? 'none' : '1px solid rgba(107, 33, 168, 0.3)',
+            cursor: 'pointer',
+            color: '#c084fc',
+            fontSize: '0.8125rem',
+            fontWeight: 600,
+          }}
+        >
+          <span>Ghost Realm</span>
+          <span style={{ fontSize: '0.75rem', opacity: 0.7 }}>
+            {collapsed ? '+ expand' : '- collapse'}
+          </span>
+        </button>
+
+        {!collapsed && (
+          <>
+            {/* Message list */}
+            <div
+              ref={ghostLogRef}
+              style={{
+                maxHeight: 200,
+                overflowY: 'auto',
+                padding: '8px 14px',
+              }}
+            >
+              {ghostMessages.length === 0 ? (
+                <p style={{ color: '#7c3aed', fontSize: '0.75rem', fontStyle: 'italic', margin: 0, textAlign: 'center' }}>
+                  The spirits are silent...
+                </p>
+              ) : (
+                ghostMessages.map((msg, i) => (
+                  <div
+                    key={msg.id || i}
+                    style={{
+                      marginBottom: 6,
+                      fontSize: '0.8125rem',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <span style={{ color: '#c084fc', fontWeight: 600 }}>
+                      {msg.speaker}
+                    </span>
+                    <span style={{ color: '#a78bfa', marginLeft: 6 }}>
+                      {msg.text}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Input */}
+            <form
+              onSubmit={handleSubmit}
+              style={{
+                display: 'flex',
+                gap: 8,
+                padding: '8px 14px',
+                borderTop: '1px solid rgba(107, 33, 168, 0.3)',
+              }}
+            >
+              <input
+                className="input"
+                placeholder="Whisper to the dead..."
+                value={text}
+                onChange={e => setText(e.target.value)}
+                maxLength={200}
+                style={{
+                  flex: 1,
+                  background: 'rgba(107, 33, 168, 0.15)',
+                  borderColor: '#6b21a8',
+                  color: '#e9d5ff',
+                }}
+              />
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={!text.trim()}
+                style={{
+                  padding: '8px 14px',
+                  flexShrink: 0,
+                  background: '#7c3aed',
+                  borderColor: '#6b21a8',
+                }}
+              >
+                Haunt
+              </button>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
 function ChatBar({ chatText, onChange, onSubmit, isConnected }) {
   return (
     <div
@@ -885,9 +1133,9 @@ export default function GameScreen() {
   const {
     playerId, playerName, phase, characterName, round, isHost,
     players, aiCharacters, storyLog, role, isEliminated,
-    nightActionSubmitted, hunterRevengeNeeded, clueSent,
-    showRoleReveal, nightTargets, voteCandidates, timerSeconds,
-    currentSpeaker, currentSpeakerId,
+    nightActionSubmitted, hunterRevengeNeeded, clueSent, hauntUsed,
+    ghostMessages, showRoleReveal, nightTargets, voteCandidates,
+    timerSeconds, currentSpeaker, currentSpeakerId,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
@@ -917,6 +1165,21 @@ export default function GameScreen() {
     setDiscussionTimeLeft(timerSeconds)
     const interval = setInterval(() => {
       setDiscussionTimeLeft(prev => (prev > 0 ? prev - 1 : 0))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [phase, round, timerSeconds])
+
+  // ── Seance countdown timer ──
+  const [seanceTimeLeft, setSeanceTimeLeft] = useState(null)
+
+  useEffect(() => {
+    if (phase !== 'seance' || !timerSeconds) {
+      setSeanceTimeLeft(null)
+      return
+    }
+    setSeanceTimeLeft(timerSeconds)
+    const interval = setInterval(() => {
+      setSeanceTimeLeft(prev => (prev > 0 ? prev - 1 : 0))
     }, 1000)
     return () => clearInterval(interval)
   }, [phase, round, timerSeconds])
@@ -1071,6 +1334,14 @@ export default function GameScreen() {
     sendMessage('spectator_clue', { word })
   }
 
+  const handleHauntAccuse = (target) => {
+    sendMessage('haunt_action', { action: 'accuse', target })
+  }
+
+  const handleSendGhostMessage = (text) => {
+    sendMessage('ghost_message', { text })
+  }
+
   const [handRaised, setHandRaised] = useState(false)
   const handleRaiseHand = () => {
     sendMessage('raise_hand', { characterName: characterName })
@@ -1105,8 +1376,9 @@ export default function GameScreen() {
   const showStoryLog = phase !== 'setup'
   const showNightPanel =
     phase === 'night' && !isEliminated && !nightActionSubmitted && !!ROLE_INFO[role]?.action && nightPanelReady
-  const showCharacterGrid = phase === 'day_discussion' || phase === 'elimination'
+  const showCharacterGrid = phase === 'day_discussion' || phase === 'elimination' || phase === 'seance'
   const showChat = phase === 'day_discussion' && !isEliminated
+  const showSeance = phase === 'seance'
   const showNarratorBar = phase !== 'setup'
 
   return (
@@ -1180,6 +1452,26 @@ export default function GameScreen() {
                 }}
               >
                 {mins}:{secs.toString().padStart(2, '0')}
+              </span>
+            )
+          })()}
+          {seanceTimeLeft != null && phase === 'seance' && (() => {
+            const secs = seanceTimeLeft
+            const timerColor = secs <= 10 ? 'var(--danger)' : '#c084fc'
+            return (
+              <span
+                className={secs <= 10 ? 'pulse-glow' : ''}
+                style={{
+                  fontFamily: 'var(--font-heading)',
+                  fontSize: '0.875rem',
+                  fontWeight: 700,
+                  color: timerColor,
+                  transition: 'color 0.5s ease',
+                  minWidth: 36,
+                  textAlign: 'center',
+                }}
+              >
+                0:{secs.toString().padStart(2, '0')}
               </span>
             )
           })()}
@@ -1315,16 +1607,23 @@ export default function GameScreen() {
           </div>
         )}
 
-        {/* Eliminated spectator — clue panel during discussion + voting */}
+        {/* Eliminated spectator — Ghost Realm + clue panel */}
+        {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'game_over' && (
+          <GhostRealmPanel
+            ghostMessages={ghostMessages}
+            onSendGhostMessage={handleSendGhostMessage}
+          />
+        )}
         {isEliminated && !hunterRevengeNeeded && (phase === 'day_discussion' || phase === 'day_vote') && (
           <SpectatorCluePanel onSubmitClue={handleSpectatorClue} clueSent={clueSent} />
         )}
-        {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'day_vote' && phase !== 'day_discussion' && (
-          <div className="container" style={{ paddingTop: 12 }}>
-            <p style={{ textAlign: 'center', color: 'var(--text-dim)', fontSize: '0.875rem' }}>
-              🕯 You watch from beyond…
-            </p>
-          </div>
+        {/* Eliminated ghost — Haunt (Accuse) panel during night */}
+        {isEliminated && !hunterRevengeNeeded && phase === 'night' && (
+          <HauntPanel
+            candidates={aliveCharacters}
+            onAccuse={handleHauntAccuse}
+            hauntUsed={hauntUsed}
+          />
         )}
 
         {/* Character grid */}
@@ -1419,6 +1718,95 @@ export default function GameScreen() {
               handRaised={handRaised}
             />
           </>
+        )}
+
+        {/* ── Seance panel ── */}
+        {showSeance && (
+          <div
+            style={{
+              background: 'linear-gradient(180deg, rgba(88,28,135,0.15) 0%, rgba(15,10,25,0.95) 100%)',
+              border: '1px solid rgba(168,85,247,0.3)',
+              borderRadius: 12,
+              padding: '20px 16px',
+              margin: '8px 16px',
+              textAlign: 'center',
+              boxShadow: '0 0 30px rgba(168,85,247,0.15), inset 0 0 30px rgba(168,85,247,0.05)',
+            }}
+          >
+            {/* Seance countdown */}
+            {seanceTimeLeft != null && (
+              <div
+                style={{
+                  fontFamily: 'var(--font-heading)',
+                  fontSize: '2rem',
+                  fontWeight: 700,
+                  color: seanceTimeLeft <= 10 ? 'var(--danger)' : '#c084fc',
+                  marginBottom: 12,
+                  textShadow: '0 0 20px rgba(168,85,247,0.4)',
+                }}
+                className={seanceTimeLeft <= 10 ? 'pulse-glow' : ''}
+              >
+                0:{seanceTimeLeft.toString().padStart(2, '0')}
+              </div>
+            )}
+
+            {isEliminated ? (
+              <>
+                <p style={{ color: '#c084fc', fontSize: '0.9375rem', fontWeight: 600, marginBottom: 12 }}>
+                  The living can hear you. Speak now.
+                </p>
+                {/* Push-to-talk for ghosts */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                  {currentSpeaker && !isSpeaking ? (
+                    <span style={{ fontSize: '0.875rem', color: 'rgba(168,85,247,0.7)' }}>
+                      <span className="pulse-glow" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#c084fc', marginRight: 6 }} />
+                      {currentSpeaker} is speaking...
+                    </span>
+                  ) : (
+                    <button
+                      className={`btn ${isSpeaking ? 'btn-danger' : ''}`}
+                      onClick={isSpeaking ? handleStopSpeaking : handleStartSpeaking}
+                      disabled={connectionStatus !== 'connected'}
+                      style={{
+                        padding: '10px 28px',
+                        fontSize: '0.9375rem',
+                        fontWeight: 600,
+                        background: isSpeaking ? undefined : 'linear-gradient(135deg, #7c3aed, #a855f7)',
+                        border: isSpeaking ? undefined : '1px solid rgba(168,85,247,0.5)',
+                        color: '#fff',
+                        boxShadow: isSpeaking ? undefined : '0 0 20px rgba(168,85,247,0.3)',
+                      }}
+                    >
+                      {isSpeaking ? 'Release' : 'Speak from Beyond'}
+                    </button>
+                  )}
+                </div>
+                {micError && (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--danger)', display: 'block', marginTop: 6 }}>{micError}</span>
+                )}
+                {micActive && isSpeaking && (
+                  <span style={{ fontSize: '0.75rem', color: '#a855f7', display: 'block', marginTop: 6 }}>
+                    <span className="pulse-glow" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: '#a855f7', marginRight: 4 }} />
+                    The village hears your spirit
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <p style={{ color: 'rgba(168,85,247,0.7)', fontSize: '0.9375rem', fontWeight: 500, marginBottom: 8 }}>
+                  The spirits speak... listen carefully.
+                </p>
+                {currentSpeaker && (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 8 }}>
+                    <span className="pulse-glow" style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#c084fc' }} />
+                    <span style={{ color: '#c084fc', fontSize: '0.875rem', fontWeight: 600 }}>
+                      Spirit of {currentSpeaker}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         )}
       </div>
 

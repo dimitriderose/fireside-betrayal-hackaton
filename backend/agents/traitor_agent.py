@@ -559,6 +559,71 @@ async def select_loyal_night_action(game_id: str, ai_char, fs_field: str) -> Non
     logger.info("[%s] AI night action (%s): %s → %s", game_id, role.value, ai_char.name, target)
 
 
+# ── Ghost Accuse (dead AI characters) ─────────────────────────────────────────
+
+
+async def select_ghost_accuse(game_id: str, ai_char) -> Optional[str]:
+    """
+    Dead loyal AI ghost selects an alive character to accuse.
+    All dead AI ghosts are loyal (shapeshifter dying ends game).
+    Returns the target name or None if parsing fails.
+    """
+    from models.game import GameEvent, Phase
+
+    ctx = await _fetch_context(game_id)
+    if not ctx:
+        return None
+
+    game = ctx["game"]
+    alive_players = ctx["alive_players"]
+
+    # Build alive candidate list
+    alive_names = [p.character_name for p in alive_players]
+    ai1 = ctx["ai_char"]
+    ai2 = ctx.get("ai_char_2")
+    if ai1 and ai1.alive and ai1.name not in alive_names:
+        alive_names.append(ai1.name)
+    if ai2 and ai2.alive and ai2.name not in alive_names:
+        alive_names.append(ai2.name)
+
+    if not alive_names:
+        return None
+
+    system = (
+        f"You are the ghost of {ai_char.name}. You are dead but can influence the living. "
+        f"You were a loyal villager. Help the village find the Shapeshifter."
+    )
+    prompt = (
+        f"You are the ghost of {ai_char.name}. You are dead but can influence the living.\n"
+        f"Alive characters: {', '.join(alive_names)}\n\n"
+        f"Choose one alive character you find most suspicious based on what you observed. "
+        f"Return ONLY their name."
+    )
+
+    response = await _call_gemini(prompt, system, temperature=0.5)
+    target = _parse_character_name(response, alive_names)
+
+    if not target:
+        target = random.choice(alive_names)
+        logger.warning("[%s] AI ghost %s could not parse accuse from '%s' — random: %s",
+                       game_id, ai_char.name, response.strip(), target)
+
+    # Log the ghost_accuse event
+    fs = get_firestore_service()
+    event = GameEvent(
+        type="ghost_accuse",
+        round=game.round,
+        phase=Phase.NIGHT,
+        actor=ai_char.name,
+        target=target,
+        data={},
+        visible_in_game=False,
+    )
+    await fs.log_event(game_id, event)
+    logger.info("[%s] AI ghost %s accuses %s", game_id, ai_char.name, target)
+    return target
+
+
 # ── Unified trigger functions (called via asyncio.create_task) ────────────────
 
 
@@ -577,6 +642,17 @@ async def trigger_all_night_actions(game_id: str) -> None:
                 await select_night_target(game_id, ai_char, field)
             else:
                 await select_loyal_night_action(game_id, ai_char, field)
+
+        # Dead AI ghosts also accuse during night (loyal only — shapeshifter death ends game)
+        for ai_char, field in _ai_chars_with_fields(game):
+            if ai_char.alive:
+                continue  # only dead AI characters haunt
+            if ai_char.is_traitor:
+                continue  # shapeshifter ghost doesn't haunt (game would be over)
+            try:
+                await select_ghost_accuse(game_id, ai_char)
+            except Exception:
+                logger.warning("[%s] AI ghost accuse failed for %s", game_id, ai_char.name, exc_info=True)
 
         # If no AI is the traitor, a human shapeshifter handles their own action
     except Exception:
@@ -621,6 +697,80 @@ async def trigger_all_dialogs(game_id: str, context: str) -> List[Dict[str, Any]
     except Exception:
         logger.exception("[%s] AI dialog generation failed", game_id)
     return results
+
+
+# ── Ghost Council dialog generation ──────────────────────────────────────────
+
+
+_GHOST_SYSTEM = """You are the ghost of {name}. You died in the village of Thornwood.
+You are now in the Ghost Realm, speaking with other fallen villagers.
+
+CHARACTER PROFILE:
+  Name:    {name}
+  Role:    {role}
+  Backstory: {backstory}
+
+BEHAVIORAL RULES:
+- Share your impressions and suspicions with fellow ghosts.
+- Speak in atmospheric, uncertain terms. Say things like "I had a bad feeling about..."
+  or "Something felt wrong when..." — never state facts with certainty.
+- You are cooperative and village-aligned. Help other ghosts piece together clues.
+- Keep responses to 1-2 sentences — natural conversation length.
+- Stay in character as {name}. Never say "I am the AI."
+- React to what other ghosts say if there is recent ghost conversation.
+
+GAME CONTEXT:
+{game_state}"""
+
+
+async def generate_ghost_dialog(game_id: str, ai_char, fs_field: str) -> Dict[str, Any]:
+    """
+    Generate atmospheric ghost dialog for a dead AI character.
+    All AI ghosts are loyal (game ends when shapeshifter dies).
+    Returns {"character_name": str, "dialog": str}.
+    """
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        return {"character_name": ai_char.name, "dialog": "..."}
+
+    # Build game state context
+    events = await fs.get_events(game_id, visible_only=True)
+    recent_events = events[-10:] if events else []
+    event_lines = "\n".join(
+        f"  Round {e.round}: {e.type} — {e.actor or ''} {e.target or ''}"
+        for e in recent_events
+    ) or "  (no visible events)"
+
+    ghost_messages = await fs.get_ghost_messages(game_id, limit=10)
+    ghost_lines = "\n".join(
+        f'  {m.speaker}: "{m.text}"'
+        for m in ghost_messages[-5:]
+    ) or "  (silence in the Ghost Realm)"
+
+    role_name = ai_char.role.value.title() if ai_char.role else "Villager"
+    game_state = (
+        f"Phase: {game.phase.value} | Round: {game.round}\n"
+        f"Recent events:\n{event_lines}\n"
+        f"Recent ghost conversation:\n{ghost_lines}"
+    )
+
+    system = _GHOST_SYSTEM.format(
+        name=ai_char.name,
+        role=role_name,
+        backstory=(ai_char.backstory or ai_char.intro),
+        game_state=game_state,
+    )
+
+    prompt = (
+        f"You are in the Ghost Realm. Share an atmospheric impression or suspicion "
+        f"with your fellow ghosts. Be vague and mysterious — never state facts directly. "
+        f"Respond as {ai_char.name} in 1-2 sentences."
+    )
+
+    dialog = await _call_gemini(prompt, system, temperature=0.9)
+    logger.info("[%s] Ghost dialog for %s: %.80s…", game_id, ai_char.name, dialog)
+    return {"character_name": ai_char.name, "dialog": dialog}
 
 
 # ── Backward-compatible aliases for imports that haven't been updated yet ─────

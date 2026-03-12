@@ -19,7 +19,7 @@ function createInitialState() {
     role: null,           // villager | seer | healer | hunter | drunk | bodyguard | tanner | shapeshifter
     abilities: [],
     isHost: safeGet('isHost') === 'true',
-    phase: 'setup',       // setup | night | day_discussion | day_vote | elimination | game_over
+    phase: 'setup',       // setup | night | day_discussion | day_vote | elimination | seance | game_over
     round: 0,
     difficulty: 'normal',
     players: [],          // [{ id, characterName, alive, connected, ready }]
@@ -36,6 +36,8 @@ function createInitialState() {
     nightActionSubmitted: false, // true after seer/healer submits night action
     hunterRevengeNeeded: false,  // true when eliminated Hunter must pick a revenge target
     clueSent: false,             // true after eliminated player submits spectator clue this round
+    hauntUsed: false,            // true after eliminated player submits haunt (accuse) this round
+    ghostMessages: [],           // [{ speaker, text, timestamp }] — Ghost Council messages (dead players only)
     showRoleReveal: false,       // true when role reveal overlay should be displayed
     inPersonMode: false,         // §12.3.16: camera counts raised hands during vote
     highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
@@ -135,6 +137,18 @@ function gameReducer(state, action) {
       return { ...state, nightActionSubmitted: true }
     case 'CLUE_SENT':
       return { ...state, clueSent: true }
+    case 'HAUNT_CONFIRMED':
+      return { ...state, hauntUsed: true }
+    case 'ADD_GHOST_MESSAGE':
+      return {
+        ...state,
+        ghostMessages: [
+          ...state.ghostMessages,
+          { ...action.message, id: action.message.id ?? `ghost-${Date.now()}-${Math.random()}` },
+        ].slice(-100),
+      }
+    case 'CLEAR_GHOST_MESSAGES':
+      return { ...state, ghostMessages: [] }
     case 'SET_NIGHT_TARGETS':
       return { ...state, nightTargets: action.candidates }
     case 'SET_VOTE_CANDIDATES':
@@ -148,6 +162,7 @@ function gameReducer(state, action) {
         nightActionSubmitted: false,
         hunterRevengeNeeded: false,
         clueSent: false,  // reset each phase so new day_discussion in a new round allows a new clue
+        hauntUsed: false, // reset each phase so new night allows a new haunt
         showRoleReveal: false, // dismiss role reveal on phase transition
         // Reset per-round vote state on every phase transition
         votes: {},
@@ -180,8 +195,15 @@ function gameReducer(state, action) {
         voteMap: {},
         myVote: null,
         aiCharacters: [],
+        ghostMessages: [],
       }
     }
+    case 'SET_TIMER':
+      // Update timerSeconds without resetting other per-phase state
+      if (action.phase === state.phase) {
+        return { ...state, timerSeconds: action.timerSeconds ?? null }
+      }
+      return state
     case 'SET_SPEAKER':
       return { ...state, currentSpeaker: action.speaker ?? null, currentSpeakerId: action.playerId ?? null }
     case 'SET_IN_PERSON_MODE':

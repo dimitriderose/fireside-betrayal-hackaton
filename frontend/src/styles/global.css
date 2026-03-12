@@ -222,6 +222,7 @@ a:hover { text-decoration: underline; }
 .phase-day         { background: rgba(120,53,15,0.6); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
 .phase-vote        { background: rgba(69,10,10,0.8);  color: #fca5a5; border: 1px solid rgba(220,38,38,0.3); }
 .phase-elimination { background: rgba(0,0,0,0.8);    color: #d1d5db; border: 1px solid rgba(107,114,128,0.3); }
+.phase-seance      { background: rgba(88,28,135,0.8); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); }
 
 /* ===== Role colours ===== */
 .role-villager    { color: #9ca3af; }
