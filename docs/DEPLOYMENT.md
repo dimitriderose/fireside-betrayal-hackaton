@@ -77,7 +77,7 @@ GOOGLE_APPLICATION_CREDENTIALS=./service-account.json
 
 # === OPTIONAL ===
 FIRESTORE_EMULATOR_HOST=          # Set to localhost:8080 for emulator
-NARRATOR_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+NARRATOR_MODEL=gemini-2.5-flash-native-audio-latest
 TRAITOR_MODEL=gemini-2.5-flash
 NARRATOR_VOICE=Charon
 DEBUG=true
@@ -279,7 +279,7 @@ Follow the DNS verification steps in the output.
 | `GEMINI_API_KEY` | Yes | `""` | Gemini API key for all AI agents |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Local only | `""` | Path to service account JSON |
 | `FIRESTORE_EMULATOR_HOST` | No | `None` | Set to `localhost:8080` for emulator |
-| `NARRATOR_MODEL` | No | `gemini-2.5-flash-native-audio-preview-12-2025` | Narrator voice model |
+| `NARRATOR_MODEL` | No | `gemini-2.5-flash-native-audio-latest` | Narrator voice model |
 | `TRAITOR_MODEL` | No | `gemini-2.5-flash` | Traitor strategy model |
 | `NARRATOR_PREVIEW_MODEL` | No | `gemini-2.5-flash-preview-tts` | TTS for narrator preset previews |
 | `NARRATOR_VOICE` | No | `Charon` | Default narrator voice name |

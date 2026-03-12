@@ -12,10 +12,12 @@ export function useWebSocket(gameId, playerId) {
   const mountedRef = useRef(true)
   const lastSeqRef = useRef(0)   // reliable delivery: track highest received seq
   const phaseRef = useRef(state.phase)  // track current phase for sync comparison
+  const charNameRef = useRef(state.characterName)  // for local echo dedup
   const [connectionStatus, setConnectionStatus] = useState('disconnected')
 
-  // Keep phaseRef in sync with state
+  // Keep refs in sync with state
   phaseRef.current = state.phase
+  charNameRef.current = state.characterName
 
   const handleMessage = useCallback((event) => {
     let msg
@@ -90,6 +92,11 @@ export function useWebSocket(gameId, playerId) {
         window.dispatchEvent(new CustomEvent('narrator-audio', { detail: msg.data }))
         break
 
+      case 'narrator_status':
+        // msg: { type, status: "thinking" } — model is alive but processing
+        window.dispatchEvent(new CustomEvent('narrator-status', { detail: msg.status }))
+        break
+
       case 'scene_image':
         // msg: { type, data: base64png, sceneKey } — §12.3.14
         window.dispatchEvent(new CustomEvent('narrator-scene', { detail: { data: msg.data, sceneKey: msg.sceneKey } }))
@@ -97,6 +104,8 @@ export function useWebSocket(gameId, playerId) {
 
       case 'transcript':
         // msg: { type, speaker, text, source, [phase], [round] }
+        // Skip server echo of own chat (already shown via local echo in GameScreen)
+        if (msg.source === 'player' && msg.speaker === charNameRef.current) break
         dispatch({
           type: 'ADD_MESSAGE',
           message: {
@@ -270,7 +279,10 @@ export function useWebSocket(gameId, playerId) {
   // sendMessage wraps outgoing messages as { type, data } per the backend protocol
   const sendMessage = useCallback((type, data = {}) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('[ws] sending:', type, data)
       wsRef.current.send(JSON.stringify({ type, data }))
+    } else {
+      console.warn('[ws] message dropped (not connected):', type, data)
     }
   }, [])
 

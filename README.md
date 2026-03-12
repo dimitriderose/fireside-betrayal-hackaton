@@ -50,7 +50,7 @@ Fireside: Betrayal combines the narrative immersion of tabletop RPGs with the so
 ## Tech Stack
 
 - **AI Engine:** Google Gemini Live API (real-time bidirectional voice)
-- **AI Models:** gemini-2.5-flash-native-audio (narrator), gemini-2.5-flash (traitor strategy), gemini-2.5-flash-preview-tts (audio previews)
+- **AI Models:** gemini-2.5-flash-native-audio-latest (narrator), gemini-2.5-flash (traitor strategy), gemini-2.5-flash-preview-tts (audio previews)
 - **Backend:** FastAPI + Python on Cloud Run
 - **Real-time State:** Cloud Firestore
 - **Frontend:** React (mobile web, Vite)

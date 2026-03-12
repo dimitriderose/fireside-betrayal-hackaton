@@ -666,18 +666,18 @@ class NarratorSession:
         def _make_config() -> "types.LiveConnectConfig":
             return types.LiveConnectConfig(
                 response_modalities=["AUDIO"],
+                # Disable thinking — real-time voice game needs instant responses,
+                # not 10-30s of silent reasoning before each reply.
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
                 input_audio_transcription=types.AudioTranscriptionConfig(),
                 # Session resumption: on timeout the session restarts from the last
                 # captured handle, preserving full conversation context.
                 session_resumption=types.SessionResumptionConfig(
                     handle=self._session_handle  # None → new session; str → resume
                 ),
-                # Context window compression: auto-summarise older turns so the
-                # narrator can run indefinitely without hitting the 128K token limit.
-                # google-genai>=1.0.0 uses SlidingWindow subconfig (not enabled=True).
-                context_window_compression=types.ContextWindowCompressionConfig(
-                    sliding_window=types.SlidingWindow(),
-                ),
+                # NOTE: context_window_compression removed — not documented as
+                # supported on native audio models and 128K context is sufficient
+                # for a single game session.
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -739,12 +739,21 @@ class NarratorSession:
 
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as exc:
                 _consecutive_errors += 1
-                logger.exception(
-                    "[%s] Narrator session error (attempt %d/%d)",
-                    self.game_id, _consecutive_errors, _MAX_ATTEMPTS,
-                )
+                exc_str = str(exc)
+                if "1008" in exc_str or "policy violation" in exc_str.lower():
+                    logger.error(
+                        "[%s] Narrator 1008 policy violation — likely unsupported "
+                        "config option or model issue. Check NARRATOR_MODEL and "
+                        "LiveConnectConfig. Error: %s",
+                        self.game_id, exc_str,
+                    )
+                else:
+                    logger.exception(
+                        "[%s] Narrator session error (attempt %d/%d)",
+                        self.game_id, _consecutive_errors, _MAX_ATTEMPTS,
+                    )
                 if _consecutive_errors >= _MAX_ATTEMPTS:
                     logger.error(
                         "[%s] Narrator giving up after %d consecutive errors.",
@@ -815,73 +824,90 @@ class NarratorSession:
             return
 
         try:
-            async for response in session.receive():
-                if not self._running:
-                    break
+            while self._running:
+                async for response in session.receive():
+                    if not self._running:
+                        break
 
-                # Session resumption handle — store for reconnect after timeout
-                resumption = getattr(response, "session_resumption_update", None)
-                if resumption:
-                    new_handle = getattr(resumption, "new_handle", None)
-                    if new_handle:
-                        self._session_handle = new_handle
-                        logger.debug(
-                            "[%s] Narrator session handle refreshed", self.game_id
+                    # Session resumption handle — store for reconnect after timeout
+                    resumption = getattr(response, "session_resumption_update", None)
+                    if resumption:
+                        new_handle = getattr(resumption, "new_handle", None)
+                        if new_handle:
+                            self._session_handle = new_handle
+                            logger.debug(
+                                "[%s] Narrator session handle refreshed", self.game_id
+                            )
+
+                    # PCM audio → broadcast to all players + record for highlight reel (§12.3.15)
+                    if response.data:
+                        b64 = pcm_to_base64(response.data)
+                        await ws_manager.broadcast_audio(self.game_id, b64)
+                        try:
+                            from agents.audio_recorder import get_recorder
+                            get_recorder(self.game_id).append_audio(response.data)
+                        except Exception:
+                            logger.debug("[%s] audio_recorder.append_audio failed", self.game_id, exc_info=True)
+
+                    # Text transcript → show in UI
+                    if response.text:
+                        await ws_manager.broadcast_transcript(
+                            self.game_id,
+                            speaker="Narrator",
+                            text=response.text,
+                            source="narrator",
                         )
 
-                # PCM audio → broadcast to all players + record for highlight reel (§12.3.15)
-                if response.data:
-                    b64 = pcm_to_base64(response.data)
-                    await ws_manager.broadcast_audio(self.game_id, b64)
-                    try:
-                        from agents.audio_recorder import get_recorder
-                        get_recorder(self.game_id).append_audio(response.data)
-                    except Exception:
-                        logger.debug("[%s] audio_recorder.append_audio failed", self.game_id, exc_info=True)
+                    # Tool call → execute and respond
+                    if response.tool_call:
+                        await self._handle_tool_call(session, response.tool_call, gtypes)
 
-                # Text transcript → show in UI
-                if response.text:
-                    await ws_manager.broadcast_transcript(
-                        self.game_id,
-                        speaker="Narrator",
-                        text=response.text,
-                        source="narrator",
-                    )
+                    # Thought chunks → broadcast "narrator_thinking" so frontend
+                    # knows the model is alive and resets its silence timer.
+                    if not response.data and not response.text and not response.tool_call:
+                        sc = getattr(response, "server_content", None)
+                        model_turn = getattr(sc, "model_turn", None) if sc else None
+                        is_thought = False
+                        if model_turn:
+                            for part in getattr(model_turn, "parts", []):
+                                if getattr(part, "thought", False):
+                                    is_thought = True
+                                    break
+                        if is_thought:
+                            await ws_manager.broadcast(self.game_id, {
+                                "type": "narrator_status",
+                                "status": "thinking",
+                            })
+                        else:
+                            logger.info(
+                                "[%s] NON-STANDARD response: type=%s server_content=%s keys=%s",
+                                self.game_id, type(response).__name__, sc,
+                                [a for a in dir(response) if not a.startswith("_")],
+                            )
 
-                # Tool call → execute and respond
-                if response.tool_call:
-                    await self._handle_tool_call(session, response.tool_call, gtypes)
-
-                # Debug: log non-audio/text/tool responses to find transcription fields
-                if not response.data and not response.text and not response.tool_call:
-                    sc = getattr(response, "server_content", None)
-                    logger.info(
-                        "[%s] NON-STANDARD response: type=%s server_content=%s keys=%s",
-                        self.game_id, type(response).__name__, sc,
-                        [a for a in dir(response) if not a.startswith("_")],
-                    )
-
-                # Input audio transcription → buffer partials, flush after silence
-                # Try server_content.input_transcription (nested) and top-level
-                server_content = getattr(response, "server_content", None)
-                input_tx = None
-                if server_content:
-                    input_tx = getattr(server_content, "input_transcription", None)
-                # Some SDK versions put it at response level
-                if not input_tx:
-                    input_tx = getattr(response, "input_transcription", None)
-                if input_tx:
-                    tx_text = getattr(input_tx, "text", None) or getattr(input_tx, "transcript", None)
-                    if tx_text:
-                        logger.info("[%s] INPUT_TX: %s", self.game_id, tx_text)
-                if input_tx and tx_text:
-                        self._transcript_buffer += tx_text
-                        # Cancel any pending flush and restart the debounce timer
-                        if self._transcript_flush_task and not self._transcript_flush_task.done():
-                            self._transcript_flush_task.cancel()
-                        self._transcript_flush_task = asyncio.create_task(
-                            self._flush_transcript_after_delay(0.8)
-                        )
+                    # Input audio transcription → buffer partials, flush after silence
+                    # Try server_content.input_transcription (nested) and top-level
+                    server_content = getattr(response, "server_content", None)
+                    input_tx = None
+                    if server_content:
+                        input_tx = getattr(server_content, "input_transcription", None)
+                    # Some SDK versions put it at response level
+                    if not input_tx:
+                        input_tx = getattr(response, "input_transcription", None)
+                    if input_tx:
+                        tx_text = getattr(input_tx, "text", None) or getattr(input_tx, "transcript", None)
+                        if tx_text:
+                            logger.info("[%s] INPUT_TX: %s", self.game_id, tx_text)
+                    if input_tx and tx_text:
+                            self._transcript_buffer += tx_text
+                            # Cancel any pending flush and restart the debounce timer
+                            if self._transcript_flush_task and not self._transcript_flush_task.done():
+                                self._transcript_flush_task.cancel()
+                            self._transcript_flush_task = asyncio.create_task(
+                                self._flush_transcript_after_delay(0.8)
+                            )
+                # receive() exhausted on turn_complete — stay alive for the next turn
+                logger.debug("[%s] Narrator turn complete, awaiting next turn", self.game_id)
 
         except asyncio.CancelledError:
             raise  # let asyncio.wait see this task as cancelled

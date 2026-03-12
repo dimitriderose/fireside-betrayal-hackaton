@@ -100,7 +100,7 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 
 | Agent | Type | Model | Responsibilities |
 |---|---|---|---|
-| **Narrator Agent** | LLM Agent (Primary) | gemini-2.5-flash-native-audio-preview-12-2025 | Story narration, scene setting, NPC voices, dramatic reveals. Voice: "Charon" (deep, dramatic). Affective dialog enabled. Tools: `get_game_state`, `advance_phase`, `describe_scene`. |
+| **Narrator Agent** | LLM Agent (Primary) | gemini-2.5-flash-native-audio-latest | Story narration, scene setting, NPC voices, dramatic reveals. Voice: "Charon" (deep, dramatic). Affective dialog enabled. Tools: `get_game_state`, `advance_phase`, `describe_scene`. |
 | **Game Master Agent** | Workflow Agent (Deterministic) | N/A — pure logic | Phase transitions (SETUP→NIGHT→DAY→VOTE→ELIMINATION→repeat), rule enforcement, vote counting, win condition checks. Tools: `assign_roles`, `count_votes`, `eliminate_player`, `check_win_condition`. |
 | **Traitor Agent** | LLM Sub-agent | Same Gemini model, separate system prompt | AI's hidden player persona. Generates bluffs, deflection tactics, and strategic accusations. Has access to all players' roles and game strategy tools. Responses are mixed into the story as character dialog. Tools: `plan_deflection`, `generate_alibi`, `accuse_player`. |
 
@@ -212,7 +212,7 @@ games/{gameId}/
 
 | Requirement | Implementation | Status |
 |---|---|---|
-| Gemini model | gemini-2.5-flash-native-audio-preview-12-2025 | ✓ Compliant |
+| Gemini model | gemini-2.5-flash-native-audio-latest | ✓ Compliant |
 | GenAI SDK or ADK | Google ADK (Python) with bidi-streaming via `run_live()` | ✓ Compliant |
 | Google Cloud service | Cloud Run + Cloud Firestore + Cloud Storage | ✓ Compliant |
 | Hosted on Google Cloud | Cloud Run deployment (automated via Cloud Build) | ✓ Compliant |

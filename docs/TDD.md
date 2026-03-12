@@ -93,9 +93,9 @@ This Technical Design Document specifies the implementation architecture for Fir
 │                 │                                                │
 │  ┌──────────────▼────────────────────────────────────────────┐  │
 │  │         Gemini Live API (WebSocket)                        │  │
-│  │         Model: gemini-2.5-flash-native-audio-preview       │  │
+│  │         Model: gemini-2.5-flash-native-audio-latest           │  │
 │  │         Session resumption: ENABLED                        │  │
-│  │         Context compression: ENABLED                       │  │
+│  │         Context compression: REMOVED                       │  │
 │  │         Response modality: AUDIO                           │  │
 │  └───────────────────────────────────────────────────────────┘  │
 └──────────────┬──────────────────────────────┬───────────────────┘
@@ -146,7 +146,7 @@ from google.adk.agents import Agent
 
 narrator_agent = Agent(
     name="fireside_narrator",
-    model="gemini-2.5-flash-native-audio-preview-12-2025",
+    model="gemini-2.5-flash-native-audio-latest",
     description="AI game master and narrator for Fireside — Betrayal",
     instruction="""You are the narrator of Fireside — Betrayal, a social deduction 
     storytelling game set in the village of Thornwood. 
@@ -3148,7 +3148,7 @@ narrator_preset = game_settings.get("narrator_preset", "classic")
 
 narrator_agent = Agent(
     name="fireside_narrator",
-    model="gemini-2.5-flash-native-audio-preview-12-2025",
+    model="gemini-2.5-flash-native-audio-latest",
     instruction=build_narrator_prompt(narrator_preset, BASE_NARRATOR_INSTRUCTION),
     tools=[get_game_state, advance_phase, narrate_event, inject_traitor_dialog],
     sub_agents=[traitor_agent],
@@ -3760,7 +3760,7 @@ Dependencies were pinned to versions compatible with Python 3.14 (forward-compat
 | `GEMINI_API_KEY` | ✓ | Gemini API key | `AIzaSy...` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | | Path to service account JSON (local dev) | `./sa-key.json` |
 | `FIRESTORE_EMULATOR_HOST` | | Firestore emulator address (local dev) | `localhost:8081` |
-| `NARRATOR_MODEL` | | Narrator Gemini model | `gemini-2.5-flash-native-audio-preview-12-2025` |
+| `NARRATOR_MODEL` | | Narrator Gemini model | `gemini-2.5-flash-native-audio-latest` |
 | `TRAITOR_MODEL` | | Traitor strategy model | `gemini-2.5-flash` |
 | `NARRATOR_PREVIEW_MODEL` | | TTS preview model | `gemini-2.5-flash-preview-tts` |
 | `NARRATOR_VOICE` | | Default narrator voice | `Charon` |
@@ -3775,7 +3775,7 @@ GOOGLE_CLOUD_PROJECT=fireside-hackathon-2026
 GEMINI_API_KEY=your-api-key-here
 GOOGLE_APPLICATION_CREDENTIALS=./sa-key.json
 # FIRESTORE_EMULATOR_HOST=localhost:8081  # uncomment for local dev
-NARRATOR_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+NARRATOR_MODEL=gemini-2.5-flash-native-audio-latest
 TRAITOR_MODEL=gemini-2.5-flash
 NARRATOR_PREVIEW_MODEL=gemini-2.5-flash-preview-tts
 NARRATOR_VOICE=Charon

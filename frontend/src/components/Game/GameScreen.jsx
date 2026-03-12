@@ -798,6 +798,13 @@ function NarratorBar({ isPlaying, volume, setVolume, storyLog, connectionStatus 
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [isPlaying, logLen])
 
+  // Reset silence timer when narrator broadcasts a "thinking" status
+  useEffect(() => {
+    const onStatus = () => setSilenceTier(0)
+    window.addEventListener('narrator-status', onStatus)
+    return () => window.removeEventListener('narrator-status', onStatus)
+  }, [])
+
   const disconnected = connectionStatus && connectionStatus !== 'connected'
   const label = disconnected
     ? '⚠ Disconnected'
@@ -1003,6 +1010,15 @@ export default function GameScreen() {
   const handleChat = (e) => {
     e.preventDefault()
     if (!chatText.trim()) return
+    // Local echo — show immediately (server echo is deduped in useWebSocket)
+    dispatch({
+      type: 'ADD_MESSAGE',
+      message: {
+        speaker: characterName,
+        text: chatText.trim(),
+        source: 'player',
+      },
+    })
     sendMessage('message', { text: chatText.trim() })
     setChatText('')
   }

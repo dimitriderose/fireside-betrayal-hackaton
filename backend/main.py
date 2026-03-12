@@ -67,4 +67,8 @@ if os.path.isdir(_frontend_dist):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app", host="0.0.0.0", port=8000, reload=True,
+        ws_ping_interval=None,  # Disable — continuous audio is the heartbeat
+        ws_ping_timeout=None,
+    )

@@ -403,6 +403,44 @@ class ConnectionManager:
         # Reliable delivery: per-game monotonic sequence counter + event buffer
         self._seq: Dict[str, int] = {}
         self._event_log: Dict[str, list] = {}
+        # Per-player outgoing queues: priority (control) + audio
+        self._ctrl_queues: Dict[str, Dict[str, asyncio.Queue]] = {}
+        self._audio_queues: Dict[str, Dict[str, asyncio.Queue]] = {}
+        self._sender_tasks: Dict[str, Dict[str, asyncio.Task]] = {}
+
+    # ── Per-player sender ─────────────────────────────────────────────────────
+
+    async def _player_sender(self, game_id: str, player_id: str, ws: WebSocket) -> None:
+        """Drain control + audio queues for one player. Control messages have priority."""
+        ctrl_q = self._ctrl_queues.get(game_id, {}).get(player_id)
+        audio_q = self._audio_queues.get(game_id, {}).get(player_id)
+        if not ctrl_q or not audio_q:
+            return
+        try:
+            while True:
+                # Priority: drain all pending control messages first
+                while not ctrl_q.empty():
+                    msg = ctrl_q.get_nowait()
+                    await ws.send_json(msg)
+
+                # Then try one audio chunk (non-blocking), fall back to waiting on either
+                try:
+                    msg = audio_q.get_nowait()
+                    await ws.send_json(msg)
+                except asyncio.QueueEmpty:
+                    # Nothing in either queue — wait for the next item from either
+                    ctrl_task = asyncio.ensure_future(ctrl_q.get())
+                    audio_task = asyncio.ensure_future(audio_q.get())
+                    done, pending = await asyncio.wait(
+                        {ctrl_task, audio_task}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for t in pending:
+                        t.cancel()
+                    for t in done:
+                        msg = t.result()
+                        await ws.send_json(msg)
+        except (asyncio.CancelledError, Exception):
+            pass  # Connection closed or task cancelled — clean exit
 
     # ── Reliable delivery helpers ─────────────────────────────────────────────
 
@@ -428,6 +466,12 @@ class ConnectionManager:
     async def connect(self, game_id: str, player_id: str, ws: WebSocket) -> None:
         await ws.accept()
         self._games.setdefault(game_id, {})[player_id] = ws
+        # Set up per-player send queues and start sender task
+        self._ctrl_queues.setdefault(game_id, {})[player_id] = asyncio.Queue()
+        self._audio_queues.setdefault(game_id, {})[player_id] = asyncio.Queue(maxsize=256)
+        self._sender_tasks.setdefault(game_id, {})[player_id] = asyncio.create_task(
+            self._player_sender(game_id, player_id, ws)
+        )
         logger.info(
             f"[{game_id}] {player_id} connected ({self.count(game_id)} total)"
         )
@@ -440,8 +484,17 @@ class ConnectionManager:
         if ws is not None and game_conns.get(player_id) is not ws:
             return  # stale connection closing — leave the current one alone
         game_conns.pop(player_id, None)
+        # Clean up sender task and queues
+        task = self._sender_tasks.get(game_id, {}).pop(player_id, None)
+        if task:
+            task.cancel()
+        self._ctrl_queues.get(game_id, {}).pop(player_id, None)
+        self._audio_queues.get(game_id, {}).pop(player_id, None)
         if not game_conns:
             self._games.pop(game_id, None)
+            self._sender_tasks.pop(game_id, None)
+            self._ctrl_queues.pop(game_id, None)
+            self._audio_queues.pop(game_id, None)
 
     def count(self, game_id: str) -> int:
         return len(self._games.get(game_id, {}))
@@ -458,9 +511,12 @@ class ConnectionManager:
     async def send_to(
         self, game_id: str, player_id: str, message: Dict
     ) -> None:
-        """Send a private message to a single player."""
-        ws = self._games.get(game_id, {}).get(player_id)
-        if ws:
+        """Send a private message to a single player (via control queue)."""
+        ctrl_q = self._ctrl_queues.get(game_id, {}).get(player_id)
+        if ctrl_q is not None:
+            ctrl_q.put_nowait(message)
+        # Fallback: no queue yet (pre-connect), send directly
+        elif (ws := self._games.get(game_id, {}).get(player_id)):
             try:
                 await ws.send_json(message)
             except Exception as exc:
@@ -485,24 +541,17 @@ class ConnectionManager:
         exclude: Optional[str] = None,
         reliable: bool = False,
     ) -> None:
-        """Broadcast a message to all connected players in a game."""
+        """Broadcast a message to all connected players via control queues (non-blocking)."""
         if reliable:
             seq = self._next_seq(game_id)
             message = {**message, "seq": seq}
             self._buffer_event(game_id, seq, message)
-            logger.info(f"[{game_id}] reliable broadcast seq={seq} type={message.get('type')}")
-        targets = [pid for pid in self._games.get(game_id, {}) if pid != exclude]
-        logger.info(f"[{game_id}] broadcast {message.get('type')} → {len(targets)} players")
-        for pid, ws in list(self._games.get(game_id, {}).items()):
+        for pid in list(self._games.get(game_id, {})):
             if pid == exclude:
                 continue
-            try:
-                await ws.send_json(message)
-            except Exception as exc:
-                logger.warning(
-                    f"[{game_id}] broadcast to {pid} failed: {exc}"
-                )
-                self.disconnect(game_id, pid)
+            ctrl_q = self._ctrl_queues.get(game_id, {}).get(pid)
+            if ctrl_q is not None:
+                ctrl_q.put_nowait(message)
 
     # ── High-level game event helpers ──────────────────────────────────────────
 
@@ -689,12 +738,23 @@ class ConnectionManager:
     async def broadcast_audio(
         self, game_id: str, pcm_base64: str
     ) -> None:
-        """Broadcast a PCM audio chunk (narrator voice via Gemini Live)."""
-        await self.broadcast(game_id, {
-            "type": "audio",
-            "data": pcm_base64,
-            "sampleRate": 24000,
-        })
+        """Broadcast a PCM audio chunk via audio queues (drops oldest if full)."""
+        msg = {"type": "audio", "data": pcm_base64, "sampleRate": 24000}
+        for pid in list(self._games.get(game_id, {})):
+            audio_q = self._audio_queues.get(game_id, {}).get(pid)
+            if audio_q is not None:
+                try:
+                    audio_q.put_nowait(msg)
+                except asyncio.QueueFull:
+                    # Drop oldest audio chunk, add new one
+                    try:
+                        audio_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    try:
+                        audio_q.put_nowait(msg)
+                    except asyncio.QueueFull:
+                        pass
 
     async def broadcast_scene_image(
         self, game_id: str, image_b64: str, scene_key: str
@@ -771,10 +831,7 @@ async def websocket_endpoint(
         # Skip private messages targeted at other players
         if "target" in entry and entry["target"] != playerId:
             continue
-        try:
-            await ws.send_json(entry["msg"])
-        except Exception:
-            break
+        await manager.send_to(game_id, playerId, entry["msg"])
 
     # Send per-player candidate list if we're in a phase that needs it
     if game.phase in (Phase.NIGHT, Phase.DAY_VOTE) and player.alive and player.character_name:
@@ -815,7 +872,9 @@ async def websocket_endpoint(
             inner_data = data.get("data") if isinstance(data.get("data"), dict) else {}
             await _handle_message(game_id, playerId, msg_type, inner_data, fs)
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # RuntimeError: "WebSocket is not connected" can occur when the
+        # client drops without a clean close frame (common with disabled pings).
         pass
     finally:
         # Only clean up if this WS is still the current connection for this player.
@@ -867,6 +926,9 @@ async def _dispatch_message(
     data: Dict,
     fs,
 ) -> None:
+    if msg_type not in ("ping", "sync", "player_audio"):
+        logger.info("[%s] dispatch: %s -> %s", game_id, player_id, msg_type)
+
     if msg_type == "ping":
         await manager.send_to(game_id, player_id, {"type": "pong"})
 
@@ -933,16 +995,20 @@ async def _on_chat(
     game_id: str, player_id: str, data: Dict, fs
 ) -> None:
     text = str(data.get("text", "")).strip()[:500]
+    logger.info("[%s] _on_chat from %s: %r", game_id, player_id, text[:80])
     if not text:
+        logger.warning("[%s] _on_chat: empty text, dropping", game_id)
         return
 
     game = await fs.get_game(game_id)
     player = await fs.get_player(game_id, player_id)
     if not player:
+        logger.warning("[%s] _on_chat: player %s not found, dropping", game_id, player_id)
         return
 
     # Silently drop messages from finished games — narrator may already be torn down
     if game and game.status == GameStatus.FINISHED:
+        logger.info("[%s] _on_chat: game finished, dropping", game_id)
         return
 
     if game and game.status == GameStatus.IN_PROGRESS and not player.alive:
@@ -973,6 +1039,7 @@ async def _on_chat(
         phase=game.phase.value if game else None,
         round_num=game.round if game else None,
     )
+    logger.info("[%s] Chat broadcast: %s says %r", game_id, speaker, text[:80])
 
     # ── Pacing + affective signals (DAY_DISCUSSION only) ──────────────────────
     pacing: Optional[str] = None
