@@ -134,7 +134,7 @@ async def _fetch_context(game_id: str) -> Optional[Dict[str, Any]]:
     return {
         "game": game,
         "alive_players": await fs.get_alive_players(game_id),
-        "ai_char": await fs.get_ai_character(game_id),
+        "ai_char": game.ai_character,
         "ai_char_2": game.ai_character_2,
         "recent_chat": await fs.get_chat_messages(game_id, limit=15),
     }
@@ -396,6 +396,12 @@ async def select_night_target(game_id: str, ai_char, fs_field: str) -> Optional[
     system, temperature = _build_system_for(ai_char, ctx, game_id)
 
     alive_names = [p.character_name for p in alive_players]
+    # Include alive AI characters (excluding self) as valid night targets
+    ai1 = ctx["ai_char"]
+    ai2 = ctx.get("ai_char_2")
+    for ai in [ai1, ai2]:
+        if ai and ai.alive and ai.name != ai_char.name and ai.name not in alive_names:
+            alive_names.append(ai.name)
     prompt = (
         f"NIGHT PHASE — you must choose one villager to eliminate.\n"
         f"Alive villagers (potential targets): {', '.join(alive_names)}\n\n"

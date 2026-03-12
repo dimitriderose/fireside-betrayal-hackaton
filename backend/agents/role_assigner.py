@@ -323,7 +323,7 @@ class RoleAssigner:
                 all_roles = full_pool
                 if not ai1_is_traitor:
                     logger.info(
-                        "[%s] Random alignment: AI drew '%s' — loyal AI, no shapeshifter this game.",
+                        "[%s] Random alignment: AI drew '%s' — loyal AI, a human player has the shapeshifter role.",
                         game_id, ai1_role,
                     )
 
