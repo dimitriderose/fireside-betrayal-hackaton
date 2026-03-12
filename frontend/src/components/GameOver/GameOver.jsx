@@ -17,11 +17,12 @@ function ShareButton({ winner, reveals }) {
     const traitorLine = loyalAIReveal
       ? `${loyalAIReveal.characterName} was loyal — on the village's side all along!`
       : traitor ? `The Shapeshifter was ${traitor.characterName} (${traitor.playerName}).` : ''
-    const summary = `🔥 Fireside: Betrayal\n${outcome}\n${traitorLine}\nPlay at thornwood.app`
+    const playUrl = `${window.location.origin}/`
+    const summary = `🔥 Fireside: Betrayal\n${outcome}\n${traitorLine}\nPlay at ${playUrl}`
 
     if (navigator.share) {
       try {
-        await navigator.share({ title: 'Fireside: Betrayal', text: summary })
+        await navigator.share({ title: 'Fireside: Betrayal', text: summary, url: playUrl })
         return
       } catch {
         // User cancelled or API not supported — fall through to clipboard

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState } from 'react'
 import { useNavigate, useSearchParams, useParams } from 'react-router-dom'
 import { useGame } from '../../context/GameContext.jsx'
 
@@ -33,49 +33,6 @@ export default function JoinLobby() {
   const [inPersonMode, setInPersonMode] = useState(false)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [previewState, setPreviewState] = useState({})  // { presetId: 'idle'|'loading'|'playing' }
-  const previewAudioRef = useRef(null)
-  const previewAbortRef = useRef(null)  // AbortController for in-flight fetch
-
-  const handlePreviewPlay = async (presetId) => {
-    // Cancel any in-flight fetch before starting a new one (prevents double-play race)
-    if (previewAbortRef.current) {
-      previewAbortRef.current.abort()
-      previewAbortRef.current = null
-    }
-    // Stop current playback if any
-    if (previewAudioRef.current) {
-      previewAudioRef.current.pause()
-      previewAudioRef.current = null
-    }
-    // Toggle off if already playing this preset
-    if (previewState[presetId] === 'playing') {
-      setPreviewState(prev => ({ ...prev, [presetId]: 'idle' }))
-      return
-    }
-    const controller = new AbortController()
-    previewAbortRef.current = controller
-    setPreviewState(prev => ({ ...prev, [presetId]: 'loading' }))
-    try {
-      const res = await fetch(`/api/narrator/preview/${presetId}`, { signal: controller.signal })
-      if (!res.ok) throw new Error('preview unavailable')
-      const { audio_b64 } = await res.json()
-      // Only proceed if this request is still the active one (not superseded)
-      if (previewAbortRef.current !== controller) return
-      previewAbortRef.current = null
-      const audio = new Audio(`data:audio/wav;base64,${audio_b64}`)
-      previewAudioRef.current = audio
-      setPreviewState(prev => ({ ...prev, [presetId]: 'playing' }))
-      audio.play().catch(() => {})
-      audio.onended = () => {
-        setPreviewState(prev => ({ ...prev, [presetId]: 'idle' }))
-        previewAudioRef.current = null
-      }
-    } catch {
-      setPreviewState(prev => ({ ...prev, [presetId]: 'idle' }))
-    }
-  }
-
   const handleSubmit = async (e) => {
     e.preventDefault()
     const trimmedName = name.trim()
@@ -204,59 +161,31 @@ export default function JoinLobby() {
           )}
 
 
-          {/* Narrator Style (host only) §12.3.17 */}
+          {/* Narrator Style — selection without preview */}
           {isHost && (
             <div>
               <label className="input-label">Narrator Style</label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 6 }}>
                 {PRESETS.map(p => {
-                  const ps = previewState[p.id] ?? 'idle'
                   const selected = narratorPreset === p.id
                   return (
-                    <div
+                    <button
                       key={p.id}
+                      type="button"
+                      onClick={() => setNarratorPreset(p.id)}
                       className={`btn btn-sm ${selected ? 'btn-primary' : 'btn-ghost'}`}
-                      style={{ position: 'relative', flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px', height: 'auto', userSelect: 'none' }}
+                      style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2, padding: '8px 10px', height: 'auto' }}
                     >
-                      {/* Full-card select button (behind preview button) */}
-                      <button
-                        type="button"
-                        aria-label={`Select ${p.label} narrator`}
-                        aria-pressed={selected}
-                        onClick={() => setNarratorPreset(p.id)}
-                        style={{ position: 'absolute', inset: 0, background: 'none', border: 'none', cursor: 'pointer', zIndex: 0 }}
-                      />
-                      {/* Visible content + preview button (above card button) */}
-                      <div style={{ position: 'relative', zIndex: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                        <span>{p.label}</span>
-                        <button
-                          type="button"
-                          title={`Preview ${p.label} narrator`}
-                          onClick={e => { e.stopPropagation(); handlePreviewPlay(p.id) }}
-                          disabled={ps === 'loading'}
-                          style={{
-                            position: 'relative', zIndex: 1,
-                            background: 'none',
-                            border: 'none',
-                            cursor: ps === 'loading' ? 'default' : 'pointer',
-                            fontSize: '0.75rem',
-                            padding: '2px 4px',
-                            color: selected ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)',
-                            lineHeight: 1,
-                          }}
-                        >
-                          {ps === 'loading' ? '⏳' : ps === 'playing' ? '⏹' : '▶'}
-                        </button>
-                      </div>
-                      <span style={{ position: 'relative', zIndex: 1, fontSize: '0.6875rem', color: selected ? 'rgba(255,255,255,0.75)' : 'var(--text-dim)', fontWeight: 400 }}>
+                      <span>{p.label}</span>
+                      <span style={{ fontSize: '0.6875rem', color: selected ? 'rgba(255,255,255,0.75)' : 'var(--text-dim)', fontWeight: 400 }}>
                         {p.desc}
                       </span>
                       {selected && (
-                        <span style={{ position: 'relative', zIndex: 1, fontSize: '0.6875rem', fontStyle: 'italic', color: 'rgba(255,255,255,0.6)', fontWeight: 400, marginTop: 2 }}>
+                        <span style={{ fontSize: '0.6875rem', fontStyle: 'italic', color: selected ? 'rgba(255,255,255,0.6)' : 'var(--text-dim)', fontWeight: 400, marginTop: 2 }}>
                           {p.sample}
                         </span>
                       )}
-                    </div>
+                    </button>
                   )
                 })}
               </div>

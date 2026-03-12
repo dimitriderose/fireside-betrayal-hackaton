@@ -1272,8 +1272,8 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             f"The characters of Thornwood tonight are: {cast_str}. "
             "Open the game with a foreboding 2–3 sentence monologue that establishes "
             "the dark, tense atmosphere of the village under the threat of a Shapeshifter. "
-            "Introduce 2–3 characters by name with a brief atmospheric detail to give players "
-            "a sense of who surrounds them. End with anticipation for the first morning. "
+            "Mention EVERY character by name, giving 2–3 of them a brief atmospheric detail. "
+            "Keep the total intro under 30 seconds. End with anticipation for the first morning. "
             "Then call get_game_state to confirm who is present."
         )
 

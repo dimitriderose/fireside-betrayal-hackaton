@@ -61,13 +61,27 @@ const SOURCE_STYLE = {
 
 function LobbyPanel({ gameId, playerCount, lobbySummary, isHost, onStart, startLoading, startError }) {
   const canStart = playerCount >= 2
+  const [copied, setCopied] = useState('')
+
+  const copyToClipboard = (text, label) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(label)
+      setTimeout(() => setCopied(''), 2000)
+    }).catch(() => {
+      setCopied('error')
+      setTimeout(() => setCopied(''), 2000)
+    })
+  }
+
+  const joinUrl = `${window.location.origin}/join/${gameId}`
 
   return (
     <div className="container" style={{ paddingTop: 32 }}>
       {/* Game code */}
       <div
         className="card"
-        style={{ textAlign: 'center', marginBottom: 20, borderColor: 'var(--border-accent)' }}
+        style={{ textAlign: 'center', marginBottom: 20, borderColor: 'var(--border-accent)', cursor: 'pointer' }}
+        onClick={() => copyToClipboard(gameId, 'code')}
       >
         <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
           Game Code
@@ -83,10 +97,17 @@ function LobbyPanel({ gameId, playerCount, lobbySummary, isHost, onStart, startL
         >
           {gameId}
         </div>
-        <p style={{ fontSize: '0.8125rem', marginTop: 6 }}>
-          Share this code with your friends
+        <p style={{ fontSize: '0.8125rem', marginTop: 6, color: copied === 'code' ? 'var(--success)' : copied === 'error' ? 'var(--danger)' : 'var(--text-muted)' }}>
+          {copied === 'code' ? 'Code copied!' : copied === 'error' ? 'Copy failed' : 'Tap to copy code'}
         </p>
       </div>
+      <button
+        className="btn btn-ghost btn-sm"
+        style={{ width: '100%', marginBottom: 20, fontSize: '0.8125rem' }}
+        onClick={() => copyToClipboard(joinUrl, 'link')}
+      >
+        {copied === 'link' ? 'Link copied!' : 'Copy Join Link'}
+      </button>
 
       {/* Players joined */}
       <div style={{ marginBottom: 24 }}>
@@ -1386,7 +1407,7 @@ export default function GameScreen() {
   const showStoryLog = phase !== 'setup'
   const showNightPanel =
     phase === 'night' && !isEliminated && !nightActionSubmitted && !!ROLE_INFO[role]?.action && nightPanelReady
-  const showCharacterGrid = phase === 'day_discussion' || phase === 'elimination' || phase === 'seance'
+  const showCharacterGrid = phase !== 'setup' && phase !== 'game_over' && phase !== 'night'
   const showChat = phase === 'day_discussion' && !isEliminated
   const showSeance = phase === 'seance'
   const showNarratorBar = phase !== 'setup'
