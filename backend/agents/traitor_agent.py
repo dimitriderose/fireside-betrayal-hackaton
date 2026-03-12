@@ -568,8 +568,6 @@ async def select_ghost_accuse(game_id: str, ai_char) -> Optional[str]:
     All dead AI ghosts are loyal (shapeshifter dying ends game).
     Returns the target name or None if parsing fails.
     """
-    from models.game import GameEvent, Phase
-
     ctx = await _fetch_context(game_id)
     if not ctx:
         return None
@@ -589,14 +587,31 @@ async def select_ghost_accuse(game_id: str, ai_char) -> Optional[str]:
     if not alive_names:
         return None
 
+    # Fetch recent events for context
+    fs2 = get_firestore_service()
+    events = await fs2.get_events(game_id, visible_only=True)
+    recent_events = events[-10:] if events else []
+    event_lines = "\n".join(
+        f"  Round {e.round}: {e.type} — {e.actor or ''} → {e.target or ''}"
+        for e in recent_events
+    ) or "  (no visible events)"
+
+    recent_chat = ctx.get("recent_chat", [])
+    chat_lines = "\n".join(
+        f'  {m.speaker}: "{m.text}"' for m in recent_chat[-8:]
+    ) or "  (no chat yet)"
+
     system = (
         f"You are the ghost of {ai_char.name}. You are dead but can influence the living. "
-        f"You were a loyal villager. Help the village find the Shapeshifter."
+        f"You were a loyal villager. Help the village find the Shapeshifter.\n"
+        f"Recent events:\n{event_lines}\n"
+        f"Recent discussion:\n{chat_lines}"
     )
     prompt = (
         f"You are the ghost of {ai_char.name}. You are dead but can influence the living.\n"
         f"Alive characters: {', '.join(alive_names)}\n\n"
-        f"Choose one alive character you find most suspicious based on what you observed. "
+        f"Based on the game events and discussion, choose the alive character you find "
+        f"most suspicious. Consider who was accused, who deflected, and who stayed quiet.\n"
         f"Return ONLY their name."
     )
 

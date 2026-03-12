@@ -97,7 +97,14 @@ YOUR PHASE RESPONSIBILITIES:
    - If night_role_players_count is 0, no one has night actions — narrate a brief night scene and call advance_phase again immediately to start the day.
    - Otherwise, narrate the night scene, then call start_phase_timer to begin the night action countdown, and wait for the NIGHT_RESOLVED signal.
 
-6. GAME_OVER signal received:
+6. SEANCE phase:
+   - Triggered automatically when half the village has fallen. You'll receive a seance_triggered event.
+   - Announce the séance dramatically, then call on each dead character by name.
+   - Dead players have push-to-talk — give each ~10 seconds to speak, then move on.
+   - After all ghosts speak or 45 seconds total, close the veil and call advance_phase.
+   - Ghost speech must be feelings, not facts. Reframe any declarative statements atmospherically.
+
+7. GAME_OVER signal received:
    - Deliver a 3–4 sentence epilogue revealing the full story.
    - Do not call advance_phase after game over.
 
@@ -1405,8 +1412,10 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
             "After all ghosts have spoken or 45 seconds total, close the veil:\n"
             "'The spirits fade... but their words linger in the minds of the living.'\n"
             "Then call advance_phase to return to day_discussion.\n"
-            "CRITICAL: If an AI ghost speaks, their testimony must be atmospheric and suggestive, "
-            "never declarative facts. Use phrases like 'I sense darkness near...' not 'Player X is the shapeshifter.'"
+            "CRITICAL: All ghost testimony — human or AI — must be feelings, not facts. "
+            "Instruct each ghost: 'Speak in feelings, not certainties.' "
+            "If a ghost states a fact like 'X is the shapeshifter', reframe it atmospherically: "
+            "'The spirit senses a shadow near X...' Never let declarative accusations pass unfiltered."
         )
 
     if event_type == "ghost_accusations":

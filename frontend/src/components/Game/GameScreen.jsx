@@ -1339,6 +1339,16 @@ export default function GameScreen() {
   }
 
   const handleSendGhostMessage = (text) => {
+    // Local echo — show immediately (server echo deduped in useWebSocket)
+    dispatch({
+      type: 'ADD_GHOST_MESSAGE',
+      message: {
+        speaker: characterName,
+        text,
+        source: 'ghost',
+        _local: true,
+      },
+    })
     sendMessage('ghost_message', { text })
   }
 
@@ -1609,10 +1619,12 @@ export default function GameScreen() {
 
         {/* Eliminated spectator — Ghost Realm + clue panel */}
         {isEliminated && !hunterRevengeNeeded && phase !== 'setup' && phase !== 'game_over' && (
-          <GhostRealmPanel
-            ghostMessages={ghostMessages}
-            onSendGhostMessage={handleSendGhostMessage}
-          />
+          <div style={phase === 'seance' ? { opacity: 0.4, pointerEvents: 'none' } : undefined}>
+            <GhostRealmPanel
+              ghostMessages={ghostMessages}
+              onSendGhostMessage={handleSendGhostMessage}
+            />
+          </div>
         )}
         {isEliminated && !hunterRevengeNeeded && (phase === 'day_discussion' || phase === 'day_vote') && (
           <SpectatorCluePanel onSubmitClue={handleSpectatorClue} clueSent={clueSent} />

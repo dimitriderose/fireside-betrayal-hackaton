@@ -31,6 +31,7 @@ to keep the coordinator role in one place.
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import Dict, List, Optional, Any, Set
 
@@ -198,6 +199,10 @@ _vote_timeout_tasks: Dict[str, asyncio.Task] = {}
 # Prevents double-submission without touching Firestore — resets on server restart
 # (acceptable for hackathon: if the server restarts mid-game, the clue limit resets).
 _spectator_clues_sent: Set[str] = set()
+
+# Ghost message rate limit: per-player last-send timestamp (2s cooldown)
+_ghost_msg_last: Dict[str, float] = {}
+_GHOST_MSG_COOLDOWN = 2.0  # seconds
 
 # Tracks which dead players have used their Haunt (Accuse) action per round.
 # Key: "{game_id}:{round}", value: set of player_ids who've haunted this round.
@@ -1971,6 +1976,13 @@ async def _on_ghost_message(
     if not text:
         return
 
+    # Rate limit: 2s cooldown per player
+    now = time.time()
+    rate_key = f"{game_id}:{player_id}"
+    if now - _ghost_msg_last.get(rate_key, 0) < _GHOST_MSG_COOLDOWN:
+        return
+    _ghost_msg_last[rate_key] = now
+
     game = await fs.get_game(game_id)
     if not game or game.status != GameStatus.IN_PROGRESS:
         await manager.send_to(game_id, player_id, {
@@ -2020,7 +2032,7 @@ async def _on_ghost_message(
             if not ai_char.alive:
                 dead_ai_chars.append(ai_char)
 
-        if dead_ai_chars:
+        if dead_ai_chars and random.random() < 0.3:
             asyncio.create_task(_trigger_ghost_ai_responses(game_id, dead_ai_chars))
     except Exception:
         logger.exception("[%s] Failed to trigger ghost AI responses", game_id)
@@ -2254,7 +2266,7 @@ async def _check_seance_trigger(game_id: str) -> bool:
     )
     dead_count = dead_human + dead_ai
 
-    if dead_count < total_count / 2:
+    if dead_count < 2 or dead_count < total_count // 2:
         return False
 
     # Trigger séance
@@ -2598,6 +2610,11 @@ async def _end_game(
     _cancel_night_action_timeout(game_id)
     _cancel_narrator_timeout(game_id)
     _cancel_seance_timeout(game_id)
+    # Clean up ghost/haunt per-game state
+    for key in [k for k in _haunts_used if k.startswith(f"{game_id}:")]:
+        _haunts_used.pop(key, None)
+    for key in [k for k in _ghost_msg_last if k.startswith(f"{game_id}:")]:
+        _ghost_msg_last.pop(key, None)
     _current_speaker.pop(game_id, None)
     speaker_timeout = _speaker_timeout_tasks.pop(game_id, None)
     if speaker_timeout and not speaker_timeout.done():

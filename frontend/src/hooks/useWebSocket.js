@@ -210,6 +210,8 @@ export function useWebSocket(gameId, playerId) {
 
       case 'ghost_message':
         // msg: { type, speaker, text, timestamp } — Ghost Council message (dead players only)
+        // Skip server echo of own ghost message (already shown via local echo in GameScreen)
+        if (msg.speaker === charNameRef.current) break
         dispatch({
           type: 'ADD_GHOST_MESSAGE',
           message: {
