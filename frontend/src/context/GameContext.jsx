@@ -39,6 +39,8 @@ function createInitialState() {
     showRoleReveal: false,       // true when role reveal overlay should be displayed
     inPersonMode: false,         // §12.3.16: camera counts raised hands during vote
     highlightReel: [],           // [{ event_type, description, round, audio_b64 }] §12.3.15
+    currentSpeaker: null,        // character name of the player currently speaking (push-to-talk)
+    currentSpeakerId: null,      // player ID of the current speaker
     nightTargets: null,          // string[] | null — backend-filtered night action targets (excludes self)
     voteCandidates: null,        // string[] | null — backend-filtered vote candidates (excludes self)
     error: null,
@@ -152,6 +154,9 @@ function gameReducer(state, action) {
         votes: {},
         voteMap: {},
         myVote: null,
+        // Clear push-to-talk speaker on phase transition
+        currentSpeaker: null,
+        currentSpeakerId: null,
         // Keep candidate lists until backend sends fresh ones via
         // SET_NIGHT_TARGETS / SET_VOTE_CANDIDATES (avoids stale-fallback race)
         nightTargets: state.nightTargets,
@@ -177,6 +182,8 @@ function gameReducer(state, action) {
         myVote: null,
       }
     }
+    case 'SET_SPEAKER':
+      return { ...state, currentSpeaker: action.speaker ?? null, currentSpeakerId: action.playerId ?? null }
     case 'SET_IN_PERSON_MODE':
       return { ...state, inPersonMode: action.inPersonMode }
     case 'SET_HIGHLIGHT_REEL':

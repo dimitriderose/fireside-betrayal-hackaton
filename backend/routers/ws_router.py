@@ -224,6 +224,11 @@ _phase_timer_start_times: Dict[str, float] = {}
 # Safety fallback tasks — auto-start timers if narrator doesn't call start_phase_timer
 _timer_fallback_tasks: Dict[str, asyncio.Task] = {}
 
+# Push-to-talk: only one player may stream audio at a time per game.
+_current_speaker: Dict[str, Optional[str]] = {}  # game_id -> player_id or None
+_speaker_timeout_tasks: Dict[str, asyncio.Task] = {}  # game_id -> auto-release task
+_MAX_SPEAKING_SECONDS = 30  # soft cap — auto-release after this
+
 
 def _discussion_timeout(alive_count: int) -> int:
     """Scale discussion duration by number of alive players."""
@@ -706,6 +711,15 @@ class ConnectionManager:
 
         await self.broadcast(game_id, msg, reliable=True)
 
+        # Release push-to-talk speaker lock on any phase transition
+        if _current_speaker.get(game_id):
+            _current_speaker[game_id] = None
+            await self.broadcast(game_id, {
+                "type": "speaker_changed",
+                "speaker": None,
+                "playerId": None,
+            })
+
         # Send per-player candidate lists for night/vote phases.
         # The backend is the source of truth — frontend uses these directly.
         if phase in (Phase.NIGHT, Phase.DAY_VOTE):
@@ -956,6 +970,14 @@ async def websocket_endpoint(
         manager.disconnect(game_id, playerId, ws=ws)
         if is_current:
             await fs.set_player_connected(game_id, playerId, connected=False)
+            # Release speaker lock if this player held it
+            if _current_speaker.get(game_id) == playerId:
+                _current_speaker[game_id] = None
+                await manager.broadcast(game_id, {
+                    "type": "speaker_changed",
+                    "speaker": None,
+                    "playerId": None,
+                })
             player_refresh = await fs.get_player(game_id, playerId)
             # Use character_name if assigned (in-game), fall back to player name (lobby)
             if player_refresh:
@@ -999,7 +1021,7 @@ async def _dispatch_message(
     data: Dict,
     fs,
 ) -> None:
-    if msg_type not in ("ping", "sync", "player_audio"):
+    if msg_type not in ("ping", "sync"):
         logger.info("[%s] dispatch: %s -> %s", game_id, player_id, msg_type)
 
     if msg_type == "ping":
@@ -1040,8 +1062,11 @@ async def _dispatch_message(
     elif msg_type == "in_person_vote_frame":
         await _on_in_person_vote_frame(game_id, player_id, data, fs)
 
-    elif msg_type == "player_audio":
-        await _on_player_audio(game_id, player_id, data, fs)
+    elif msg_type == "start_speaking":
+        await _on_start_speaking(game_id, player_id, fs)
+
+    elif msg_type == "stop_speaking":
+        await _on_stop_speaking(game_id, player_id, fs)
 
     else:
         await manager.send_to(game_id, player_id, {
@@ -1953,19 +1978,152 @@ async def _on_in_person_vote_frame(
         await _resolve_vote_and_advance(game_id, fs)
 
 
-async def _on_player_audio(game_id: str, player_id: str, data: Dict, fs) -> None:
-    """Forward base64 PCM audio from a player to the narrator's Gemini session."""
-    audio_b64 = data.get("audio", "")
-    if not audio_b64:
+async def _on_start_speaking(game_id: str, player_id: str, fs) -> None:
+    """Player requests the speaking slot (push-to-talk)."""
+    current = _current_speaker.get(game_id)
+    if current and current != player_id:
+        # Someone else is already speaking — reject
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "Another player is currently speaking. Please wait.",
+            "code": "SPEAKER_BUSY",
+        })
         return
-    try:
-        import base64
-        pcm_bytes = base64.b64decode(audio_b64)
-    except Exception:
+
+    # Claim the lock IMMEDIATELY before any await to prevent TOCTOU race
+    _current_speaker[game_id] = player_id
+
+    game = await fs.get_game(game_id)
+    if not game or game.phase != Phase.DAY_DISCUSSION:
+        _current_speaker[game_id] = None  # roll back
+        await manager.send_to(game_id, player_id, {
+            "type": "error",
+            "message": "You can only speak during the discussion phase.",
+            "code": "WRONG_PHASE",
+        })
         return
+
     player = await fs.get_player(game_id, player_id)
-    speaker = player.character_name if player else None
-    await narrator_manager.forward_player_audio(game_id, pcm_bytes, speaker=speaker)
+    if not player or not player.alive:
+        _current_speaker[game_id] = None  # roll back
+        if player and not player.alive:
+            await manager.send_to(game_id, player_id, {
+                "type": "error",
+                "message": "Eliminated players cannot speak.",
+                "code": "PLAYER_DEAD",
+            })
+        return
+
+    speaker_name = player.character_name or player_id
+    logger.info("[%s] %s (%s) started speaking", game_id, speaker_name, player_id)
+
+    # Broadcast to all players so UI can update
+    await manager.broadcast(game_id, {
+        "type": "speaker_changed",
+        "speaker": speaker_name,
+        "playerId": player_id,
+    })
+
+    # Notify narrator who is speaking
+    await narrator_manager.forward_player_message(
+        game_id, speaker_name,
+        f"[VOICE] {speaker_name} is now speaking via microphone.",
+        "day_discussion",
+    )
+
+    # Schedule auto-release after MAX_SPEAKING_SECONDS
+    old_timeout = _speaker_timeout_tasks.pop(game_id, None)
+    if old_timeout and not old_timeout.done():
+        old_timeout.cancel()
+
+    async def _auto_release_speaker():
+        await asyncio.sleep(_MAX_SPEAKING_SECONDS)
+        if _current_speaker.get(game_id) == player_id:
+            logger.info("[%s] Auto-releasing speaker %s after %ds", game_id, speaker_name, _MAX_SPEAKING_SECONDS)
+            _current_speaker[game_id] = None
+            await manager.broadcast(game_id, {
+                "type": "speaker_changed",
+                "speaker": None,
+                "playerId": None,
+            })
+
+    _speaker_timeout_tasks[game_id] = asyncio.create_task(_auto_release_speaker())
+
+
+async def _on_stop_speaking(game_id: str, player_id: str, fs) -> None:
+    """Player releases the speaking slot."""
+    current = _current_speaker.get(game_id)
+    if current != player_id:
+        return  # not the current speaker — ignore
+
+    player = await fs.get_player(game_id, player_id)
+    speaker_name = player.character_name if player else player_id
+    logger.info("[%s] %s (%s) stopped speaking", game_id, speaker_name, player_id)
+
+    _current_speaker[game_id] = None
+
+    # Cancel auto-release timeout
+    timeout = _speaker_timeout_tasks.pop(game_id, None)
+    if timeout and not timeout.done():
+        timeout.cancel()
+
+    # Broadcast to all players
+    await manager.broadcast(game_id, {
+        "type": "speaker_changed",
+        "speaker": None,
+        "playerId": None,
+    })
+
+
+# ── Dedicated audio WebSocket endpoint ────────────────────────────────────────
+
+@router.websocket("/ws/audio/{game_id}")
+async def audio_websocket(
+    ws: WebSocket,
+    game_id: str,
+    playerId: str = Query(..., description="Player UUID"),
+):
+    """Dedicated WebSocket for player mic audio (binary PCM frames).
+
+    Separated from the game control WS to prevent audio traffic from
+    causing disconnections.  Follows the same pattern as Amplifi's
+    voice-coaching endpoint: binary frames, no JSON wrapping.
+    """
+    await ws.accept()
+    logger.info("[%s] Audio WS connected: %s", game_id, playerId)
+
+    fs = get_firestore_service()
+    player = await fs.get_player(game_id, playerId)
+    if not player:
+        logger.warning("[%s] Audio WS: player %s not found, closing", game_id, playerId)
+        await ws.close(code=1008, reason="Player not found")
+        return
+
+    speaker_name = player.character_name or playerId
+
+    try:
+        while True:
+            raw = await ws.receive_bytes()
+            # Only forward audio when this player holds the speaking slot
+            if _current_speaker.get(game_id) != playerId:
+                continue
+            await narrator_manager.forward_player_audio(game_id, raw, speaker=speaker_name)
+    except WebSocketDisconnect:
+        logger.info("[%s] Audio WS disconnected: %s", game_id, playerId)
+    except RuntimeError:
+        logger.info("[%s] Audio WS runtime error: %s", game_id, playerId)
+    finally:
+        # Release speaker lock if this player held it
+        if _current_speaker.get(game_id) == playerId:
+            _current_speaker[game_id] = None
+            try:
+                await manager.broadcast(game_id, {
+                    "type": "speaker_changed",
+                    "speaker": None,
+                    "playerId": None,
+                })
+            except Exception:
+                logger.debug("[%s] Audio WS cleanup broadcast failed (game may have ended)", game_id)
 
 
 def _build_timeline(events: list) -> list:
@@ -2075,6 +2233,10 @@ async def _end_game(
         fallback.cancel()
     _cancel_night_action_timeout(game_id)
     _cancel_narrator_timeout(game_id)
+    _current_speaker.pop(game_id, None)
+    speaker_timeout = _speaker_timeout_tasks.pop(game_id, None)
+    if speaker_timeout and not speaker_timeout.done():
+        speaker_timeout.cancel()
     warn = _discussion_warning_tasks.pop(game_id, None)
     if warn and not warn.done():
         warn.cancel()

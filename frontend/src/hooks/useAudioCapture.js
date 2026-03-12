@@ -41,27 +41,45 @@ registerProcessor('pcm-processor', PCMProcessor)
 
 /**
  * Hook for capturing microphone audio, downsampling to 16kHz PCM16,
- * and streaming base64-encoded chunks via the game WebSocket.
+ * and streaming binary frames via a dedicated audio WebSocket.
+ *
+ * The audio WS is separate from the game control WS to prevent audio
+ * traffic from causing disconnections (matches Amplifi's architecture).
  */
-export function useAudioCapture(sendMessage) {
+export function useAudioCapture(gameId, playerId) {
   const [micActive, setMicActive] = useState(false)
-  const [muted, setMuted] = useState(false)
   const [micError, setMicError] = useState(null)
 
   const streamRef = useRef(null)
   const ctxRef = useRef(null)
   const sourceRef = useRef(null)
   const workletRef = useRef(null)
-  const mutedRef = useRef(false)
-
-  // Keep mutedRef in sync so the worklet callback closure sees current value
-  mutedRef.current = muted
+  const audioWsRef = useRef(null)
 
   const startCapture = useCallback(async () => {
     if (streamRef.current) return // already capturing
     setMicError(null)
 
     try {
+      // Open dedicated audio WebSocket (binary mode)
+      const wsBase = import.meta.env.VITE_WS_URL
+        ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+      const wsUrl = `${wsBase}/ws/audio/${gameId}?playerId=${playerId}`
+      const audioWs = new WebSocket(wsUrl)
+      audioWs.binaryType = 'arraybuffer'
+      audioWsRef.current = audioWs
+
+      // Wait for WS to open before starting mic capture
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Audio WebSocket connection timeout')), 5000)
+        audioWs.onopen = () => { clearTimeout(timer); resolve() }
+        audioWs.onerror = () => { clearTimeout(timer); reject(new Error('Audio WebSocket failed to connect')) }
+      })
+
+      // Auto-cleanup if audio WS drops mid-capture
+      audioWs.onclose = () => stopCapture()
+      audioWs.onerror = () => stopCapture()
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -90,16 +108,11 @@ export function useAudioCapture(sendMessage) {
       const worklet = new AudioWorkletNode(ctx, 'pcm-processor')
       workletRef.current = worklet
 
-      // On each PCM chunk from worklet, base64-encode and send via WS
+      // On each PCM chunk from worklet, send as binary frame
       worklet.port.onmessage = (e) => {
-        if (mutedRef.current) return
-        const bytes = new Uint8Array(e.data)
-        let binary = ''
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i])
+        if (audioWsRef.current?.readyState === WebSocket.OPEN) {
+          audioWsRef.current.send(e.data) // ArrayBuffer — binary frame
         }
-        const b64 = btoa(binary)
-        sendMessage('player_audio', { audio: b64 })
       }
 
       source.connect(worklet)
@@ -110,8 +123,10 @@ export function useAudioCapture(sendMessage) {
         ? 'Microphone permission denied'
         : `Mic error: ${err.message}`
       setMicError(msg)
+      // Clean up partial state on error
+      stopCapture()
     }
-  }, [sendMessage])
+  }, [gameId, playerId])
 
   const stopCapture = useCallback(() => {
     if (sourceRef.current) {
@@ -130,11 +145,11 @@ export function useAudioCapture(sendMessage) {
       streamRef.current.getTracks().forEach(t => t.stop())
       streamRef.current = null
     }
+    if (audioWsRef.current) {
+      audioWsRef.current.close()
+      audioWsRef.current = null
+    }
     setMicActive(false)
-  }, [])
-
-  const toggleMute = useCallback(() => {
-    setMuted(prev => !prev)
   }, [])
 
   // Cleanup on unmount
@@ -142,5 +157,5 @@ export function useAudioCapture(sendMessage) {
     return () => stopCapture()
   }, [stopCapture])
 
-  return { micActive, muted, micError, startCapture, stopCapture, toggleMute }
+  return { micActive, micError, startCapture, stopCapture }
 }

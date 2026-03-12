@@ -887,11 +887,12 @@ export default function GameScreen() {
     players, aiCharacter, storyLog, role, isEliminated,
     nightActionSubmitted, hunterRevengeNeeded, clueSent,
     showRoleReveal, nightTargets, voteCandidates, timerSeconds,
+    currentSpeaker, currentSpeakerId,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
   const { isPlaying, volume, setVolume } = useAudioPlayer()
-  const { micActive, muted, micError, startCapture, stopCapture, toggleMute } = useAudioCapture(sendMessage)
+  const { micActive, micError, startCapture, stopCapture } = useAudioCapture(gameId, playerId)
 
   const logRef = useRef(null)
   const [chatText, setChatText] = useState('')
@@ -934,14 +935,12 @@ export default function GameScreen() {
     }
   }, [phase, gameId, navigate])
 
-  // Auto-start mic during day_discussion, stop on other phases
+  // Stop mic capture when leaving discussion phase
   useEffect(() => {
-    if (phase === 'day_discussion' && !isEliminated && connectionStatus === 'connected') {
-      startCapture()
-    } else {
+    if (phase !== 'day_discussion') {
       stopCapture()
     }
-  }, [phase, isEliminated, connectionStatus, startCapture, stopCapture])
+  }, [phase, stopCapture])
 
   // Poll player count from REST API during lobby (WS player_joined only fires post-game-start)
   useEffect(() => {
@@ -1035,6 +1034,24 @@ export default function GameScreen() {
   const handleQuickReaction = (reaction, target) => {
     sendMessage('quick_reaction', { reaction, target })
   }
+
+  // Push-to-talk: request/release the speaking slot
+  const isSpeaking = currentSpeakerId === playerId
+  const handleStartSpeaking = () => {
+    sendMessage('start_speaking', {})
+  }
+  const handleStopSpeaking = () => {
+    sendMessage('stop_speaking', {})
+    // stopCapture() handled by useEffect when isSpeaking becomes false
+  }
+  // When this player becomes the speaker, start mic capture
+  useEffect(() => {
+    if (isSpeaking) {
+      startCapture()
+    } else {
+      stopCapture()
+    }
+  }, [isSpeaking, startCapture, stopCapture])
 
   const [nightActionTarget, setNightActionTarget] = useState(null)
   const handleNightAction = (target) => {
@@ -1360,31 +1377,27 @@ export default function GameScreen() {
         {/* Chat bar + quick reactions */}
         {showChat && (
           <>
-            {/* Mic status bar */}
-            <div className="container" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 16px' }}>
-              <button
-                onClick={toggleMute}
-                style={{
-                  background: muted ? 'var(--danger-dim, #3a1c1c)' : 'var(--bg-elevated)',
-                  border: `1px solid ${muted ? 'var(--danger)' : 'var(--border-accent, var(--border))'}`,
-                  borderRadius: 'var(--radius-full, 999px)',
-                  padding: '6px 12px',
-                  color: 'var(--text)',
-                  cursor: 'pointer',
-                  fontSize: '0.8125rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 6,
-                }}
-                title={muted ? 'Unmute microphone' : 'Mute microphone'}
-              >
-                {muted ? '\uD83D\uDD07' : '\uD83C\uDFA4'}
-                <span>{muted ? 'Muted' : 'Mic On'}</span>
-              </button>
+            {/* Push-to-talk */}
+            <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '6px 16px' }}>
+              {currentSpeaker && !isSpeaking ? (
+                <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
+                  <span className="pulse-glow" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', marginRight: 6 }} />
+                  {currentSpeaker} is speaking...
+                </span>
+              ) : (
+                <button
+                  className={`btn ${isSpeaking ? 'btn-danger' : 'btn-primary'}`}
+                  onClick={isSpeaking ? handleStopSpeaking : handleStartSpeaking}
+                  disabled={connectionStatus !== 'connected' || isEliminated}
+                  style={{ padding: '8px 20px', fontSize: '0.875rem' }}
+                >
+                  {isSpeaking ? 'Stop Speaking' : 'Speak'}
+                </button>
+              )}
               {micError && (
                 <span style={{ fontSize: '0.75rem', color: 'var(--danger)' }}>{micError}</span>
               )}
-              {micActive && !muted && (
+              {micActive && isSpeaking && (
                 <span style={{ fontSize: '0.75rem', color: 'var(--success)' }}>
                   <span className="pulse-glow" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--success)', marginRight: 4 }} />
                   Narrator can hear you

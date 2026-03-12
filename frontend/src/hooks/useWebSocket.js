@@ -129,6 +129,11 @@ export function useWebSocket(gameId, playerId) {
         dispatch({ type: 'VOTE_UPDATE', voteMap: msg.votes, tally: msg.tally ?? {} })
         break
 
+      case 'speaker_changed':
+        // msg: { type, speaker: characterName|null, playerId: id|null }
+        dispatch({ type: 'SET_SPEAKER', speaker: msg.speaker, playerId: msg.playerId })
+        break
+
       case 'elimination':
         // msg: { type, characterName, wasTraitor, role, triggerHunterRevenge, tally }
         dispatch({
