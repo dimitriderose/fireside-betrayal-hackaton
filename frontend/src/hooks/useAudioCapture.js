@@ -57,6 +57,7 @@ export function useAudioCapture(gameId, playerId) {
   const audioWsRef = useRef(null)
 
   const startCapture = useCallback(async () => {
+    if (!gameId || !playerId) { stopCapture(); return } // no valid session — clean up any active capture
     if (streamRef.current) return // already capturing
     setMicError(null)
 

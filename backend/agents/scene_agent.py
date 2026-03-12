@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 _STYLE = (
     "Dark painterly illustration, firelit, medieval fantasy. "
     "Campfire-tale aesthetic meets woodcut print. Muted earth tones with "
-    "warm amber firelight accents. No text. No characters visible — atmosphere only."
+    "warm amber firelight accents. No text. No characters visible — atmosphere only. "
+    "Output image must be under 1.5MB file size. 512x512 pixels maximum. "
+    "Simple composition, flat colors, minimal fine detail."
 )
 
 _PHASE_SCENES = {
