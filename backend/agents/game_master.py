@@ -124,6 +124,7 @@ class GameMaster:
         players = await fs.get_alive_players(game_id)
         night_actions = await fs.get_night_actions(game_id)
         ai_char = await fs.get_ai_character(game_id)
+        ai_char_2 = game.ai_character_2  # May be None
 
         # Build role→player_id lookup for alive players
         role_map: Dict[str, str] = {}  # role_value → player_id
@@ -146,14 +147,30 @@ class GameMaster:
         # Path A: AI is the traitor → look for AI-authored night_target event
         # Path B: Human shapeshifter (random_alignment) → look for human-authored event
         shapeshifter_target: Optional[str] = None
-        if ai_char and ai_char.alive and getattr(ai_char, "is_traitor", True):
-            # TraitorAgent sets the target via a game event of type "night_target".
+        events = None  # Lazy-loaded; shared across steps to avoid redundant Firestore reads
+
+        # Build a set of ALL valid alive target names (humans + AIs)
+        all_alive_names: Set[str] = set(char_to_player.keys())
+        if ai_char and ai_char.alive:
+            all_alive_names.add(ai_char.name)
+        if ai_char_2 and ai_char_2.alive:
+            all_alive_names.add(ai_char_2.name)
+
+        # Determine which AI (if any) is the traitor shapeshifter
+        ai_traitor = None
+        for ai in [ai_char, ai_char_2]:
+            if ai and ai.alive and ai.is_traitor:
+                ai_traitor = ai
+                break
+
+        if ai_traitor:
+            # The shapeshifter AI sets the target via a game event of type "night_target".
             # visible_only=False is explicit: night_target events are hidden (visible_in_game=False).
             events = await fs.get_events(game_id, round=game.round, visible_only=False)
             for ev in events:
-                if ev.type == "night_target" and ev.actor == ai_char.name:
-                    # Validate target is still alive
-                    if ev.target in char_to_player:
+                if ev.type == "night_target" and ev.actor == ai_traitor.name:
+                    # Validate target is still alive (could be human or ai_char_2)
+                    if ev.target in all_alive_names and ev.target != ai_traitor.name:
                         shapeshifter_target = ev.target
                     break
             if not shapeshifter_target:
@@ -169,18 +186,27 @@ class GameMaster:
                 (p for p in players if p.role == Role.SHAPESHIFTER), None
             )
             if human_shapeshifter:
-                # Build a set of ALL valid alive targets (humans + AI)
-                valid_targets: Set[str] = set(char_to_player.keys())
-                if ai_char and ai_char.alive:
-                    valid_targets.add(ai_char.name)
                 events = await fs.get_events(game_id, round=game.round, visible_only=False)
                 for ev in events:
                     if ev.type == "night_target" and ev.actor == human_shapeshifter.character_name:
-                        if ev.target in valid_targets:
+                        if ev.target in all_alive_names:
                             shapeshifter_target = ev.target
                         break
                 if shapeshifter_target:
                     logger.info(f"[{game_id}] Human shapeshifter {human_shapeshifter.character_name} targets {shapeshifter_target}")
+
+        # ── Step 1b: Resolve AI night actions from events ──────────────────
+        # Loyal AI characters' seer/healer/bodyguard actions are stored as
+        # GameEvents (not in the human night_actions dict). Event types use the
+        # pattern "{fs_field}_night_{role}" e.g. "ai_character_2_night_heal".
+        ai_night_events = {}
+        if events is None:
+            events = await fs.get_events(game_id, round=game.round, visible_only=False)
+        for ai, field in [(ai_char, "ai_character"), (ai_char_2, "ai_character_2")]:
+            if ai and ai.alive and not ai.is_traitor:
+                for ev in events:
+                    if ev.type.startswith(f"{field}_night_"):
+                        ai_night_events[ev.type] = ev
 
         # ── Step 2: Healer protection ─────────────────────────────────────────
         healer_id = role_map.get(Role.HEALER.value)
@@ -188,14 +214,28 @@ class GameMaster:
         if healer_id and healer_id in night_actions:
             protected_target = night_actions[healer_id]
             result["protected"] = protected_target
+        else:
+            # Check AI healer protection (any AI character)
+            for key, ev in ai_night_events.items():
+                if key.endswith("_night_heal"):
+                    protected_target = ev.target
+                    result["protected"] = protected_target
+                    break
 
         # ── Step 2b: Bodyguard protection ────────────────────────────────────
         # Bodyguard absorbs a shapeshifter kill targeting their protected player;
         # the bodyguard dies in their place. Healer cannot prevent bodyguard sacrifice.
+        # Priority: Healer block takes precedence when both protect the same target.
         bodyguard_id = role_map.get(Role.BODYGUARD.value)
         bodyguard_target: Optional[str] = None
         if bodyguard_id and bodyguard_id in night_actions:
             bodyguard_target = night_actions[bodyguard_id]
+        else:
+            # Check AI bodyguard protection (any AI character)
+            for key, ev in ai_night_events.items():
+                if key.endswith("_night_protect"):
+                    bodyguard_target = ev.target
+                    break
 
         # ── Step 3: Apply kill (healer → bodyguard → direct hit) ──────────────
         # Priority: Healer block takes precedence when both Healer and Bodyguard
@@ -242,14 +282,16 @@ class GameMaster:
 
         if investigating_id and investigation_target:
             target_player = char_to_player.get(investigation_target)
-            is_ai_character = ai_char and ai_char.name == investigation_target
 
-            if is_ai_character:
-                true_result = getattr(ai_char, "is_traitor", True)
-            elif target_player:
-                true_result = target_player.role == Role.SHAPESHIFTER
+            # Determine true alignment of investigation target
+            true_result = False
+            for ai in [ai_char, ai_char_2]:
+                if ai and ai.name == investigation_target:
+                    true_result = ai.is_traitor
+                    break
             else:
-                true_result = False
+                if target_player:
+                    true_result = target_player.role == Role.SHAPESHIFTER
 
             # Drunk gets the wrong answer
             if investigating_id == drunk_id:
@@ -272,7 +314,7 @@ class GameMaster:
                 type="night_kill_attempt",
                 round=game.round,
                 phase=Phase.NIGHT,
-                actor=ai_char.name if ai_char else "shapeshifter",
+                actor=ai_traitor.name if ai_traitor else (ai_char.name if ai_char else "shapeshifter"),
                 target=shapeshifter_target,
                 data={
                     "blocked": shapeshifter_target != result.get("killed") and not result.get("bodyguard_sacrifice"),
@@ -345,12 +387,13 @@ class GameMaster:
 
         tally = await fs.get_vote_tally(game_id)
 
-        # Include AI character's vote
-        ai_char = await fs.get_ai_character(game_id)
-        if ai_char and ai_char.alive and ai_char.voted_for:
-            tally[ai_char.voted_for] = tally.get(ai_char.voted_for, 0) + 1
-            # Clear AI vote so it doesn't persist into the next round
-            await fs.update_game(game_id, {"ai_character.voted_for": None})
+        # Include all AI characters' votes
+        game = await fs.get_game(game_id)
+        if game:
+            for ai, field in [(game.ai_character, "ai_character"), (game.ai_character_2, "ai_character_2")]:
+                if ai and ai.alive and ai.voted_for:
+                    tally[ai.voted_for] = tally.get(ai.voted_for, 0) + 1
+                    await fs.update_game(game_id, {f"{field}.voted_for": None})
 
         if not tally:
             return {"result": "no_votes", "eliminated": None, "tally": {}, "tied": []}
@@ -392,9 +435,9 @@ class GameMaster:
 
         Returns:
         {
-            "was_traitor": bool,
-            "role": str,
-            "needs_hunter_revenge": bool,
+            "was_traitor": bool,           # True if eliminated char was the shapeshifter
+            "role": str,                   # role name for reveal
+            "needs_hunter_revenge": bool,  # True if hunter was eliminated
             "hunter_character": Optional[str],
         }
         """
@@ -402,24 +445,25 @@ class GameMaster:
         players = await fs.get_all_players(game_id)
         ai_char = await fs.get_ai_character(game_id)
 
-        is_ai_character = bool(ai_char and ai_char.name == character_name)
-        # was_traitor reflects AI's actual alignment (False for loyal AI, §12.3.10)
-        was_traitor = is_ai_character and getattr(ai_char, "is_traitor", True)
+        game = await fs.get_game(game_id)
+        ai_char_2 = game.ai_character_2 if game else None
+
         eliminated_role = None
         needs_hunter_revenge = False
         hunter_character = None
         found = False
-        is_loyal_ai = is_ai_character and not was_traitor
+        was_traitor = False
 
-        if is_ai_character:
-            found = True
-            await fs.update_game(game_id, {"ai_character.alive": False})
-            if was_traitor:
-                eliminated_role = "shapeshifter"
-            else:
-                # Loyal AI: reveal their actual village role
-                eliminated_role = ai_char.role.value if ai_char.role else "villager"
-        else:
+        # Check AI characters first
+        for ai, field in [(ai_char, "ai_character"), (ai_char_2, "ai_character_2")]:
+            if ai and ai.name == character_name:
+                found = True
+                await fs.update_game(game_id, {f"{field}.alive": False})
+                was_traitor = ai.is_traitor
+                eliminated_role = "shapeshifter" if was_traitor else (ai.role.value if ai.role else "villager")
+                break
+
+        if not found:
             for p in players:
                 if p.character_name == character_name:
                     found = True
@@ -458,7 +502,6 @@ class GameMaster:
             "role": eliminated_role,
             "needs_hunter_revenge": needs_hunter_revenge,
             "hunter_character": hunter_character,
-            "is_loyal_ai": is_loyal_ai,
         }
 
     # ── Win condition check ───────────────────────────────────────────────────
@@ -467,8 +510,8 @@ class GameMaster:
         """
         Check if the game is over.
 
-        Villagers win: AI character is eliminated (always immediate, no round floor).
-        Shapeshifter wins: alive human players ≤ 1, AND the game has reached the
+        Villagers win: the shapeshifter is eliminated (always immediate, no round floor).
+        Shapeshifter wins: non-shapeshifter alive ≤ 1, AND the game has reached the
           minimum round count for this player size (prevents 1-round finishes).
 
         Returns None if game continues, or:
@@ -488,34 +531,50 @@ class GameMaster:
             raise ValueError(f"Game {game_id} not found")
 
         ai_char = game.ai_character
-        if not ai_char or not ai_char.alive:
-            if getattr(ai_char, "is_traitor", True):
-                # AI shapeshifter eliminated — villagers win immediately, no round floor.
-                return {
-                    "winner": "villagers",
-                    "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
-                }
-            # Loyal AI died — don't end game as villager win, but fall through
-            # to check if the human shapeshifter has won via elimination count.
+        ai_char_2 = game.ai_character_2
 
-        # Random alignment: check if the human shapeshifter has been eliminated.
-        # If AI is loyal and alive but no human shapeshifter remains → villagers win.
-        if ai_char and getattr(ai_char, "is_traitor", True) is False:
-            shapeshifter_alive = any(
-                p.role == Role.SHAPESHIFTER for p in alive_players
-            )
-            if not shapeshifter_alive:
-                return {
-                    "winner": "villagers",
-                    "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
-                }
+        # ── Determine who the shapeshifter is and whether they're alive ────
+        # The shapeshifter could be: ai_character (is_traitor), ai_character_2
+        # (is_traitor), or a human player with role=SHAPESHIFTER.
+        shapeshifter_alive = False
+        shapeshifter_is_human = False
 
-        human_alive = len(alive_players)
+        for ai in [ai_char, ai_char_2]:
+            if ai and ai.alive and ai.is_traitor:
+                shapeshifter_alive = True
 
-        if human_alive <= 1:
-            # If NO humans remain, shapeshifter wins immediately — no round floor.
-            # (Can't play a game with nobody left.)
-            if human_alive == 0:
+        # Check human players for shapeshifter role
+        human_shapeshifter = next(
+            (p for p in alive_players if p.role == Role.SHAPESHIFTER), None
+        )
+        if human_shapeshifter:
+            shapeshifter_alive = True
+            shapeshifter_is_human = True
+
+        # ── Villager win: shapeshifter eliminated ──────────────────────────
+        if not shapeshifter_alive:
+            return {
+                "winner": "villagers",
+                "reason": "The Shapeshifter has been identified and cast out of Thornwood.",
+            }
+
+        # ── Count non-shapeshifter alive characters ────────────────────────
+        # Include alive humans (excluding human shapeshifter) and alive AIs
+        # (excluding AI shapeshifter).
+        non_shapeshifter_alive = 0
+
+        for p in alive_players:
+            if p.role != Role.SHAPESHIFTER:
+                non_shapeshifter_alive += 1
+
+        for ai in [ai_char, ai_char_2]:
+            if ai and ai.alive and not ai.is_traitor:
+                non_shapeshifter_alive += 1
+
+        # ── Shapeshifter win: non-shapeshifter alive ≤ 1 ──────────────────
+        if non_shapeshifter_alive <= 1:
+            if non_shapeshifter_alive == 0:
+                # Nobody left to oppose — immediate win
                 return {
                     "winner": "shapeshifter",
                     "reason": (
@@ -524,19 +583,7 @@ class GameMaster:
                     ),
                 }
 
-            # 1 human left — check if the sole survivor IS the shapeshifter.
-            # If so, they win immediately (no one left to oppose them).
-            sole_survivor = alive_players[0]
-            if sole_survivor.role == Role.SHAPESHIFTER:
-                return {
-                    "winner": "shapeshifter",
-                    "reason": (
-                        "The Shapeshifter has eliminated enough villagers to seize Thornwood. "
-                        "The village falls into darkness."
-                    ),
-                }
-
-            # 1 non-shapeshifter human left — check minimum round floor.
+            # 1 non-shapeshifter left — check minimum round floor.
             total_players = len(game.character_cast)
             if total_players not in self.MINIMUM_ROUNDS:
                 logger.warning(
@@ -599,7 +646,8 @@ class GameMaster:
             "difficulty_notice"   – Non-empty warning string when an adjustment is made,
                                     empty string otherwise.
         """
-        n_human = n - 1  # exclude the AI slot
+        n_ai = 2 if n <= 3 else 1  # 2 humans → 2 AIs, 3+ humans → 1 AI
+        n_human = n - n_ai
         distribution = ROLE_DISTRIBUTION.get(n, [])
         role_counts: Dict[str, int] = {}
         for role in distribution:
@@ -609,10 +657,11 @@ class GameMaster:
         villagers = role_counts.get(Role.VILLAGER.value, 0)
         duration = self.EXPECTED_DURATION_DISPLAY.get(n, "20–30 minutes")
 
+        ai_label = f"{n_ai} mystery character{'s' if n_ai > 1 else ''} hidden among you"
         summary = (
             f"In this game: {specials} special role{'s' if specials != 1 else ''}, "
             f"{villagers} villager{'s' if villagers != 1 else ''}, "
-            f"1 AI hidden among you. "
+            f"{ai_label}. "
             f"Expected duration: {duration}"
         )
 

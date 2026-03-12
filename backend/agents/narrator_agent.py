@@ -359,10 +359,11 @@ async def handle_get_game_state(game_id: str) -> Dict[str, Any]:
     recent_chat = await fs.get_chat_messages(game_id, limit=10)
 
     alive_char_names = [p.character_name for p in alive_players]
+    ai_char_2 = game.ai_character_2
 
     # characters_not_yet_spoken: only meaningful during DAY_DISCUSSION.
     # Scoped to the current round so prior-round speakers don't appear as "already spoken".
-    # Includes AI character (when alive) so it can also be invited.
+    # Includes AI characters (when alive) so they can also be invited.
     characters_not_yet_spoken: list = []
     if game.phase == Phase.DAY_DISCUSSION:
         recent_speakers = {
@@ -372,18 +373,21 @@ async def handle_get_game_state(game_id: str) -> Dict[str, Any]:
             and m.phase == Phase.DAY_DISCUSSION
         }
         candidate_names = list(alive_char_names)
-        if ai_char and ai_char.alive:
-            candidate_names.append(ai_char.name)
+        for ai in [ai_char, ai_char_2]:
+            if ai and ai.alive:
+                candidate_names.append(ai.name)
         characters_not_yet_spoken = [n for n in candidate_names if n not in recent_speakers]
+
+    ai_characters_info = []
+    for ai in [ai_char, ai_char_2]:
+        if ai:
+            ai_characters_info.append({"name": ai.name, "alive": ai.alive})
 
     return {
         "phase": game.phase.value,
         "round": game.round,
         "alive_characters": alive_char_names,
-        "ai_character": {
-            "name": ai_char.name if ai_char else None,
-            "alive": ai_char.alive if ai_char else False,
-        },
+        "ai_characters": ai_characters_info,
         "recent_chat": [
             {"speaker": m.speaker, "text": m.text}
             for m in recent_chat
@@ -472,11 +476,17 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                 _drain_hand_queue(game_id)
             except Exception:
                 logger.warning("[%s] Could not reset conversation tracker/hand queue — stale data may bleed into new round", game_id, exc_info=True)
+            # Fire AI discussion participation (all AI characters)
+            try:
+                from agents.traitor_agent import trigger_all_dialogs
+                asyncio.create_task(trigger_all_dialogs(game_id, context="The day discussion has just begun."))
+            except Exception:
+                logger.warning("[%s] Could not trigger AI dialogs", game_id, exc_info=True)
 
         # When entering NIGHT: fire traitor night selection + inform narrator about role-players
         if next_phase == Phase.NIGHT:
-            from agents.traitor_agent import trigger_night_selection
-            asyncio.create_task(trigger_night_selection(game_id))
+            from agents.traitor_agent import trigger_all_night_actions
+            asyncio.create_task(trigger_all_night_actions(game_id))
 
             game_after = await fs.get_game(game_id)
             result["round"] = game_after.round if game_after else game.round
@@ -498,8 +508,8 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
         # vote context into the narrator's response so summaries are based on
         # public events only — no reliance on the model calling the tool itself.
         elif next_phase == Phase.DAY_VOTE:
-            from agents.traitor_agent import trigger_vote_selection
-            asyncio.create_task(trigger_vote_selection(game_id))
+            from agents.traitor_agent import trigger_all_votes
+            asyncio.create_task(trigger_all_votes(game_id))
             try:
                 vote_ctx = await handle_generate_vote_context(game_id)
                 result["vote_context"] = vote_ctx
@@ -530,28 +540,31 @@ async def handle_start_phase_timer(game_id: str) -> Dict[str, Any]:
 
 async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, Any]:
     """
-    Generate an in-character spoken line from the AI Shapeshifter character
-    and broadcast it as a transcript so text clients also see it.
-    Returns {character_name, dialog} to the narrator for voicing.
+    Generate in-character spoken lines from all alive AI characters
+    and broadcast them as transcripts so text clients also see them.
+    Returns the first AI's {character_name, dialog} to the narrator for voicing.
     """
-    from agents.traitor_agent import traitor_agent, loyal_agent
+    from agents.traitor_agent import generate_dialog, _ai_chars_with_fields
     from routers.ws_router import manager as ws_manager
 
-    # Route to loyal or traitor agent based on AI alignment (§12.3.10)
-    fs_check = get_firestore_service()
-    game_check = await fs_check.get_game(game_id)
-    ai_check = game_check.ai_character if game_check else None
-    if ai_check and not ai_check.is_traitor:
-        result = await loyal_agent.generate_dialog(game_id, context)
-    else:
-        result = await traitor_agent.generate_dialog(game_id, context)
-    # Persist to Firestore so handle_get_game_state can see AI dialog in recent_speakers.
-    # This is needed for characters_not_yet_spoken to correctly exclude the AI character
-    # after it has spoken (otherwise it would always appear as silent).
-    try:
-        fs = get_firestore_service()
-        game = await fs.get_game(game_id)
-        if game:
+    fs = get_firestore_service()
+    game = await fs.get_game(game_id)
+    if not game:
+        return {"character_name": "Unknown", "dialog": "..."}
+
+    first_result = None
+
+    for ai_char, field in _ai_chars_with_fields(game):
+        if not ai_char.alive:
+            continue
+
+        result = await generate_dialog(game_id, ai_char, context)
+
+        if not first_result:
+            first_result = result
+
+        # Persist to Firestore for recent_speakers tracking
+        try:
             ai_msg = ChatMessage(
                 speaker=result["character_name"],
                 text=result["dialog"],
@@ -560,23 +573,21 @@ async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, 
                 round=game.round,
             )
             await fs.add_chat_message(game_id, ai_msg)
-    except Exception:
-        logger.warning("[%s] inject_traitor_dialog: failed to persist AI dialog", game_id, exc_info=True)
+        except Exception:
+            logger.warning("[%s] inject_traitor_dialog: failed to persist dialog for %s",
+                           game_id, result["character_name"], exc_info=True)
 
-    # Broadcast text transcript so text-only clients see the AI character's line.
-    # source="player" so the line is indistinguishable from human dialog in the story log.
-    # The Firestore ChatMessage above retains source="ai_character" for internal audit use.
-    await ws_manager.broadcast_transcript(
-        game_id,
-        speaker=result["character_name"],
-        text=result["dialog"],
-        source="player",
-    )
-    logger.info(
-        "[%s] inject_traitor_dialog: %s said: %.80s…",
-        game_id, result["character_name"], result["dialog"],
-    )
-    return result
+        # Broadcast — source="player" so indistinguishable from human dialog
+        await ws_manager.broadcast_transcript(
+            game_id,
+            speaker=result["character_name"],
+            text=result["dialog"],
+            source="player",
+        )
+        logger.info("[%s] AI dialog: %s said: %.80s…",
+                    game_id, result["character_name"], result["dialog"])
+
+    return first_result or {"character_name": "Unknown", "dialog": "..."}
 
 
 async def handle_generate_vote_context(game_id: str) -> Dict[str, Any]:
@@ -607,10 +618,10 @@ async def handle_generate_vote_context(game_id: str) -> Dict[str, Any]:
         return {"error": "Game not found"}
 
     alive_characters = [p.character_name for p in alive_players]
-    # Include the AI character when alive — vote cards need a summary for every character
-    # that will appear on the ballot, including the Shapeshifter.
-    if game.ai_character and game.ai_character.alive:
-        alive_characters.append(game.ai_character.name)
+    # Include AI characters when alive — vote cards need summaries for all ballot candidates
+    for ai in [game.ai_character, game.ai_character_2]:
+        if ai and ai.alive:
+            alive_characters.append(ai.name)
 
     return {
         "public_events": sanitized_events,

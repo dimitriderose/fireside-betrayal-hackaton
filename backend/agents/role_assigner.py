@@ -266,67 +266,84 @@ class RoleAssigner:
                 f"Too many players: {n_human} (maximum is {self.MAX_HUMANS})."
             )
 
-        n_total = n_human + 1  # +1 for the AI Shapeshifter
+        # ── Determine AI count: 2 AIs for 2-human games ──────────────────────
+        n_ai = 2 if n_human == 2 else 1
+        n_total = n_human + n_ai
         if n_total not in ROLE_DISTRIBUTION:
             raise ValueError(
                 f"No role distribution defined for {n_total} total characters "
-                f"({n_human} humans + 1 AI). Supported totals: {sorted(ROLE_DISTRIBUTION)}."
+                f"({n_human} humans + {n_ai} AI). Supported totals: {sorted(ROLE_DISTRIBUTION)}."
             )
 
-        # ── Build human role list ──────────────────────────────────────────────
-        roles: List[str] = list(ROLE_DISTRIBUTION[n_total])
+        # ── Build role pool ──────────────────────────────────────────────────
+        all_roles: List[str] = list(ROLE_DISTRIBUTION[n_total])
 
         # Resolve effective difficulty (may be auto-adjusted for small games per §12.3.9)
         effective_difficulty = game_master.get_effective_difficulty(n_human, game.difficulty.value)
 
         # Apply difficulty: replace Drunk with Villager on Easy
-        if effective_difficulty == Difficulty.EASY.value and "drunk" in roles:
-            roles[roles.index("drunk")] = "villager"
+        if effective_difficulty == Difficulty.EASY.value and "drunk" in all_roles:
+            all_roles[all_roles.index("drunk")] = "villager"
 
-        # Remove the shapeshifter slot — it belongs to the AI, never a human
-        if "shapeshifter" not in roles:
+        if "shapeshifter" not in all_roles:
             raise ValueError(
                 f"ROLE_DISTRIBUTION[{n_total}] has no 'shapeshifter' entry — data integrity error."
             )
-        roles.remove("shapeshifter")
-        # `roles` now has exactly n_human entries
 
-        # ── §12.3.10 Random Alignment: AI may draw any role ───────────────────
-        ai_is_traitor = True
-        ai_drawn_role = "shapeshifter"
+        # ── Assign roles based on difficulty and player count ─────────────────
+        ai1_role = "shapeshifter"
+        ai1_is_traitor = True
+        ai2_role: Optional[str] = None
+        ai2_is_traitor = False
 
-        if game.random_alignment:
-            # Shuffle the full pool (human roles + shapeshifter slot) and let AI draw one
-            full_pool = roles + ["shapeshifter"]
-            random.shuffle(full_pool)
-            ai_drawn_role = full_pool.pop()
-            ai_is_traitor = (ai_drawn_role == "shapeshifter")
+        if n_ai == 2 and effective_difficulty != Difficulty.EASY.value:
+            # Normal/Hard with 2 humans: shapeshifter can go to ANYONE
+            random.shuffle(all_roles)
+            # Deal: first n_human to humans, then AI1, then AI2
+            human_roles = all_roles[:n_human]
+            ai1_role = all_roles[n_human]
+            ai2_role = all_roles[n_human + 1]
+            ai1_is_traitor = (ai1_role == "shapeshifter")
+            ai2_is_traitor = (ai2_role == "shapeshifter")
+        elif n_ai == 2:
+            # Easy with 2 humans: AI1 is always shapeshifter, AI2 gets a village role
+            all_roles.remove("shapeshifter")
+            random.shuffle(all_roles)
+            human_roles = all_roles[:n_human]
+            ai2_role = all_roles[n_human]  # remaining village role for AI2
+        else:
+            # 3+ humans: single AI, original logic
+            all_roles.remove("shapeshifter")
 
-            if ai_is_traitor:
-                # AI drew shapeshifter — standard game; remaining pool is human roles
-                roles = full_pool
-            else:
-                # AI drew a village role — no shapeshifter in game.
-                # full_pool (after pop) still has n_human entries for the humans.
-                roles = full_pool
-                logger.info(
-                    "[%s] Random alignment: AI drew '%s' — loyal AI, no shapeshifter this game.",
-                    game_id, ai_drawn_role,
-                )
+            if game.random_alignment:
+                full_pool = all_roles + ["shapeshifter"]
+                random.shuffle(full_pool)
+                ai1_role = full_pool.pop()
+                ai1_is_traitor = (ai1_role == "shapeshifter")
+                all_roles = full_pool
+                if not ai1_is_traitor:
+                    logger.info(
+                        "[%s] Random alignment: AI drew '%s' — loyal AI, no shapeshifter this game.",
+                        game_id, ai1_role,
+                    )
 
-        random.shuffle(roles)
+            random.shuffle(all_roles)
+            human_roles = all_roles
+
+        random.shuffle(human_roles)
 
         # ── Generate character cast (LLM with static fallback) ─────────────────
         cast = await self._generate_character_cast(n_total)
         random.shuffle(cast)
         # cast[0 .. n_human-1] → human players
-        # cast[n_human]        → AI character
+        # cast[n_human]        → AI1
+        # cast[n_human+1]      → AI2 (if n_ai == 2)
 
         # ── Assign roles and characters to human players (parallel writes) ─────
         assignments: List[Dict[str, Any]] = []
         player_updates = []
         for i, player in enumerate(players):
-            role = roles[i]
+            role = human_roles[i]
             character = cast[i]
             hook = character.get("personality_hook", "")
             player_updates.append(fs.update_player(game_id, player.id, {
@@ -345,52 +362,78 @@ class RoleAssigner:
             })
         await asyncio.gather(*player_updates)
 
-        # ── Set up the AI character ────────────────────────────────────────────
-        ai_slot = cast[n_human]
-        hook = ai_slot.get("personality_hook", "")
-        ai_role = Role(ai_drawn_role) if ai_drawn_role != "shapeshifter" else Role.SHAPESHIFTER
+        # ── Set up AI character 1 ────────────────────────────────────────────
+        ai1_slot = cast[n_human]
+        hook1 = ai1_slot.get("personality_hook", "")
         ai_char = AICharacter(
-            name=ai_slot["name"],
-            intro=ai_slot["intro"],
-            role=ai_role,
+            name=ai1_slot["name"],
+            intro=ai1_slot["intro"],
+            role=Role(ai1_role),
             alive=True,
-            backstory=hook,
-            personality_hook=hook,
-            is_traitor=ai_is_traitor,
+            backstory=hook1,
+            personality_hook=hook1,
+            is_traitor=ai1_is_traitor,
         )
 
-        # ── Store AI character + full cast in a single Firestore write ─────────
-        # Merging into one update_game call eliminates the crash window between
-        # set_ai_character and the subsequent update_game call.
+        # ── Set up AI character 2 (2-human games only) ───────────────────────
+        ai_char_2 = None
+        if n_ai == 2 and ai2_role is not None:
+            ai2_slot = cast[n_human + 1]
+            hook2 = ai2_slot.get("personality_hook", "")
+            ai_char_2 = AICharacter(
+                name=ai2_slot["name"],
+                intro=ai2_slot["intro"],
+                role=Role(ai2_role),
+                alive=True,
+                backstory=hook2,
+                personality_hook=hook2,
+                is_traitor=ai2_is_traitor,
+            )
+
+        # ── Store AI characters + full cast in a single Firestore write ──────
         character_cast = [c["name"] for c in cast[:n_total]]
-        await fs.update_game(game_id, {
+        game_update = {
             "ai_character": ai_char.model_dump(),
             "character_cast": character_cast,
             "generated_characters": cast,
-        })
+        }
+        if ai_char_2:
+            game_update["ai_character_2"] = ai_char_2.model_dump()
+        await fs.update_game(game_id, game_update)
 
-        ai_role_label = "Shapeshifter" if ai_is_traitor else f"{ai_drawn_role} (Loyal)"
+        ai1_label = "Shapeshifter" if ai1_is_traitor else f"{ai1_role} (Loyal)"
         logger.info(
-            "[%s] Roles assigned to %d humans (difficulty=%s, effective=%s). "
-            "Roles: %s. AI character: %s.",
-            game_id, n_human, game.difficulty.value, effective_difficulty,
+            "[%s] Roles assigned to %d humans + %d AI (difficulty=%s, effective=%s). "
+            "Human roles: %s. AI1: %s.",
+            game_id, n_human, n_ai, game.difficulty.value, effective_difficulty,
             [a["role"] for a in assignments], ai_char.name,
         )
-        # AI alignment logged at DEBUG only — avoids leaking is_traitor to
-        # server consoles that may be visible during live demos.
-        logger.debug("[%s] AI alignment: %s", game_id, ai_role_label)
+        logger.debug("[%s] AI1 alignment: %s", game_id, ai1_label)
+        if ai_char_2:
+            ai2_label = "Shapeshifter" if ai2_is_traitor else f"{ai2_role} (Loyal)"
+            logger.info("[%s] AI2: %s", game_id, ai_char_2.name)
+            logger.debug("[%s] AI2 alignment: %s", game_id, ai2_label)
 
-        return {
+        result = {
             "assignments": assignments,
             "ai_character": {
                 "name": ai_char.name,
                 "intro": ai_char.intro,
                 "personality_hook": ai_char.personality_hook,
-                "is_traitor": ai_is_traitor,
-                "role": ai_drawn_role,
+                "is_traitor": ai1_is_traitor,
+                "role": ai1_role,
             },
             "character_cast": character_cast,
         }
+        if ai_char_2:
+            result["ai_character_2"] = {
+                "name": ai_char_2.name,
+                "intro": ai_char_2.intro,
+                "personality_hook": ai_char_2.personality_hook,
+                "is_traitor": ai2_is_traitor,
+                "role": ai2_role,
+            }
+        return result
 
 
 # Module-level singleton

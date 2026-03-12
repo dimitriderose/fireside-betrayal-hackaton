@@ -15,7 +15,7 @@ function ShareButton({ winner, reveals }) {
       : 'The Shapeshifter Wins! 🐺'
     const traitor = reveals.find(r => r.isTraitor ?? r.role === 'shapeshifter')
     const traitorLine = loyalAIReveal
-      ? `The AI (${loyalAIReveal.characterName}) was loyal — on the village's side all along!`
+      ? `${loyalAIReveal.characterName} was loyal — on the village's side all along!`
       : traitor ? `The Shapeshifter was ${traitor.characterName} (${traitor.playerName}).` : ''
     const summary = `🔥 Fireside: Betrayal\n${outcome}\n${traitorLine}\nPlay at thornwood.app`
 
@@ -203,7 +203,7 @@ function InteractiveTimeline({ rounds }) {
           <button
             key={r.round}
             onClick={() => setSelectedRound(r.round === selectedRound ? null : r.round)}
-            title={r.round === keyRound ? 'Key moment — AI was closest to being caught' : `Round ${r.round}`}
+            title={r.round === keyRound ? 'Key moment — Shapeshifter was closest to being caught' : `Round ${r.round}`}
             style={{
               padding: '3px 10px',
               fontSize: '0.6875rem',
@@ -516,7 +516,7 @@ export default function GameOver() {
         const teaserText = EVENT_RENDERERS[firstSecret.type](firstSecret).text
         // Loyal-AI-voted-out: reframe label — the AI was helping, not scheming
         const teaserLabel = loyalAIVotedOut ? 'What your ally was doing for you' : "What the village didn't see"
-        const teaserLink = loyalAIVotedOut ? '↓ See the full timeline' : '↓ See what the AI was really thinking'
+        const teaserLink = loyalAIVotedOut ? '↓ See the full timeline' : '↓ See what the Shapeshifter was really thinking'
         return (
           <div
             style={{
@@ -599,7 +599,7 @@ export default function GameOver() {
                           className={`badge ${isTraitor ? 'badge-danger' : isLoyalAIChar ? 'badge-success' : 'badge-muted'}`}
                           style={{ fontSize: '0.625rem' }}
                         >
-                          {isLoyalAIChar ? 'Loyal AI' : r.role ? r.role.charAt(0).toUpperCase() + r.role.slice(1) : '?'}
+                          {isLoyalAIChar ? 'Loyal Ally' : r.role ? r.role.charAt(0).toUpperCase() + r.role.slice(1) : '?'}
                         </span>
                         {isMe && (
                           <div
@@ -642,7 +642,7 @@ export default function GameOver() {
               What Really Happened
             </h3>
             <p style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginBottom: 16 }}>
-              Toggle between public and secret views. The ★ round is where the AI was closest to being caught.
+              Toggle between public and secret views. The ★ round is where the Shapeshifter was closest to being caught.
             </p>
             <InteractiveTimeline rounds={strategyLog} />
           </div>

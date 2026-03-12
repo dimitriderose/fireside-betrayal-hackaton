@@ -17,7 +17,7 @@ export default function VotePanel({ sendMessage }) {
   const { state, dispatch } = useGame()
   const {
     players,
-    aiCharacter,
+    aiCharacters,
     votes,      // { charName: count } — live tally
     voteMap,    // { charName: votedFor | null } — who has voted (targets hidden)
     myVote,     // charName this player voted for, or null
@@ -114,7 +114,7 @@ export default function VotePanel({ sendMessage }) {
   // Use backend-provided candidate list (excludes self). Fall back to local filter.
   const fallbackCandidates = [
     ...players.filter(p => p.alive && p.characterName !== myCharacterName).map(p => p.characterName),
-    ...(aiCharacter?.alive ? [aiCharacter.name] : []),
+    ...(aiCharacters || []).filter(ai => ai?.alive).map(ai => ai.name),
   ]
   const candidates = voteCandidates ?? fallbackCandidates
   const hasCandidates = candidates.length > 0

@@ -23,7 +23,7 @@ function createInitialState() {
     round: 0,
     difficulty: 'normal',
     players: [],          // [{ id, characterName, alive, connected, ready }]
-    aiCharacter: null,    // { name: string, alive: boolean } | null
+    aiCharacters: [],     // [{ name: string, alive: boolean }, ...]
     votes: {},            // { characterName: count } — vote tally from backend
     voteMap: {},          // { characterName: votedFor | null } — who voted for whom
     myVote: null,         // character name this player voted for (null = not voted yet)
@@ -75,8 +75,8 @@ function gameReducer(state, action) {
       }
     case 'ROLE_REVEAL_DISMISSED':
       return { ...state, showRoleReveal: false }
-    case 'SET_AI_CHARACTER':
-      return { ...state, aiCharacter: action.aiCharacter }
+    case 'SET_AI_CHARACTERS':
+      return { ...state, aiCharacters: action.aiCharacters }
     case 'SET_MY_VOTE':
       return { ...state, myVote: action.vote }
     case 'UPDATE_PLAYERS':
@@ -114,16 +114,15 @@ function gameReducer(state, action) {
     }
     case 'ELIMINATION': {
       const isLocalPlayerEliminated = state.characterName === action.character
-      const isAIEliminated = state.aiCharacter?.name === action.character
       return {
         ...state,
         players: state.players.map(p =>
           p.characterName === action.character ? { ...p, alive: false } : p
         ),
         isEliminated: state.isEliminated || isLocalPlayerEliminated,
-        aiCharacter: isAIEliminated
-          ? { ...state.aiCharacter, alive: false }
-          : state.aiCharacter,
+        aiCharacters: state.aiCharacters.map(ai =>
+          ai.name === action.character ? { ...ai, alive: false } : ai
+        ),
         hunterRevengeNeeded:
           isLocalPlayerEliminated && (action.triggerHunterRevenge ?? false)
             ? true
@@ -180,6 +179,7 @@ function gameReducer(state, action) {
         votes: {},
         voteMap: {},
         myVote: null,
+        aiCharacters: [],
       }
     }
     case 'SET_SPEAKER':

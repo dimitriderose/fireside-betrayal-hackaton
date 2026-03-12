@@ -463,6 +463,19 @@ def drain_hand_queue(game_id: str) -> None:
 
 logger = logging.getLogger(__name__)
 
+
+# ── AI character helpers (supports 1 or 2 AI characters) ─────────────────────
+
+def _all_ai_chars(game) -> list:
+    """Return list of non-None AI characters."""
+    return [c for c in [game.ai_character, getattr(game, 'ai_character_2', None)] if c]
+
+
+def _alive_ai_names(game) -> list:
+    """Return names of alive AI characters."""
+    return [c.name for c in _all_ai_chars(game) if c.alive]
+
+
 router = APIRouter(tags=["websocket"])
 
 # ── Role description cards (sent privately at game start) ─────────────────────
@@ -739,12 +752,12 @@ class ConnectionManager:
         Each player gets a list that excludes themselves."""
         fs = get_firestore_service()
         alive_players = await fs.get_alive_players(game_id)
-        ai_char = await fs.get_ai_character(game_id)
+        game = await fs.get_game(game_id)
 
-        # Build full candidate pool: alive human character names + alive AI
+        # Build full candidate pool: alive human character names + alive AI(s)
         all_names = [p.character_name for p in alive_players if p.character_name]
-        if ai_char and ai_char.alive:
-            all_names.append(ai_char.name)
+        if game:
+            all_names.extend(_alive_ai_names(game))
 
         msg_type = "night_targets" if phase == Phase.NIGHT else "vote_candidates"
 
@@ -890,6 +903,7 @@ async def websocket_endpoint(
     ai_char = await fs.get_ai_character(game_id)
 
     # Private "connected" message with game snapshot
+    ai_char_2 = getattr(game, 'ai_character_2', None)
     await manager.send_to(game_id, playerId, {
         "type": "connected",
         "playerId": playerId,
@@ -905,6 +919,10 @@ async def websocket_endpoint(
             "aiCharacter": (
                 {"name": ai_char.name, "alive": ai_char.alive}
                 if ai_char else None
+            ),
+            "aiCharacter2": (
+                {"name": ai_char_2.name, "alive": ai_char_2.alive}
+                if ai_char_2 else None
             ),
             "inPersonMode": game.in_person_mode,  # §12.3.16
         },
@@ -923,8 +941,7 @@ async def websocket_endpoint(
     # Send per-player candidate list if we're in a phase that needs it
     if game.phase in (Phase.NIGHT, Phase.DAY_VOTE) and player.alive and player.character_name:
         all_names = [p.character_name for p in alive_players if p.character_name]
-        if ai_char and ai_char.alive:
-            all_names.append(ai_char.name)
+        all_names.extend(_alive_ai_names(game))
         candidates = [n for n in all_names if n != player.character_name]
         msg_type = "night_targets" if game.phase == Phase.NIGHT else "vote_candidates"
         await manager.send_to(game_id, playerId, {
@@ -1146,23 +1163,24 @@ async def _on_chat(
     if game and game.phase == Phase.DAY_DISCUSSION:
         # Fetch alive players, AI char, and vote tally for signals.
         try:
-            alive_players, ai_char, last_vote_tally = await asyncio.gather(
+            alive_players, last_vote_tally = await asyncio.gather(
                 fs.get_alive_players(game_id),
-                fs.get_ai_character(game_id),
                 fs.get_vote_tally(game_id),
             )
+            game_fresh = await fs.get_game(game_id)
         except Exception:
             logger.warning("[%s] Could not fetch data for pacing signals; skipping", game_id, exc_info=True)
-            alive_players, ai_char, last_vote_tally = [], None, {}
+            alive_players, last_vote_tally, game_fresh = [], {}, None
 
         alive_chars = [p.character_name for p in alive_players]
-        if ai_char and ai_char.alive:
-            alive_chars.append(ai_char.name)
+        if game_fresh:
+            alive_chars.extend(_alive_ai_names(game_fresh))
 
         tracker = get_tracker(game_id)
         tracker.add_message(player_id, speaker, text, alive_chars)
         pacing = tracker.get_pacing_signal()
 
+        ai_char = game_fresh.ai_character if game_fresh else None
         game_state_dict: Dict[str, Any] = {
             "round": game.round,
             "total_players": len(game.character_cast),
@@ -1170,8 +1188,10 @@ async def _on_chat(
             "ai_character": {"name": ai_char.name if ai_char and ai_char.alive else None},
             "last_vote_result": last_vote_tally or {},
         }
-        if ai_char and ai_char.alive:
-            game_state_dict["players"][ai_char.name] = {"alive": True}
+        if game_fresh:
+            for ac in _all_ai_chars(game_fresh):
+                if ac.alive:
+                    game_state_dict["players"][ac.name] = {"alive": True}
 
         affective = AffectiveSignals.compute(game_state_dict, tracker)
 
@@ -1229,10 +1249,8 @@ async def _on_vote(
 
     # Validate target is an alive character
     alive_players = await fs.get_alive_players(game_id)
-    ai_char = await fs.get_ai_character(game_id)
     alive_chars = {p.character_name for p in alive_players}
-    if ai_char and ai_char.alive:
-        alive_chars.add(ai_char.name)
+    alive_chars.update(_alive_ai_names(game))
 
     if target not in alive_chars:
         await manager.send_to(game_id, player_id, {
@@ -1290,6 +1308,19 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
     try:
         from agents.game_master import game_master
 
+        # Poll for AI votes (they're set asynchronously via Gemini calls)
+        for _ in range(5):  # up to 10s max
+            game_vote_check = await fs.get_game(game_id)
+            if not game_vote_check:
+                break
+            all_ai_voted = all(
+                ai.voted_for for ai in [game_vote_check.ai_character, game_vote_check.ai_character_2]
+                if ai and ai.alive
+            )
+            if all_ai_voted:
+                break
+            await asyncio.sleep(2)
+
         tally_result = await game_master.tally_votes(game_id)
 
         if tally_result["result"] == "no_votes":
@@ -1297,7 +1328,7 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             next_phase = await game_master.advance_phase(game_id)
             await manager.broadcast_phase_change(game_id, next_phase)
             # Tell narrator to narrate the deadlock and call advance_phase → NIGHT
-            # (handle_advance_phase will fire trigger_night_selection when it reaches NIGHT)
+            # (handle_advance_phase will fire trigger_all_night_actions when it reaches NIGHT)
             await narrator_manager.send_phase_event(game_id, "no_elimination", {
                 "tally": tally_result.get("tally", {}),
             })
@@ -1317,25 +1348,6 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
                 tally=tally_result.get("tally", {}),
             )
             await _end_game(game_id, "tanner", "The Tanner outsmarted the village — voted out exactly as planned!", fs)
-            return
-
-        # §12.3.10 Loyal AI voted out — village eliminated their own ally
-        if elim_result.get("is_loyal_ai"):
-            await manager.broadcast_elimination(
-                game_id,
-                character_name=eliminated,
-                was_traitor=False,
-                role=elim_result["role"],
-                needs_hunter_revenge=False,
-                tally=tally_result.get("tally", {}),
-            )
-            await _end_game(
-                game_id,
-                "shapeshifter",
-                f"The village voted out {eliminated} — their innocent ally. "
-                "The AI was on your side the whole time. Trust no one.",
-                fs,
-            )
             return
 
         await manager.broadcast_elimination(
@@ -1362,15 +1374,19 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
                     votes_with_value = [v for v in tally_vals.values() if v > 0]
                     if len(votes_with_value) == 1:
                         adapter.record_signal("unanimous_wrong_vote")
-                    ai_char_for_vote = await fs.get_ai_character(game_id)
-                    if ai_char_for_vote:
-                        ai_votes = tally_vals.get(ai_char_for_vote.name, 0)
+                    # Find the traitor AI to check vote closeness
+                    game_for_signal = await fs.get_game(game_id)
+                    ai_traitor_for_vote = next(
+                        (ai for ai in [game_for_signal.ai_character, game_for_signal.ai_character_2]
+                         if ai and ai.is_traitor),
+                        None
+                    ) if game_for_signal else None
+                    if ai_traitor_for_vote:
+                        ai_votes = tally_vals.get(ai_traitor_for_vote.name, 0)
                         top_votes = max(tally_vals.values(), default=0)
                         if ai_votes > 0 and top_votes - ai_votes <= 1:
-                            # AI narrowly avoided elimination
                             adapter.record_signal("close_vote_against_ai")
                         elif ai_votes == 0:
-                            # AI received zero votes — players not suspicious of them
                             adapter.record_signal("ai_unquestioned")
                 # Snapshot the fragment at this round boundary for use next round
                 adapter.lock_round_fragment()
@@ -1452,10 +1468,8 @@ async def _on_night_action(
 
     # Validate target is alive
     alive_players = await fs.get_alive_players(game_id)
-    ai_char = await fs.get_ai_character(game_id)
     alive_chars = {p.character_name for p in alive_players}
-    if ai_char and ai_char.alive:
-        alive_chars.add(ai_char.name)
+    alive_chars.update(_alive_ai_names(game))
 
     if target not in alive_chars:
         await manager.send_to(game_id, player_id, {
@@ -1640,8 +1654,8 @@ async def _on_hunter_revenge(
     await manager.broadcast_phase_change(game_id, next_phase)
     # ELIMINATION → NIGHT: fire traitor night selection for the new round
     if next_phase == Phase.NIGHT:
-        from agents.traitor_agent import trigger_night_selection
-        asyncio.create_task(trigger_night_selection(game_id))
+        from agents.traitor_agent import trigger_all_night_actions
+        asyncio.create_task(trigger_all_night_actions(game_id))
 
 
 async def _on_quick_reaction(
@@ -1665,10 +1679,8 @@ async def _on_quick_reaction(
     # Validate target is an alive character if required
     if reaction in ("suspect", "trust") and target:
         alive_players = await fs.get_alive_players(game_id)
-        ai_char = await fs.get_ai_character(game_id)
         alive_names = {p.character_name for p in alive_players}
-        if ai_char and ai_char.alive:
-            alive_names.add(ai_char.name)
+        alive_names.update(_alive_ai_names(game))
         if target not in alive_names:
             return  # target is not a valid alive character
 
@@ -1706,23 +1718,24 @@ async def _on_quick_reaction(
 
     # ── Pacing + affective signals (same path as _on_chat) ────────────────────
     try:
-        alive_players, ai_char, last_vote_tally = await asyncio.gather(
+        alive_players, last_vote_tally = await asyncio.gather(
             fs.get_alive_players(game_id),
-            fs.get_ai_character(game_id),
             fs.get_vote_tally(game_id),
         )
+        game_fresh = await fs.get_game(game_id)
     except Exception:
         logger.warning("[%s] Could not fetch data for quick_reaction signals; skipping", game_id, exc_info=True)
-        alive_players, ai_char, last_vote_tally = [], None, {}
+        alive_players, last_vote_tally, game_fresh = [], {}, None
 
     alive_chars = [p.character_name for p in alive_players]
-    if ai_char and ai_char.alive:
-        alive_chars.append(ai_char.name)
+    if game_fresh:
+        alive_chars.extend(_alive_ai_names(game_fresh))
 
     tracker = get_tracker(game_id)
     tracker.add_message(player_id, speaker, text, alive_chars)
     pacing = tracker.get_pacing_signal()
 
+    ai_char = game_fresh.ai_character if game_fresh else None
     game_state_dict: Dict[str, Any] = {
         "round": game.round,
         "total_players": len(game.character_cast),
@@ -1730,8 +1743,10 @@ async def _on_quick_reaction(
         "ai_character": {"name": ai_char.name if ai_char and ai_char.alive else None},
         "last_vote_result": last_vote_tally or {},
     }
-    if ai_char and ai_char.alive:
-        game_state_dict["players"][ai_char.name] = {"alive": True}
+    if game_fresh:
+        for ac in _all_ai_chars(game_fresh):
+            if ac.alive:
+                game_state_dict["players"][ac.name] = {"alive": True}
 
     affective = AffectiveSignals.compute(game_state_dict, tracker)
 
@@ -1927,9 +1942,9 @@ async def _on_in_person_vote_frame(
     # Cap hand_count to number of alive players (humans + AI) — guards against vision hallucinations
     all_players_for_cap = await fs.get_all_players(game_id)
     alive_cap = sum(1 for p in all_players_for_cap if p.alive)
-    ai_char_for_cap = await fs.get_ai_character(game_id)
-    if ai_char_for_cap and ai_char_for_cap.alive:
-        alive_cap += 1
+    game_for_cap = await fs.get_game(game_id)
+    if game_for_cap:
+        alive_cap += len(_alive_ai_names(game_for_cap))
     hand_count = min(hand_count, alive_cap)
 
     # Broadcast the hand count to all clients as a vote result message
@@ -2172,7 +2187,8 @@ async def _end_game(
 ) -> None:
     await fs.update_game(game_id, {"status": GameStatus.FINISHED.value, "winner": winner})
     all_players = await fs.get_all_players(game_id)
-    ai_char = await fs.get_ai_character(game_id)
+    game_end = await fs.get_game(game_id)
+    ai_char = game_end.ai_character if game_end else await fs.get_ai_character(game_id)
 
     reveals = [
         {
@@ -2183,16 +2199,17 @@ async def _end_game(
         }
         for p in all_players
     ]
-    if ai_char:
-        # Use actual role for loyal AI (§12.3.10); shapeshifter if traitor
-        ai_reveal_role = "shapeshifter" if getattr(ai_char, "is_traitor", True) else ai_char.role.value
+    # Reveal all AI characters (supports 1 or 2)
+    all_ais = _all_ai_chars(game_end) if game_end else ([ai_char] if ai_char else [])
+    for ac in all_ais:
+        ai_reveal_role = "shapeshifter" if getattr(ac, "is_traitor", True) else ac.role.value
         reveals.append({
-            "characterName": ai_char.name,
+            "characterName": ac.name,
             "playerName": "AI",
             "role": ai_reveal_role,
-            "alive": ai_char.alive,
+            "alive": ac.alive,
             "isAI": True,
-            "isTraitor": getattr(ai_char, "is_traitor", True),
+            "isTraitor": getattr(ac, "is_traitor", True),
         })
 
     # Build post-game reveal timeline from all events (including hidden ones)

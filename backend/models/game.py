@@ -49,10 +49,9 @@ class GameStatus(str, Enum):
     FINISHED = "finished"
 
 
-# Role distribution keyed by TOTAL character count (human players + 1 AI Shapeshifter).
-# e.g. key 3 = 2 humans + 1 AI, key 8 = 7 humans + 1 AI.
+# Role distribution keyed by TOTAL character count (humans + AI characters).
+# With 2 humans: 2 AIs are added (key 4). With 3+ humans: 1 AI (keys 4-8).
 ROLE_DISTRIBUTION: Dict[int, List[str]] = {
-    3: ["villager", "seer", "shapeshifter"],
     4: ["villager", "villager", "seer", "shapeshifter"],
     5: ["villager", "villager", "seer", "healer", "shapeshifter"],
     6: ["villager", "villager", "seer", "healer", "hunter", "shapeshifter"],
@@ -115,6 +114,7 @@ class GameState(BaseModel):
     character_cast: List[str] = []
     generated_characters: List[Dict[str, Any]] = []  # Full cast data: name, intro, personality_hook
     ai_character: Optional[AICharacter] = None
+    ai_character_2: Optional[AICharacter] = None  # Second AI for 2-human games
     story_context: str = ""  # Running narrative context for the Narrator Agent
     random_alignment: bool = False  # §12.3.10: AI may draw a village role instead of shapeshifter
     narrator_preset: NarratorPreset = NarratorPreset.CLASSIC  # §12.3.17

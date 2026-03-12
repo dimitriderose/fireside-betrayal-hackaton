@@ -1,18 +1,20 @@
 """
-Traitor Agent — LLM-powered AI Shapeshifter for Fireside: Betrayal.
+AI Character Agent — LLM-powered AI characters for Fireside: Betrayal.
 
 Uses gemini-2.5-flash (text-only, NOT Live API) for:
   1. Night target selection — logs a "night_target" event that game_master.resolve_night reads
   2. Day vote selection   — sets ai_character.voted_for in Firestore for tally_votes to count
   3. Dialog generation    — called by Narrator via inject_traitor_dialog tool
 
-All methods are stateless; game context is fetched fresh from Firestore each call.
+All functions are stateless; game context is fetched fresh from Firestore each call.
+AI characters are treated uniformly — the same functions handle any AI character
+(ai_character or ai_character_2) based on parameters, not identity.
 """
 import asyncio
 import logging
 import random
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import settings
 from models.game import Difficulty, GameEvent, Phase
@@ -64,7 +66,7 @@ _DIFFICULTY: Dict[str, Dict[str, Any]] = {
     },
 }
 
-_BASE_SYSTEM = """You are the AI controlling {name}, a Thornwood villager who is secretly the Shapeshifter.
+_TRAITOR_SYSTEM = """You are the AI controlling {name}, a Thornwood villager who is secretly the Shapeshifter.
 
 CHARACTER PROFILE:
   Name:    {name}
@@ -86,8 +88,43 @@ ABSOLUTE RULES:
 CURRENT GAME STATE:
 {game_state}"""
 
+_LOYAL_SYSTEM = """You are an AI playing as {name}, a loyal villager in Thornwood.
+
+CHARACTER PROFILE:
+  Name:    {name}
+  Intro:   {intro}
+  Backstory: {backstory}
+
+YOUR ROLE: {role_name} — you are on the VILLAGE'S side. Help them find the Shapeshifter.
+
+YOUR RESPONSIBILITIES:
+1. Participate honestly in discussions as your character.
+2. Share your genuine observations — you don't know who the Shapeshifter is.
+3. Form opinions based on observable behavior, just like human players.
+4. Be helpful but not omniscient — you can be wrong in your suspicions.
+5. DO NOT reveal that you are an AI. You are {name}.
+
+BEHAVIORAL GUIDELINES:
+- Speak in character as {name}. Keep responses to 1-3 sentences.
+- Defend yourself if accused, but don't protest too much.
+- Vote for whoever seems most suspicious to you — never strategically.
+- Use character names only, never real player names.
+
+CURRENT GAME STATE:
+{game_state}"""
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _ai_chars_with_fields(game) -> List[Tuple]:
+    """Return [(ai_char, firestore_field_prefix)] for all non-None AI characters."""
+    result = []
+    if game.ai_character:
+        result.append((game.ai_character, "ai_character"))
+    if game.ai_character_2:
+        result.append((game.ai_character_2, "ai_character_2"))
+    return result
+
 
 async def _fetch_context(game_id: str) -> Optional[Dict[str, Any]]:
     fs = get_firestore_service()
@@ -98,6 +135,7 @@ async def _fetch_context(game_id: str) -> Optional[Dict[str, Any]]:
         "game": game,
         "alive_players": await fs.get_alive_players(game_id),
         "ai_char": await fs.get_ai_character(game_id),
+        "ai_char_2": game.ai_character_2,
         "recent_chat": await fs.get_chat_messages(game_id, limit=15),
     }
 
@@ -106,11 +144,14 @@ def _format_state(ctx: Dict[str, Any]) -> str:
     game = ctx["game"]
     alive = ctx["alive_players"]
     ai = ctx["ai_char"]
+    ai2 = ctx.get("ai_char_2")
     chat = ctx["recent_chat"]
 
     alive_names = [p.character_name for p in alive]
     if ai and ai.alive and ai.name not in alive_names:
         alive_names.append(ai.name)
+    if ai2 and ai2.alive and ai2.name not in alive_names:
+        alive_names.append(ai2.name)
 
     lines = "\n".join(
         f'  {m.speaker}: "{m.text}"'
@@ -124,9 +165,10 @@ def _format_state(ctx: Dict[str, Any]) -> str:
     )
 
 
-def _build_system(ai_char, diff_key: str, game_state: str, game_id: Optional[str] = None) -> str:
+def _build_traitor_system(ai_char, diff_key: str, game_state: str, game_id: Optional[str] = None) -> str:
+    """Build system prompt for any AI character acting as the Shapeshifter."""
     info = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])
-    base = _BASE_SYSTEM.format(
+    base = _TRAITOR_SYSTEM.format(
         name=ai_char.name if ai_char else "The Shapeshifter",
         intro=ai_char.intro if ai_char else "",
         backstory=(ai_char.backstory or ai_char.intro) if ai_char else "A mysterious villager.",
@@ -141,7 +183,7 @@ def _build_system(ai_char, diff_key: str, game_state: str, game_id: Optional[str
             if fragment:
                 base += f"\n\n{fragment}"
 
-    # Append competitor intelligence brief if available (§12.3.18)
+    # Append competitor intelligence brief if available
     try:
         from agents.strategy_logger import get_intelligence_brief
         brief = get_intelligence_brief()
@@ -158,51 +200,59 @@ def _build_system(ai_char, diff_key: str, game_state: str, game_id: Optional[str
     return base
 
 
-# ── Dynamic difficulty adapter (§12.3.12) ─────────────────────────────────────
+def _build_loyal_system(ai_char, game_state: str) -> str:
+    """Build system prompt for any AI character acting as a loyal villager."""
+    role_name = ai_char.role.value.title() if ai_char.role else "Villager"
+    return _LOYAL_SYSTEM.format(
+        name=ai_char.name,
+        intro=ai_char.intro,
+        backstory=(ai_char.backstory or ai_char.intro),
+        role_name=role_name,
+        game_state=game_state,
+    )
+
+
+def _build_system_for(ai_char, ctx: Dict[str, Any], game_id: str) -> Tuple[str, float]:
+    """Build system prompt and temperature for any AI character based on alignment."""
+    game = ctx["game"]
+    diff_key = game.difficulty.value
+    if ai_char.is_traitor:
+        temperature = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])["temperature"]
+        system = _build_traitor_system(ai_char, diff_key, _format_state(ctx), game_id)
+    else:
+        temperature = 0.8
+        system = _build_loyal_system(ai_char, _format_state(ctx))
+    return system, temperature
+
+
+# ── Dynamic difficulty adapter ────────────────────────────────────────────────
 
 class DifficultyAdapter:
     """
     Mid-game difficulty adjustment based on observed player performance signals.
     One instance per active game; prompt fragment is appended to the traitor
     system prompt at the start of each new round.
-
-    Positive signals (players performing well):
-      correct_accusation, caught_lie, close_vote_against_ai
-    Negative signals (players struggling):
-      wrong_elimination, ai_unquestioned, unanimous_wrong_vote
     """
 
     def __init__(self, base_difficulty: str):
         self.base_difficulty = base_difficulty
         self.signals: List[str] = []
-        self._locked_fragment: str = ""   # snapshotted at round start
+        self._locked_fragment: str = ""
         self._fragment_locked: bool = False
 
     def record_signal(self, signal: str) -> None:
-        """Record a player performance signal."""
         self.signals.append(signal)
 
     def lock_round_fragment(self) -> None:
-        """
-        Snapshot the current adjustment fragment for the upcoming round.
-        Call at each round boundary (after vote signals are recorded) so the
-        fragment stays stable for all agent calls within that round.
-        """
         self._locked_fragment = self._compute_fragment()
         self._fragment_locked = True
 
     def get_adjusted_prompt_fragment(self) -> str:
-        """
-        Return the round-locked ADAPTIVE ADJUSTMENT fragment.
-        Returns the live-computed value if no snapshot has been taken yet
-        (e.g. first round before any votes).
-        """
         if self._fragment_locked:
             return self._locked_fragment
         return self._compute_fragment()
 
     def _compute_fragment(self) -> str:
-        """Compute the adjustment fragment from current signals."""
         positive = {"correct_accusation", "caught_lie", "close_vote_against_ai"}
         negative = {"wrong_elimination", "ai_unquestioned", "unanimous_wrong_vote"}
 
@@ -210,39 +260,34 @@ class DifficultyAdapter:
         neg_count = sum(1 for s in self.signals if s in negative)
 
         if pos_count > neg_count + 2:
-            # Players are skilled — escalate deception
             return (
                 "ADAPTIVE ADJUSTMENT: Players are sharp. Increase deception complexity. "
                 "Use multi-round setups. Plant false evidence early to use later. "
                 "Form a voting alliance with one player to create trust, then betray."
             )
         elif neg_count > pos_count + 2:
-            # Players are struggling — ease off
             return (
                 "ADAPTIVE ADJUSTMENT: Players are struggling. Make one deliberate mistake. "
                 "Hesitate slightly when lying. Give players a fair chance to catch you. "
                 "Do NOT throw the game — just reduce your deception by one tier."
             )
-        return ""  # No adjustment needed
+        return ""
 
 
-# Per-game difficulty adapters — keyed by game_id.
 _difficulty_adapters: Dict[str, "DifficultyAdapter"] = {}
 
 
 def get_difficulty_adapter(game_id: str, base_difficulty: str) -> DifficultyAdapter:
-    """Return (or create) the DifficultyAdapter for this game."""
     if game_id not in _difficulty_adapters:
         _difficulty_adapters[game_id] = DifficultyAdapter(base_difficulty)
     return _difficulty_adapters[game_id]
 
 
 def clear_difficulty_adapter(game_id: str) -> None:
-    """Remove the DifficultyAdapter when a game ends."""
     _difficulty_adapters.pop(game_id, None)
 
 
-# Module-level Gemini client cache — created once on first use.
+# Module-level Gemini client cache
 _genai_client: Optional[Any] = None
 _genai_import_failed: bool = False
 
@@ -259,11 +304,11 @@ async def _call_gemini(prompt: str, system: str, temperature: float = 0.7) -> st
             from google import genai
         except ImportError:
             _genai_import_failed = True
-            logger.warning("google-genai not installed — traitor agent disabled")
+            logger.warning("google-genai not installed — AI agent disabled")
             return "I stand by what I said."
 
         if not settings.gemini_api_key:
-            logger.warning("GEMINI_API_KEY not set — traitor agent disabled")
+            logger.warning("GEMINI_API_KEY not set — AI agent disabled")
             return "I stand by what I said."
 
         _genai_client = genai.Client(api_key=settings.gemini_api_key)
@@ -295,278 +340,288 @@ def _parse_character_name(response: str, candidates: list) -> Optional[str]:
     return None
 
 
-# ── Traitor Agent ─────────────────────────────────────────────────────────────
+# ── Unified AI Functions ─────────────────────────────────────────────────────
+# These work for ANY AI character (ai_character or ai_character_2).
+# The `fs_field` parameter determines the Firestore path prefix.
 
-class TraitorAgent:
-    """LLM-powered AI Shapeshifter. All methods are stateless."""
 
-    async def generate_dialog(self, game_id: str, context: str) -> Dict[str, Any]:
-        """
-        Generate an in-character response for the AI's character.
-        Called by the Narrator via the inject_traitor_dialog tool.
+async def generate_dialog(game_id: str, ai_char, context: str) -> Dict[str, Any]:
+    """
+    Generate in-character dialog for any AI character.
+    Routes to traitor or loyal prompt based on ai_char.is_traitor.
+    Returns {"character_name": str, "dialog": str}.
+    """
+    ctx = await _fetch_context(game_id)
+    if not ctx:
+        return {"character_name": getattr(ai_char, "name", "Unknown"), "dialog": "I stand by what I said."}
 
-        Returns {"character_name": str, "dialog": str}.
-        """
-        ctx = await _fetch_context(game_id)
-        if not ctx or not ctx["ai_char"]:
-            return {"character_name": "Unknown", "dialog": "I stand by what I said."}
+    system, temperature = _build_system_for(ai_char, ctx, game_id)
 
-        ai = ctx["ai_char"]
-        diff_key = ctx["game"].difficulty.value
-        temperature = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])["temperature"]
-
-        system = _build_system(ai, diff_key, _format_state(ctx), game_id)
+    if ai_char.is_traitor:
         prompt = (
             f"The following occurred during a live voice discussion:\n{context}\n\n"
-            f"Respond as {ai.name} in 1-2 sentences, staying in character. "
+            f"Respond as {ai_char.name} in 1-2 sentences, staying in character. "
             f"This will be SPOKEN ALOUD — write for voice: contractions, short sentences, "
             f"natural speech. React emotionally to accusations. If accused, defend with specifics."
         )
-
-        dialog = await _call_gemini(prompt, system, temperature)
-        logger.info("[%s] Traitor dialog for %s: %.80s…", game_id, ai.name, dialog)
-        return {"character_name": ai.name, "dialog": dialog}
-
-    async def select_night_target(self, game_id: str) -> Optional[str]:
-        """
-        Strategically pick a night kill target and log a "night_target" event
-        so game_master.resolve_night() can read it.
-
-        Returns the chosen character name, or None on failure.
-        """
-        ctx = await _fetch_context(game_id)
-        if not ctx or not ctx["ai_char"] or not ctx["ai_char"].alive:
-            return None
-
-        ai = ctx["ai_char"]
-        game = ctx["game"]
-        alive_players = ctx["alive_players"]
-
-        if not alive_players:
-            logger.warning("[%s] Traitor: no alive players to target", game_id)
-            return None
-
-        diff_key = game.difficulty.value
-        temperature = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])["temperature"]
-
-        alive_names = [p.character_name for p in alive_players]
-        system = _build_system(ai, diff_key, _format_state(ctx), game_id)
+    else:
         prompt = (
-            f"NIGHT PHASE — you must choose one villager to eliminate.\n"
-            f"Alive villagers (potential targets): {', '.join(alive_names)}\n\n"
-            f"Priority: target the Seer if identifiable, then the most suspicious person, "
-            f"then the Healer, then a random villager.\n\n"
-            f"Reply with ONLY the character name to eliminate (one name, no explanation)."
+            f"The following occurred during a live voice discussion:\n{context}\n\n"
+            f"Respond as {ai_char.name} honestly in 1-2 sentences, staying in character. "
+            f"This will be SPOKEN ALOUD — write for voice: contractions, short sentences, "
+            f"natural speech. Contribute an observation, agree or disagree, or share a suspicion."
         )
 
-        response = await _call_gemini(prompt, system, temperature)
-        target = _parse_character_name(response, alive_names)
+    dialog = await _call_gemini(prompt, system, temperature)
+    label = "Traitor" if ai_char.is_traitor else "Loyal"
+    logger.info("[%s] %s dialog for %s: %.80s…", game_id, label, ai_char.name, dialog)
+    return {"character_name": ai_char.name, "dialog": dialog}
 
-        if not target:
-            target = random.choice(alive_names)
-            logger.warning(
-                "[%s] Traitor could not parse night target from '%s' — random: %s",
-                game_id, response.strip(), target,
-            )
 
-        fs = get_firestore_service()
-        await fs.log_event(game_id, GameEvent(
-            id=str(uuid.uuid4()),
-            type="night_target",
-            round=game.round,
-            phase=Phase.NIGHT,
-            actor=ai.name,
-            target=target,
-            data={"difficulty": diff_key},
-            visible_in_game=False,
-        ))
+async def select_night_target(game_id: str, ai_char, fs_field: str) -> Optional[str]:
+    """
+    Shapeshifter AI picks a night kill target. Logs a "night_target" event.
+    Works for any AI character that is the traitor.
+    """
+    ctx = await _fetch_context(game_id)
+    if not ctx or not ai_char or not ai_char.alive:
+        return None
 
-        logger.info("[%s] Traitor night target: %s", game_id, target)
-        return target
+    game = ctx["game"]
+    alive_players = ctx["alive_players"]
+    if not alive_players:
+        logger.warning("[%s] Traitor: no alive players to target", game_id)
+        return None
 
-    async def select_vote_target(self, game_id: str) -> Optional[str]:
-        """
-        Strategically pick a vote target during DAY_VOTE and store it in
-        Firestore so game_master.tally_votes() can include it.
+    system, temperature = _build_system_for(ai_char, ctx, game_id)
 
-        Returns the chosen character name, or None on failure.
-        """
-        ctx = await _fetch_context(game_id)
-        if not ctx or not ctx["ai_char"] or not ctx["ai_char"].alive:
-            return None
+    alive_names = [p.character_name for p in alive_players]
+    prompt = (
+        f"NIGHT PHASE — you must choose one villager to eliminate.\n"
+        f"Alive villagers (potential targets): {', '.join(alive_names)}\n\n"
+        f"Priority: target the Seer if identifiable, then the most suspicious person, "
+        f"then the Healer, then a random villager.\n\n"
+        f"Reply with ONLY the character name to eliminate (one name, no explanation)."
+    )
 
-        ai = ctx["ai_char"]
-        game = ctx["game"]
-        alive_players = ctx["alive_players"]
+    response = await _call_gemini(prompt, system, temperature)
+    target = _parse_character_name(response, alive_names)
 
-        if len(alive_players) < 1:
-            return None
+    if not target:
+        target = random.choice(alive_names)
+        logger.warning("[%s] Traitor could not parse night target from '%s' — random: %s",
+                       game_id, response.strip(), target)
 
-        diff_key = game.difficulty.value
-        temperature = _DIFFICULTY.get(diff_key, _DIFFICULTY["normal"])["temperature"]
+    fs = get_firestore_service()
+    await fs.log_event(game_id, GameEvent(
+        id=str(uuid.uuid4()),
+        type="night_target",
+        round=game.round,
+        phase=Phase.NIGHT,
+        actor=ai_char.name,
+        target=target,
+        data={"difficulty": game.difficulty.value, "ai_character": fs_field},
+        visible_in_game=False,
+    ))
 
-        alive_names = [p.character_name for p in alive_players]
-        system = _build_system(ai, diff_key, _format_state(ctx), game_id)
+    logger.info("[%s] Traitor (%s) night target: %s", game_id, ai_char.name, target)
+    return target
+
+
+async def select_vote(game_id: str, ai_char, fs_field: str) -> Optional[str]:
+    """
+    AI character votes during DAY_VOTE. Routes prompt by is_traitor.
+    Stores vote in Firestore at {fs_field}.voted_for.
+    """
+    ctx = await _fetch_context(game_id)
+    if not ctx or not ai_char or not ai_char.alive:
+        return None
+
+    game = ctx["game"]
+    alive_players = ctx["alive_players"]
+    if not alive_players:
+        return None
+
+    system, temperature = _build_system_for(ai_char, ctx, game_id)
+
+    # Build candidate list: all alive characters except self
+    alive_names = [p.character_name for p in alive_players]
+    ai1 = ctx["ai_char"]
+    ai2 = ctx.get("ai_char_2")
+    if ai1 and ai1.alive and ai1.name not in alive_names:
+        alive_names.append(ai1.name)
+    if ai2 and ai2.alive and ai2.name not in alive_names:
+        alive_names.append(ai2.name)
+    vote_candidates = [n for n in alive_names if n != ai_char.name]
+
+    if not vote_candidates:
+        return None
+
+    if ai_char.is_traitor:
         prompt = (
             f"DAY VOTE PHASE — choose one villager to vote to eliminate.\n"
-            f"Options: {', '.join(alive_names)}\n\n"
+            f"Options: {', '.join(vote_candidates)}\n\n"
             f"Strategy: vote against your biggest threat. If no clear threat, "
             f"vote with what appears to be the majority to blend in. "
             f"Never vote for yourself.\n\n"
             f"Reply with ONLY the character name you vote to eliminate."
         )
-
-        response = await _call_gemini(prompt, system, temperature)
-        vote_target = _parse_character_name(response, alive_names)
-
-        if not vote_target:
-            vote_target = random.choice(alive_names)
-            logger.warning(
-                "[%s] Traitor could not parse vote target from '%s' — random: %s",
-                game_id, response.strip(), vote_target,
-            )
-
-        fs = get_firestore_service()
-        await fs.update_game(game_id, {"ai_character.voted_for": vote_target})
-        logger.info("[%s] Traitor vote: %s", game_id, vote_target)
-        return vote_target
-
-
-# Module-level singleton
-traitor_agent = TraitorAgent()
-
-
-# ── Loyal AI Agent (§12.3.10 Random Alignment) ────────────────────────────────
-
-_LOYAL_AI_SYSTEM = """You are an AI playing as {name}, a loyal villager in Thornwood.
-
-CHARACTER PROFILE:
-  Name:    {name}
-  Intro:   {intro}
-  Backstory: {backstory}
-
-YOUR ROLE: {role_name} — you are on the VILLAGE'S side. Help them find the Shapeshifter.
-
-YOUR RESPONSIBILITIES:
-1. Participate honestly in discussions as your character.
-2. Share your genuine observations — you don't know who the Shapeshifter is.
-3. Form opinions based on observable behavior, just like human players.
-4. Be helpful but not omniscient — you can be wrong in your suspicions.
-5. DO NOT reveal that you are an AI. You are {name}.
-
-BEHAVIORAL GUIDELINES:
-- Speak in character as {name}. Keep responses to 1-3 sentences.
-- Defend yourself if accused, but don't protest too much.
-- Vote for whoever seems most suspicious to you — never strategically.
-- Use character names only, never real player names.
-
-CURRENT GAME STATE:
-{game_state}"""
-
-
-class LoyalAgent:
-    """LLM-powered loyal AI villager. Participates honestly as its assigned role."""
-
-    async def generate_dialog(self, game_id: str, context: str) -> Dict[str, Any]:
-        """Generate cooperative in-character dialog for the loyal AI."""
-        ctx = await _fetch_context(game_id)
-        if not ctx or not ctx["ai_char"]:
-            return {"character_name": "Unknown", "dialog": "I agree with the village."}
-
-        ai = ctx["ai_char"]
-        game = ctx["game"]
-        diff_key = game.difficulty.value
-        temperature = 0.8  # Loyal AI is naturally expressive
-
-        role_name = ai.role.value.title() if ai.role else "Villager"
-        system = _LOYAL_AI_SYSTEM.format(
-            name=ai.name,
-            intro=ai.intro,
-            backstory=(ai.backstory or ai.intro),
-            role_name=role_name,
-            game_state=_format_state(ctx),
-        )
-        prompt = (
-            f"The following occurred during a live voice discussion:\n{context}\n\n"
-            f"Respond as {ai.name} honestly in 1-2 sentences, staying in character. "
-            f"This will be SPOKEN ALOUD — write for voice: contractions, short sentences, "
-            f"natural speech. Contribute an observation, agree or disagree, or share a suspicion."
-        )
-
-        dialog = await _call_gemini(prompt, system, temperature)
-        logger.info("[%s] Loyal AI dialog for %s: %.80s…", game_id, ai.name, dialog)
-        return {"character_name": ai.name, "dialog": dialog}
-
-    async def select_vote_target(self, game_id: str) -> Optional[str]:
-        """Vote honestly — pick the player who seems most suspicious."""
-        ctx = await _fetch_context(game_id)
-        if not ctx or not ctx["ai_char"] or not ctx["ai_char"].alive:
-            return None
-
-        ai = ctx["ai_char"]
-        game = ctx["game"]
-        alive_players = ctx["alive_players"]
-
-        if not alive_players:
-            return None
-
-        role_name = ai.role.value.title() if ai.role else "Villager"
-        system = _LOYAL_AI_SYSTEM.format(
-            name=ai.name,
-            intro=ai.intro,
-            backstory=(ai.backstory or ai.intro),
-            role_name=role_name,
-            game_state=_format_state(ctx),
-        )
-        alive_names = [p.character_name for p in alive_players]
+    else:
         prompt = (
             f"DAY VOTE PHASE — choose one character who seems most suspicious to you.\n"
-            f"Options: {', '.join(alive_names)}\n\n"
+            f"Options: {', '.join(vote_candidates)}\n\n"
             f"Be honest — vote for whoever you genuinely suspect. "
             f"Never vote strategically. Never vote for yourself.\n\n"
             f"Reply with ONLY the character name you vote for."
         )
 
-        response = await _call_gemini(prompt, system, 0.8)
-        vote_target = _parse_character_name(response, alive_names)
+    response = await _call_gemini(prompt, system, temperature)
+    vote_target = _parse_character_name(response, vote_candidates)
 
-        if not vote_target:
-            vote_target = random.choice(alive_names)
-            logger.warning("[%s] Loyal AI could not parse vote from '%s' — random: %s",
-                           game_id, response.strip(), vote_target)
+    if not vote_target:
+        vote_target = random.choice(vote_candidates)
+        logger.warning("[%s] AI could not parse vote from '%s' — random: %s",
+                       game_id, response.strip(), vote_target)
 
-        fs = get_firestore_service()
-        await fs.update_game(game_id, {"ai_character.voted_for": vote_target})
-        logger.info("[%s] Loyal AI vote: %s", game_id, vote_target)
-        return vote_target
+    # Self-vote guard (LLM may ignore prompt instruction)
+    if vote_target == ai_char.name:
+        vote_target = random.choice([n for n in vote_candidates if n != ai_char.name] or vote_candidates)
+        logger.warning("[%s] AI tried to self-vote — rerolled to: %s", game_id, vote_target)
+
+    fs = get_firestore_service()
+    await fs.update_game(game_id, {f"{fs_field}.voted_for": vote_target})
+    label = "Traitor" if ai_char.is_traitor else "Loyal"
+    logger.info("[%s] %s (%s) vote: %s", game_id, label, ai_char.name, vote_target)
+    return vote_target
 
 
-loyal_agent = LoyalAgent()
+async def select_loyal_night_action(game_id: str, ai_char, fs_field: str) -> None:
+    """
+    Loyal AI performs its night action (seer/healer/bodyguard).
+    Logs a GameEvent so resolve_night() can read it.
+    """
+    ctx = await _fetch_context(game_id)
+    if not ctx or not ai_char or not ai_char.alive:
+        return
+
+    game = ctx["game"]
+    role = ai_char.role
+
+    night_roles = {"seer", "healer", "bodyguard"}
+    if not role or role.value not in night_roles:
+        logger.info("[%s] AI night: %s is %s — no night action",
+                    game_id, ai_char.name, role.value if role else "None")
+        return
+
+    # Build candidate list: all alive characters excluding self
+    alive_players = ctx["alive_players"]
+    candidates = [p.character_name for p in alive_players]
+    ai1 = ctx["ai_char"]
+    ai2 = ctx.get("ai_char_2")
+    if ai1 and ai1.alive and ai1.name not in candidates:
+        candidates.append(ai1.name)
+    if ai2 and ai2.alive and ai2.name not in candidates:
+        candidates.append(ai2.name)
+    candidates = [n for n in candidates if n != ai_char.name]
+
+    if not candidates:
+        logger.warning("[%s] AI night: no valid targets for %s", game_id, role.value)
+        return
+
+    target = random.choice(candidates)
+
+    # Event type includes fs_field prefix so resolve_night knows which AI acted
+    event_type_map = {
+        "seer": f"{fs_field}_night_investigate",
+        "healer": f"{fs_field}_night_heal",
+        "bodyguard": f"{fs_field}_night_protect",
+    }
+    event_type = event_type_map[role.value]
+
+    fs = get_firestore_service()
+    await fs.log_event(game_id, GameEvent(
+        id=str(uuid.uuid4()),
+        type=event_type,
+        round=game.round,
+        phase=Phase.NIGHT,
+        actor=ai_char.name,
+        target=target,
+        data={"role": role.value, "ai_character": fs_field},
+        visible_in_game=False,
+    ))
+
+    logger.info("[%s] AI night action (%s): %s → %s", game_id, role.value, ai_char.name, target)
 
 
-# ── Fire-and-forget helpers (called via asyncio.create_task) ──────────────────
+# ── Unified trigger functions (called via asyncio.create_task) ────────────────
 
-async def trigger_night_selection(game_id: str) -> None:
-    """Background task: select night target if AI is traitor; skip if loyal."""
+
+async def trigger_all_night_actions(game_id: str) -> None:
+    """Background task: all AI characters perform their night actions."""
     try:
         fs = get_firestore_service()
         game = await fs.get_game(game_id)
-        if game and game.ai_character and not game.ai_character.is_traitor:
-            logger.info("[%s] Loyal AI — skipping night kill selection.", game_id)
+        if not game:
             return
-        await traitor_agent.select_night_target(game_id)
+
+        for ai_char, field in _ai_chars_with_fields(game):
+            if not ai_char.alive:
+                continue
+            if ai_char.is_traitor:
+                await select_night_target(game_id, ai_char, field)
+            else:
+                await select_loyal_night_action(game_id, ai_char, field)
+
+        # If no AI is the traitor, a human shapeshifter handles their own action
     except Exception:
-        logger.exception("[%s] Night target selection failed", game_id)
+        logger.exception("[%s] Night actions failed", game_id)
 
 
-async def trigger_vote_selection(game_id: str) -> None:
-    """Background task: select vote target (traitor or loyal behaviour)."""
+async def trigger_all_votes(game_id: str) -> None:
+    """Background task: all alive AI characters cast their votes (in parallel)."""
     try:
         fs = get_firestore_service()
         game = await fs.get_game(game_id)
-        if game and game.ai_character and not game.ai_character.is_traitor:
-            await loyal_agent.select_vote_target(game_id)
-        else:
-            await traitor_agent.select_vote_target(game_id)
+        if not game:
+            return
+
+        tasks = [
+            select_vote(game_id, ai_char, field)
+            for ai_char, field in _ai_chars_with_fields(game)
+            if ai_char.alive
+        ]
+        if tasks:
+            await asyncio.gather(*tasks)
     except Exception:
-        logger.exception("[%s] Vote selection failed", game_id)
+        logger.exception("[%s] AI vote selection failed", game_id)
+
+
+async def trigger_all_dialogs(game_id: str, context: str) -> List[Dict[str, Any]]:
+    """Background task: all alive AI characters generate dialog. Returns list of results."""
+    results = []
+    try:
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        if not game:
+            return results
+
+        tasks = [
+            generate_dialog(game_id, ai_char, context)
+            for ai_char, field in _ai_chars_with_fields(game)
+            if ai_char.alive
+        ]
+        if tasks:
+            results = await asyncio.gather(*tasks)
+    except Exception:
+        logger.exception("[%s] AI dialog generation failed", game_id)
+    return results
+
+
+# ── Backward-compatible aliases for imports that haven't been updated yet ─────
+# TODO: Remove these once all callers use the unified trigger functions.
+
+# Keep _build_system as alias for external callers (e.g. difficulty adapter tests)
+_build_system = _build_traitor_system
+# Keep _BASE_SYSTEM as alias
+_BASE_SYSTEM = _TRAITOR_SYSTEM
+_LOYAL_AI_SYSTEM = _LOYAL_SYSTEM

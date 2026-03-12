@@ -56,8 +56,9 @@ export function useWebSocket(gameId, playerId) {
               })),
             })
           }
-          if (msg.gameState.aiCharacter) {
-            dispatch({ type: 'SET_AI_CHARACTER', aiCharacter: msg.gameState.aiCharacter })
+          const aiChars = [msg.gameState.aiCharacter, msg.gameState.aiCharacter2].filter(Boolean)
+          if (aiChars.length > 0) {
+            dispatch({ type: 'SET_AI_CHARACTERS', aiCharacters: aiChars })
           }
           if (msg.gameState.inPersonMode !== undefined) {
             dispatch({ type: 'SET_IN_PERSON_MODE', inPersonMode: msg.gameState.inPersonMode })

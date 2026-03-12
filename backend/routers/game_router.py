@@ -27,7 +27,7 @@ from services.firestore_service import get_firestore_service
 from agents.role_assigner import role_assigner
 from agents.game_master import game_master
 from agents.narrator_agent import narrator_manager, build_phase_prompt
-from agents.traitor_agent import trigger_night_selection
+from agents.traitor_agent import trigger_all_night_actions
 from routers.ws_router import manager as ws_manager
 
 logger = logging.getLogger(__name__)
@@ -231,7 +231,7 @@ async def start_game(
     # Persist phase=NIGHT / round=1 to Firestore before broadcasting
     await game_master.advance_phase(game_id)
     # Fire traitor night selection for Round 1 in the background
-    asyncio.create_task(trigger_night_selection(game_id))
+    asyncio.create_task(trigger_all_night_actions(game_id))
 
     # Broadcast phase_change → NIGHT and send private role cards via WebSocket
     await ws_manager.broadcast_game_start(game_id, assignment["assignments"])
@@ -317,8 +317,6 @@ async def get_result(game_id: str):
         raise HTTPException(status_code=403, detail="Game has not finished yet")
 
     all_players = await fs.get_all_players(game_id)
-    ai_char = game.ai_character
-
     reveals = [
         {
             "characterName": p.character_name,
@@ -328,16 +326,14 @@ async def get_result(game_id: str):
         }
         for p in all_players
     ]
-    if ai_char:
-        ai_reveal_role = "shapeshifter" if getattr(ai_char, "is_traitor", True) else ai_char.role.value
-        reveals.append({
-            "characterName": ai_char.name,
-            "playerName": "AI",
-            "role": ai_reveal_role,
-            "alive": ai_char.alive,
-            "isAI": True,
-            "isTraitor": getattr(ai_char, "is_traitor", True),
-        })
+    for ai in [game.ai_character, game.ai_character_2]:
+        if ai:
+            reveals.append({
+                "characterName": ai.name,
+                "playerName": ai.name,
+                "role": "shapeshifter" if ai.is_traitor else (ai.role.value if ai.role else "villager"),
+                "alive": ai.alive,
+            })
 
     # Build timeline from all events (including hidden)
     all_events = await fs.get_events(game_id, visible_only=False)

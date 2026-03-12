@@ -276,12 +276,12 @@ function StoryLogPanel({ logRef, storyLog, myCharacterName }) {
 }
 
 
-function CharacterGridPanel({ players, myCharacterName, aiCharacter }) {
+function CharacterGridPanel({ players, myCharacterName, aiCharacters = [] }) {
   const all = players
-    .map(p => ({ name: p.characterName, alive: p.alive, isAI: false }))
+    .map(p => ({ name: p.characterName, alive: p.alive }))
     .filter(c => c.name)
-  if (aiCharacter?.name) {
-    all.push({ name: aiCharacter.name, alive: aiCharacter.alive !== false, isAI: true })
+  for (const ai of aiCharacters) {
+    if (ai?.name) all.push({ name: ai.name, alive: ai.alive !== false })
   }
 
   if (all.length === 0) return null
@@ -310,7 +310,7 @@ function CharacterGridPanel({ players, myCharacterName, aiCharacter }) {
               }}
             >
               <div style={{ fontSize: '1.25rem', marginBottom: 4 }}>
-                {c.alive ? (c.isAI ? '🤖' : isMe ? '🙂' : '🧑') : '💀'}
+                {c.alive ? (isMe ? '🙂' : '🧑') : '💀'}
               </div>
               <div
                 style={{
@@ -884,7 +884,7 @@ export default function GameScreen() {
   const { state, dispatch } = useGame()
   const {
     playerId, playerName, phase, characterName, round, isHost,
-    players, aiCharacter, storyLog, role, isEliminated,
+    players, aiCharacters, storyLog, role, isEliminated,
     nightActionSubmitted, hunterRevengeNeeded, clueSent,
     showRoleReveal, nightTargets, voteCandidates, timerSeconds,
     currentSpeaker, currentSpeakerId,
@@ -1009,10 +1009,10 @@ export default function GameScreen() {
     )
   }
 
-  // Night action candidates: all alive characters (including AI)
+  // Night action candidates: all alive characters (including AIs)
   const aliveCharacters = [
     ...players.filter(p => p.alive && p.characterName).map(p => p.characterName),
-    ...(aiCharacter?.alive ? [aiCharacter.name] : []),
+    ...aiCharacters.filter(ai => ai?.alive).map(ai => ai.name),
   ]
 
   const handleChat = (e) => {
@@ -1332,7 +1332,7 @@ export default function GameScreen() {
           <CharacterGridPanel
             players={players}
             myCharacterName={characterName}
-            aiCharacter={aiCharacter}
+            aiCharacters={aiCharacters}
           />
         )}
 

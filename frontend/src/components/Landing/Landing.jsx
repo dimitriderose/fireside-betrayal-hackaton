@@ -15,7 +15,7 @@ const STEPS = [
   {
     icon: '☀️',
     title: 'Dawn & Debate',
-    desc: 'Argue, accuse, and defend. The AI plays alongside you — and lies convincingly.',
+    desc: 'Argue, accuse, and defend. Someone at the table is lying convincingly.',
   },
   {
     icon: '🗳️',
@@ -24,8 +24,8 @@ const STEPS = [
   },
   {
     icon: '🎯',
-    title: 'Unmask the AI',
-    desc: "Find the Shapeshifter before it's too late. One voice at the table is not human.",
+    title: 'Unmask the Traitor',
+    desc: "Find the Shapeshifter before it's too late. One voice at the table cannot be trusted.",
   },
 ]
 
@@ -60,7 +60,7 @@ const SHAPESHIFTER = {
   icon: '🐺',
   name: 'Shapeshifter',
   color: 'var(--accent)',
-  desc: 'You ARE the AI. Blend in, deceive, eliminate. Can you win before they unmask you?',
+  desc: 'You ARE the Shapeshifter. Blend in, deceive, eliminate. Can you win before they unmask you?',
 }
 
 export default function Landing() {
@@ -129,7 +129,7 @@ export default function Landing() {
             marginBottom: 10,
           }}
         >
-          One of you is an AI. Trust no one.
+          One of you is the Shapeshifter. Trust no one.
         </p>
         <p
           style={{
