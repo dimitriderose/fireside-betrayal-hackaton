@@ -37,19 +37,6 @@ class GameMaster:
         4: {"easy": "easy", "normal": "easy", "hard": "normal"},
     }
 
-    # ── Minimum satisfying game length ────────────────────────────────────────
-
-    # Minimum rounds before a shapeshifter win can be declared.
-    # Prevents 4-player games from ending in round 1 after one elimination.
-    # Shapeshifter-eliminated (villager win) always ends the game immediately.
-    MINIMUM_ROUNDS: Dict[int, int] = {
-        3: 3,   # 15–20 min
-        4: 3,   # 15–20 min
-        5: 3,   # 20–25 min
-        6: 4,   # 25–30 min
-        7: 4,   # 25–35 min
-        8: 5,   # 30–40 min
-    }
 
     EXPECTED_DURATION_DISPLAY: Dict[int, str] = {
         3: "15–20 minutes",
@@ -162,6 +149,7 @@ class GameMaster:
 
         # Determine which AI (if any) is the traitor shapeshifter
         ai_traitor = None
+        human_shapeshifter = None
         for ai in [ai_char, ai_char_2]:
             if ai and ai.alive and ai.is_traitor:
                 ai_traitor = ai
@@ -357,7 +345,7 @@ class GameMaster:
                 type="night_kill_attempt",
                 round=game.round,
                 phase=Phase.NIGHT,
-                actor=ai_traitor.name if ai_traitor else (ai_char.name if ai_char else "shapeshifter"),
+                actor=ai_traitor.name if ai_traitor else (human_shapeshifter.character_name if human_shapeshifter else "shapeshifter"),
                 target=shapeshifter_target,
                 data={
                     "blocked": shapeshifter_target != result.get("killed") and not result.get("bodyguard_sacrifice"),
@@ -553,9 +541,8 @@ class GameMaster:
         """
         Check if the game is over.
 
-        Villagers win: the shapeshifter is eliminated (always immediate, no round floor).
-        Shapeshifter wins: non-shapeshifter alive ≤ 1, AND the game has reached the
-          minimum round count for this player size (prevents 1-round finishes).
+        Villagers win: the shapeshifter is eliminated (immediate).
+        Shapeshifter wins: non-shapeshifter alive ≤ 1 (immediate).
 
         Returns None if game continues, or:
         {
@@ -615,34 +602,16 @@ class GameMaster:
                 non_shapeshifter_alive += 1
 
         # ── Shapeshifter win: non-shapeshifter alive ≤ 1 ──────────────────
+        # Guard: in small games (≤4 players), require at least round 2 so
+        # players always experience at least one full discussion+vote cycle.
         if non_shapeshifter_alive <= 1:
-            if non_shapeshifter_alive == 0:
-                # Nobody left to oppose — immediate win
-                return {
-                    "winner": "shapeshifter",
-                    "reason": (
-                        "The Shapeshifter has eliminated enough villagers to seize Thornwood. "
-                        "The village falls into darkness."
-                    ),
-                }
-
-            # 1 non-shapeshifter left — check minimum round floor.
             total_players = len(game.character_cast)
-            if total_players not in self.MINIMUM_ROUNDS:
-                logger.warning(
-                    "[%s] check_win_condition: unrecognised player count %d — "
-                    "MINIMUM_ROUNDS and ROLE_DISTRIBUTION are out of sync",
-                    game_id, total_players,
-                )
-            min_rounds = self.MINIMUM_ROUNDS.get(total_players, 3)
-            current_round = game.round
-
-            if current_round < min_rounds:
+            if total_players <= 4 and game.round < 2:
                 logger.info(
-                    "[%s] Shapeshifter win deferred — round %d < minimum %d for %d players",
-                    game_id, current_round, min_rounds, total_players,
+                    "[%s] Shapeshifter win deferred — round %d < 2 for %d-player game",
+                    game_id, game.round, total_players,
                 )
-                return None  # Game continues until minimum rounds reached
+                return None
 
             return {
                 "winner": "shapeshifter",

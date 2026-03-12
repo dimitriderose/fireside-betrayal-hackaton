@@ -17,7 +17,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from config import settings
-from models.game import Difficulty, GameEvent, Phase
+from models.game import ChatMessage, Difficulty, GameEvent, Phase
 from services.firestore_service import get_firestore_service
 
 logger = logging.getLogger(__name__)
@@ -694,7 +694,9 @@ async def trigger_all_votes(game_id: str) -> None:
 
 
 async def trigger_all_dialogs(game_id: str, context: str) -> List[Dict[str, Any]]:
-    """Background task: all alive AI characters generate dialog. Returns list of results."""
+    """Background task: all alive AI characters generate dialog, broadcast + persist."""
+    from routers.ws_router import manager as ws_manager
+
     results = []
     try:
         fs = get_firestore_service()
@@ -702,13 +704,35 @@ async def trigger_all_dialogs(game_id: str, context: str) -> List[Dict[str, Any]
         if not game:
             return results
 
-        tasks = [
-            generate_dialog(game_id, ai_char, context)
-            for ai_char, field in _ai_chars_with_fields(game)
-            if ai_char.alive
-        ]
-        if tasks:
-            results = await asyncio.gather(*tasks)
+        for ai_char, field in _ai_chars_with_fields(game):
+            if not ai_char.alive:
+                continue
+            result = await generate_dialog(game_id, ai_char, context)
+            results.append(result)
+
+            # Persist to Firestore
+            try:
+                ai_msg = ChatMessage(
+                    speaker=result["character_name"],
+                    text=result["dialog"],
+                    source="player",
+                    phase=game.phase,
+                    round=game.round,
+                )
+                await fs.add_chat_message(game_id, ai_msg)
+            except Exception:
+                logger.warning("[%s] trigger_all_dialogs: failed to persist for %s",
+                               game_id, result["character_name"], exc_info=True)
+
+            # Broadcast to all players — source="player" so indistinguishable from humans
+            await ws_manager.broadcast_transcript(
+                game_id,
+                speaker=result["character_name"],
+                text=result["dialog"],
+                source="player",
+            )
+            logger.info("[%s] AI dialog broadcast: %s said: %.80s…",
+                        game_id, result["character_name"], result["dialog"])
     except Exception:
         logger.exception("[%s] AI dialog generation failed", game_id)
     return results
