@@ -1,5 +1,31 @@
 # Fireside: Betrayal — Deployment Guide
 
+## Quick Deploy (One Command)
+
+```bash
+# Set your credentials
+export GOOGLE_CLOUD_PROJECT=your-gcp-project-id
+export GEMINI_API_KEY=your-gemini-api-key
+
+# Option A: Deploy with gcloud CLI
+./deploy.sh
+
+# Option B: Deploy with Terraform IaC
+./deploy.sh --terraform
+```
+
+This handles everything: enables APIs, builds the Docker image via Cloud Build, deploys to Cloud Run with WebSocket session affinity, and sets CORS automatically.
+
+**Automation files in this repo:**
+| File | Purpose |
+|------|---------|
+| [`deploy.sh`](../deploy.sh) | One-command deploy script (gcloud or Terraform) |
+| [`cloudbuild.yaml`](../cloudbuild.yaml) | Cloud Build CI/CD pipeline (build → push → deploy) |
+| [`Dockerfile`](../Dockerfile) | Multi-stage container build (Node 18 + Python 3.11) |
+| [`terraform/`](../terraform/) | Infrastructure-as-code (APIs, Firestore, Artifact Registry, Cloud Run, IAM) |
+
+---
+
 ## Prerequisites
 
 | Tool | Version | Purpose |
@@ -344,11 +370,12 @@ fireside-betrayal-hackaton/
 
 > **Hackathon bonus:** This section demonstrates automated cloud deployment using infrastructure-as-code.
 
-Instead of running the manual `gcloud` commands in Part 2, you can provision everything with a single `terraform apply`. The Terraform config in `terraform/` creates:
+Instead of running the manual `gcloud` commands in Part 2, you can provision everything with a single `terraform apply` (or use `./deploy.sh --terraform`). The Terraform config in `terraform/` creates:
 
 - All required GCP API enablements
 - Cloud Firestore database
 - Artifact Registry repository
+- Cloud Build trigger (auto-deploy on push to `main` via `cloudbuild.yaml`)
 - Cloud Run service with session affinity (WebSocket support)
 - Public IAM policy (unauthenticated access)
 

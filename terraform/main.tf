@@ -59,20 +59,20 @@ resource "google_artifact_registry_repository" "docker" {
 # If you prefer manual builds, comment this out and use:
 #   gcloud builds submit --tag $IMAGE_URL
 
-# resource "google_cloudbuild_trigger" "deploy" {
-#   name     = "fireside-deploy"
-#   filename = "cloudbuild.yaml"
-#
-#   github {
-#     owner = "dimitriderose"
-#     name  = "fireside-betrayal-hackaton"
-#     push {
-#       branch = "^main$"
-#     }
-#   }
-#
-#   depends_on = [google_project_service.apis]
-# }
+resource "google_cloudbuild_trigger" "deploy" {
+  name     = "fireside-deploy"
+  filename = "cloudbuild.yaml"
+
+  github {
+    owner = "dimitriderose"
+    name  = "fireside-betrayal-hackaton"
+    push {
+      branch = "^main$"
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
 
 # ── Cloud Run service ────────────────────────────────────────────────────────
 
@@ -92,6 +92,7 @@ resource "google_cloud_run_v2_service" "fireside" {
     }
 
     session_affinity = true  # Critical for WebSocket connections
+    timeout          = "3600s"  # 1 hour — WebSocket games can run long
 
     containers {
       image = local.image_url

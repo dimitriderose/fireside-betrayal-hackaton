@@ -1,0 +1,61 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Fireside: Betrayal — Cloud Build CI/CD Pipeline
+# Builds the Docker image, pushes to Artifact Registry, and deploys to Cloud Run.
+# Triggered on push to main (via Terraform google_cloudbuild_trigger or manually).
+#
+# Manual trigger:
+#   gcloud builds submit --config=cloudbuild.yaml --substitutions=_REGION=us-central1
+# ──────────────────────────────────────────────────────────────────────────────
+
+steps:
+  # Step 1: Build Docker image (multi-stage: Node frontend + Python backend)
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal:$SHORT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal:latest'
+      - '.'
+
+  # Step 2: Push both tags to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal'
+
+  # Step 3: Deploy to Cloud Run with session affinity (required for WebSocket)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'fireside-betrayal'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal:$SHORT_SHA'
+      - '--region'
+      - '${_REGION}'
+      - '--port'
+      - '8000'
+      - '--memory'
+      - '1Gi'
+      - '--cpu'
+      - '1'
+      - '--min-instances'
+      - '0'
+      - '--max-instances'
+      - '10'
+      - '--session-affinity'
+      - '--timeout'
+      - '3600'
+      - '--no-cpu-throttling'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'GOOGLE_CLOUD_PROJECT=$PROJECT_ID,DEBUG=false'
+
+substitutions:
+  _REGION: us-central1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
