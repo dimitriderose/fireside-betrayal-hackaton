@@ -26,6 +26,8 @@
   --radius-full: 9999px;
 
   --transition: 200ms ease;
+
+  --header-height: 49px;
 }
 
 /* ===== Reset ===== */
@@ -380,4 +382,133 @@ a:hover { text-decoration: underline; }
   font-style: italic;
   line-height: 1.55;
   margin: 0;
+}
+
+/* ===== Character Roster ===== */
+
+/* Mobile icon strip: horizontal row of character head icons */
+.roster-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  position: sticky;
+  top: var(--header-height);
+  z-index: 9;
+  scrollbar-width: none;
+}
+.roster-strip::-webkit-scrollbar { display: none; }
+
+.roster-strip-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--border);
+  font-size: 0.875rem;
+  position: relative;
+  cursor: default;
+}
+.roster-strip-icon--me {
+  border-color: var(--border-accent);
+  box-shadow: 0 0 6px var(--accent-glow, rgba(255, 107, 53, 0.3));
+}
+.roster-strip-icon--dead {
+  opacity: 0.45;
+  border-color: var(--danger, #ef4444);
+  border-style: dashed;
+}
+
+
+/* Desktop sidebar — hidden on mobile */
+.roster-sidebar {
+  display: none;
+}
+
+/* Layout wrapper — no-op on mobile */
+.game-layout {
+  display: contents;
+}
+
+.roster-sidebar-title {
+  font-family: var(--font-heading);
+  font-size: 0.6875rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
+
+.roster-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  margin-bottom: 2px;
+}
+.roster-sidebar-item--me {
+  background: rgba(255, 107, 53, 0.08);
+  border: 1px solid var(--border-accent);
+}
+.roster-sidebar-item--dead .roster-sidebar-item__name {
+  text-decoration: line-through;
+}
+.roster-sidebar-item--dead {
+  opacity: 0.35;
+}
+.roster-sidebar-item__icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+.roster-sidebar-item__name {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  word-break: break-word;
+  line-height: 1.3;
+}
+.roster-sidebar-item--me .roster-sidebar-item__name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ===== Desktop breakpoint ===== */
+@media (min-width: 768px) {
+  .game-layout {
+    display: flex;
+    flex-direction: row;
+    min-height: 100vh;
+  }
+
+  .roster-sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 160px;
+    flex-shrink: 0;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    padding: calc(var(--header-height) + 11px) 10px 10px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    z-index: 8;
+  }
+
+  .roster-strip {
+    display: none;
+  }
+
+  .game-layout > .page {
+    flex: 1;
+    min-width: 0;
+  }
 }

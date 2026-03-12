@@ -567,7 +567,6 @@ class GameMaster:
         # The shapeshifter could be: ai_character (is_traitor), ai_character_2
         # (is_traitor), or a human player with role=SHAPESHIFTER.
         shapeshifter_alive = False
-        shapeshifter_is_human = False
 
         for ai in [ai_char, ai_char_2]:
             if ai and ai.alive and ai.is_traitor:
@@ -579,7 +578,6 @@ class GameMaster:
         )
         if human_shapeshifter:
             shapeshifter_alive = True
-            shapeshifter_is_human = True
 
         # ── Villager win: shapeshifter eliminated ──────────────────────────
         if not shapeshifter_alive:
@@ -601,18 +599,9 @@ class GameMaster:
             if ai and ai.alive and not ai.is_traitor:
                 non_shapeshifter_alive += 1
 
-        # ── Shapeshifter win: non-shapeshifter alive ≤ 1 ──────────────────
-        # Guard: in small games (≤4 players), require at least round 2 so
-        # players always experience at least one full discussion+vote cycle.
+        # ── Shapeshifter win: parity (≤1 innocent vs shapeshifter) ─────────
+        # At 1v1 the village can no longer outvote the shapeshifter → game over.
         if non_shapeshifter_alive <= 1:
-            total_players = len(game.character_cast)
-            if total_players <= 4 and game.round < 2:
-                logger.info(
-                    "[%s] Shapeshifter win deferred — round %d < 2 for %d-player game",
-                    game_id, game.round, total_players,
-                )
-                return None
-
             return {
                 "winner": "shapeshifter",
                 "reason": (
