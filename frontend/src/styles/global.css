@@ -404,17 +404,27 @@ a:hover { text-decoration: underline; }
 
 .roster-strip-icon {
   flex-shrink: 0;
-  width: 32px;
-  height: 32px;
+  width: 68px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-full);
+  gap: 2px;
+  padding: 4px 2px 2px;
+  border-radius: var(--radius);
   background: var(--bg-elevated);
   border: 1.5px solid var(--border);
   font-size: 0.875rem;
   position: relative;
   cursor: default;
+}
+.roster-strip-name {
+  font-size: 0.6rem;
+  line-height: 1.15;
+  max-width: 64px;
+  text-align: center;
+  color: var(--text-dim);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 .roster-strip-icon--me {
   border-color: var(--border-accent);

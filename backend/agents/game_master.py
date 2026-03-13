@@ -238,6 +238,12 @@ class GameMaster:
         # protect the same target (target lives, bodyguard is spared).
         # Bodyguard only sacrifices when Healer is NOT also protecting that target.
         # Actual DB elimination is deferred to the caller via eliminate_character().
+        #
+        # Defense in depth: re-verify target is still alive.  In the unlikely event
+        # of a race condition this prevents a double-kill.
+        if shapeshifter_target and shapeshifter_target not in all_alive_names:
+            logger.warning(f"[{game_id}] Kill target {shapeshifter_target} no longer alive — aborting kill")
+            shapeshifter_target = None
         if shapeshifter_target:
             if shapeshifter_target == protected_target:
                 # Healer blocks: nobody dies

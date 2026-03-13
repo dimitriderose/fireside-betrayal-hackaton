@@ -6,7 +6,7 @@ function buildCharacterList(players = [], myCharacterName, aiCharacters = []) {
     .map(p => ({ name: p.characterName, alive: p.alive }))
     .filter(c => c.name)
   for (const ai of aiCharacters) {
-    if (ai?.name) all.push({ name: ai.name, alive: ai.alive === true })
+    if (ai?.name) all.push({ name: ai.name, alive: ai.alive !== false })
   }
   return all
 }
@@ -35,8 +35,9 @@ export function RosterIconStrip({ players, myCharacterName, aiCharacters }) {
           !c.alive && 'roster-strip-icon--dead',
         ].filter(Boolean).join(' ')
         return (
-          <div key={c.name} className={cls} title={shortName(c.name)}>
+          <div key={c.name} className={cls} title={c.name}>
             {icon(c, isMe)}
+            <span className="roster-strip-name">{shortName(c.name)}</span>
           </div>
         )
       })}
@@ -48,7 +49,14 @@ export function RosterIconStrip({ players, myCharacterName, aiCharacters }) {
 
 export function RosterSidebar({ players, myCharacterName, aiCharacters }) {
   const all = buildCharacterList(players, myCharacterName, aiCharacters)
-  if (all.length === 0) return null
+
+  if (all.length === 0) {
+    return (
+      <aside className="roster-sidebar">
+        <div className="roster-sidebar-title" style={{ opacity: 0.5 }}>Loading...</div>
+      </aside>
+    )
+  }
 
   return (
     <aside className="roster-sidebar">

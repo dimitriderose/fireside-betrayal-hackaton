@@ -190,6 +190,10 @@ def reset_tracker(game_id: str) -> None:
 # the membership test and the add(), so no interleaving is possible.
 _resolving_votes: Set[str] = set()
 
+# Games whose night resolution is currently in progress.
+# Guards against double-kill when action submission and timeout fire concurrently.
+_resolving_nights: Set[str] = set()
+
 # Vote timeout tasks — one per active day_vote phase.
 # Cancelled when votes resolve normally; fires _resolve_vote_and_advance after 60s
 # to prevent a game hanging indefinitely if a player disconnects mid-vote.
@@ -299,7 +303,7 @@ def _cancel_narrator_timeout(game_id: str) -> None:
 # Night action timeout — auto-resolves night if not all players have submitted.
 # Fires BEFORE narrator's 60s timeout so night resolution happens properly.
 _night_action_timeout_tasks: Dict[str, asyncio.Task] = {}
-_NIGHT_ACTION_TIMEOUT = 30  # seconds
+_NIGHT_ACTION_TIMEOUT = 45  # seconds (allows time for AI Gemini RPC)
 
 
 async def _night_action_timeout(game_id: str, delay: int) -> None:
@@ -721,14 +725,30 @@ class ConnectionManager:
     async def broadcast_phase_change(
         self, game_id: str, phase: Phase, round: Optional[int] = None
     ) -> None:
+        fs = get_firestore_service()
         if round is None:
-            _game = await get_firestore_service().get_game(game_id)
+            _game = await fs.get_game(game_id)
             round = _game.round if _game else 0
+
+        # Include ALL players (alive + dead) so roster shows 💀 for eliminated
+        all_players = await fs.get_all_players(game_id)
+        game = await fs.get_game(game_id)
+        ai_char = game.ai_character if game else None
+        ai_char_2 = getattr(game, 'ai_character_2', None) if game else None
 
         msg: dict = {
             "type": "phase_change",
             "phase": phase.value,
             "round": round,
+            "players": [p.to_public() for p in all_players],
+            "aiCharacter": (
+                {"name": ai_char.name, "alive": ai_char.alive}
+                if ai_char else None
+            ),
+            "aiCharacter2": (
+                {"name": ai_char_2.name, "alive": ai_char_2.alive}
+                if ai_char_2 else None
+            ),
         }
 
         await self.broadcast(game_id, msg, reliable=True)
@@ -908,7 +928,7 @@ async def websocket_endpoint(
     # Refresh player AND game (character_name / phase set after game start)
     game = await fs.get_game(game_id)
     player = await fs.get_player(game_id, playerId)
-    alive_players = await fs.get_alive_players(game_id)
+    all_players = await fs.get_all_players(game_id)
     ai_char = await fs.get_ai_character(game_id)
 
     # Private "connected" message with game snapshot
@@ -924,7 +944,7 @@ async def websocket_endpoint(
             "round": game.round,
             "status": game.status.value,
             "characterCast": game.character_cast,
-            "players": [p.to_public() for p in alive_players],
+            "players": [p.to_public() for p in all_players],
             "aiCharacter": (
                 {"name": ai_char.name, "alive": ai_char.alive}
                 if ai_char else None
@@ -949,7 +969,7 @@ async def websocket_endpoint(
 
     # Send per-player candidate list if we're in a phase that needs it
     if game.phase in (Phase.NIGHT, Phase.DAY_VOTE) and player.alive and player.character_name:
-        all_names = [p.character_name for p in alive_players if p.character_name]
+        all_names = [p.character_name for p in all_players if p.character_name and p.alive]
         all_names.extend(_alive_ai_names(game))
         candidates = [n for n in all_names if n != player.character_name]
         msg_type = "night_targets" if game.phase == Phase.NIGHT else "vote_candidates"
@@ -1546,71 +1566,81 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
     # Cancel night action timeout — we're resolving now (prevents double-fire)
     _cancel_night_action_timeout(game_id)
 
-    from agents.game_master import game_master
+    # Concurrency guard — prevents double-kill when action submission and
+    # timeout fire concurrently (same pattern as _resolving_votes).
+    if game_id in _resolving_nights:
+        logger.warning("[%s] Night resolution already in progress — skipping duplicate", game_id)
+        return
+    _resolving_nights.add(game_id)
 
-    night_result = await game_master.resolve_night(game_id)
-    killed = night_result.get("killed")
-
-    if killed:
-        # eliminate_character handles the DB write, clears votes, and logs the
-        # elimination event. by_vote=False marks it as a night kill.
-        elim_result = await game_master.eliminate_character(game_id, killed, by_vote=False)
-
-        await manager.broadcast_elimination(
-            game_id,
-            character_name=killed,
-            was_traitor=elim_result["was_traitor"],
-            role=elim_result["role"],
-            needs_hunter_revenge=night_result.get("hunter_triggered", False),
-        )
-
-        win = await game_master.check_win_condition(game_id)
-        if win:
-            await _end_game(game_id, win["winner"], win["reason"], fs)
-            return
-
-    # Deliver seer/drunk investigation result privately
-    seer_result = night_result.get("seer_result")
-    if seer_result:
-        investigating_player_id = seer_result.get("investigating_player_id")
-        if investigating_player_id:
-            is_shapeshifter = seer_result["is_shapeshifter"]
-            target_char = seer_result["character"]
-            result_text = (
-                f"{target_char} IS the Shapeshifter!"
-                if is_shapeshifter
-                else f"{target_char} is NOT the Shapeshifter."
-            )
-            await manager.send_to(game_id, investigating_player_id, {
-                "type": "seer_result",
-                "character": target_char,
-                "isShapeshifter": is_shapeshifter,
-                "text": result_text,
-            })
-
-    # Record caught_lie signal if Seer (non-drunk) correctly identified the Shapeshifter
     try:
-        from agents.traitor_agent import get_difficulty_adapter
-        game_for_signal = await fs.get_game(game_id)
-        if game_for_signal:
-            night_events = await fs.get_events(game_id, round=game_for_signal.round)
-            for ev in night_events:
-                if (ev.type == "night_investigation"
-                        and not ev.data.get("is_drunk")
-                        and ev.data.get("result") is True):
-                    # A non-drunk Seer correctly identified the Shapeshifter
-                    adapter = get_difficulty_adapter(game_id, game_for_signal.difficulty.value)
-                    adapter.record_signal("caught_lie")
-                    break  # count at most once per round
-    except Exception:
-        logger.warning("[%s] Could not check seer result for caught_lie signal", game_id, exc_info=True)
+        from agents.game_master import game_master
 
-    # Tell narrator what happened — it will narrate then call advance_phase
-    await narrator_manager.send_phase_event(game_id, "night_resolved", {
-        "eliminated": killed,
-        "protected": night_result.get("protected"),
-        "hunter_triggered": night_result.get("hunter_triggered", False),
-    })
+        night_result = await game_master.resolve_night(game_id)
+        killed = night_result.get("killed")
+
+        if killed:
+            # eliminate_character handles the DB write, clears votes, and logs the
+            # elimination event. by_vote=False marks it as a night kill.
+            elim_result = await game_master.eliminate_character(game_id, killed, by_vote=False)
+
+            await manager.broadcast_elimination(
+                game_id,
+                character_name=killed,
+                was_traitor=elim_result["was_traitor"],
+                role=elim_result["role"],
+                needs_hunter_revenge=night_result.get("hunter_triggered", False),
+            )
+
+            win = await game_master.check_win_condition(game_id)
+            if win:
+                await _end_game(game_id, win["winner"], win["reason"], fs)
+                return
+
+        # Deliver seer/drunk investigation result privately
+        seer_result = night_result.get("seer_result")
+        if seer_result:
+            investigating_player_id = seer_result.get("investigating_player_id")
+            if investigating_player_id:
+                is_shapeshifter = seer_result["is_shapeshifter"]
+                target_char = seer_result["character"]
+                result_text = (
+                    f"{target_char} IS the Shapeshifter!"
+                    if is_shapeshifter
+                    else f"{target_char} is NOT the Shapeshifter."
+                )
+                await manager.send_to(game_id, investigating_player_id, {
+                    "type": "seer_result",
+                    "character": target_char,
+                    "isShapeshifter": is_shapeshifter,
+                    "text": result_text,
+                })
+
+        # Record caught_lie signal if Seer (non-drunk) correctly identified the Shapeshifter
+        try:
+            from agents.traitor_agent import get_difficulty_adapter
+            game_for_signal = await fs.get_game(game_id)
+            if game_for_signal:
+                night_events = await fs.get_events(game_id, round=game_for_signal.round)
+                for ev in night_events:
+                    if (ev.type == "night_investigation"
+                            and not ev.data.get("is_drunk")
+                            and ev.data.get("result") is True):
+                        # A non-drunk Seer correctly identified the Shapeshifter
+                        adapter = get_difficulty_adapter(game_id, game_for_signal.difficulty.value)
+                        adapter.record_signal("caught_lie")
+                        break  # count at most once per round
+        except Exception:
+            logger.warning("[%s] Could not check seer result for caught_lie signal", game_id, exc_info=True)
+
+        # Tell narrator what happened — it will narrate then call advance_phase
+        await narrator_manager.send_phase_event(game_id, "night_resolved", {
+            "eliminated": killed,
+            "protected": night_result.get("protected"),
+            "hunter_triggered": night_result.get("hunter_triggered", False),
+        })
+    finally:
+        _resolving_nights.discard(game_id)
 
 
 async def _on_hunter_revenge(

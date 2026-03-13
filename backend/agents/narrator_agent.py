@@ -437,7 +437,20 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             import time
             from routers.ws_router import _phase_timer_start_times, MIN_DISCUSSION_SECONDS
             start_time = _phase_timer_start_times.get(game_id)
-            if start_time:
+            if not start_time:
+                # Timer was never started — narrator skipped start_phase_timer.
+                # Reject and tell it to call start_phase_timer first.
+                logger.warning("[%s] Narrator tried to advance discussion without starting timer", game_id)
+                session = narrator_manager._sessions.get(game_id)
+                if session:
+                    await session.send(
+                        "[SYSTEM] You must call start_phase_timer first before advancing. "
+                        "Players need time to discuss. Call start_phase_timer now."
+                    )
+                return {
+                    "error": "Discussion timer not started. Call start_phase_timer first.",
+                }
+            else:
                 elapsed = time.time() - start_time
                 remaining = int(MIN_DISCUSSION_SECONDS - elapsed)
                 if remaining > 0:
@@ -1065,12 +1078,16 @@ class NarratorSession:
                 name = ai_char.name if ai_char else ""
                 if not name or not ai_char.alive:
                     continue
-                # Match the first name as a whole word (not substring)
-                first_name = name.lower().split()[0] if name else ""
-                if len(first_name) < 3:
+                # Match ANY word in the character name (≥3 chars) as a whole word.
+                # Players say "Kael" or "Seraphina", not "Cartographer" or "Chapel".
+                name_words = [w for w in name.lower().split() if len(w) >= 3]
+                if not name_words:
                     continue
-                # Use word boundary check: first name must appear as whole word
-                if not re.search(r'\b' + re.escape(first_name) + r'\b', text_lower):
+                matched = any(
+                    re.search(r'\b' + re.escape(w) + r'\b', text_lower)
+                    for w in name_words
+                )
+                if not matched:
                     continue
                 # Cooldown: 30s per character
                 last_reply = self._ai_reply_cooldown.get(name, 0)

@@ -121,8 +121,26 @@ export function useWebSocket(gameId, playerId) {
         break
 
       case 'phase_change':
-        // msg: { type, phase, [round], [timer_seconds], [seq] }
+        // msg: { type, phase, [round], [timer_seconds], [players], [aiCharacter], [aiCharacter2], [seq] }
         dispatch({ type: 'PHASE_CHANGE', phase: msg.phase, round: msg.round, timerSeconds: msg.timer_seconds })
+        if (msg.players) {
+          dispatch({
+            type: 'UPDATE_PLAYERS',
+            players: msg.players.map(p => ({
+              id: p.id,
+              characterName: p.character_name ?? p.characterName ?? '',
+              alive: p.alive ?? true,
+              connected: p.connected ?? true,
+              ready: p.ready ?? false,
+            })),
+          })
+        }
+        if (msg.aiCharacter || msg.aiCharacter2) {
+          const aiChars = [msg.aiCharacter, msg.aiCharacter2].filter(Boolean)
+          if (aiChars.length > 0) {
+            dispatch({ type: 'SET_AI_CHARACTERS', aiCharacters: aiChars })
+          }
+        }
         break
 
       case 'timer_start':
