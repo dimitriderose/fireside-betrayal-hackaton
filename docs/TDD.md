@@ -4,7 +4,7 @@
 **Category:** 🗣️ Live Agents
 **Author:** Software Architecture Team
 **Companion Document:** PRD — Fireside — Betrayal v1.0
-**Version:** 5.0 | March 12, 2026 *(updated to reflect: separate audio WebSocket `/ws/audio/{game_id}` with raw binary PCM frames, push-to-talk speaker lock with TOCTOU-safe claim + auto-release, per-player priority queues in ConnectionManager, phase timer improvements with narrator-driven `start_phase_timer` tool + 15s safety fallback, WebSocket keepalive re-enabled, Shapeshifter skip via `skip_night_kill` message)*
+**Version:** 5.1 | March 12, 2026 *(updated to reflect: Ghost Council dead-player chat system, Séance phase, haunt actions, concurrency guards for night resolution, AI auto-reply system, discussion timer enforcement, simplified win condition (parity), responsive roster panel, phase change data sync improvements)*
 
 ---
 
@@ -12,7 +12,7 @@
 
 This Technical Design Document specifies the implementation architecture for Fireside — Betrayal, a real-time voice-first multiplayer social deduction game powered by the Gemini Live API, Google ADK, and Google Cloud. It translates the PRD's product requirements into concrete engineering decisions, API contracts, data models, code structure, and deployment specifications.
 
-**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern.
+**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern. **v5.1 additions:** Ghost Council dead-player chat system (`ghost_message` WS type, GhostRealmPanel), Séance phase (conditional ghost testimony when dead >= 2 and dead >= total/2), haunt actions (dead player night accusations), concurrency guards (`_resolving_nights` set, alive check in resolve_night), AI auto-reply system (`_maybe_trigger_ai_reply` with name-match regex and 30s cooldown), discussion timer enforcement (rejects advance_phase without start_phase_timer), simplified win condition (parity: non_shapeshifter_alive <= 1), responsive roster architecture (RosterPanel with RosterSidebar/RosterIconStrip at 768px breakpoint), and phase change data sync (full roster + AI chars in phase_change messages).
 
 **Out of scope:** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). P3 features are additive and do not affect core architecture.
 
@@ -373,17 +373,22 @@ class GamePhase(Enum):
     DAY_DISCUSSION = "day_discussion"
     DAY_VOTE = "day_vote"
     ELIMINATION = "elimination"
+    SEANCE = "seance"          # v5.1: Ghost testimony phase
     GAME_OVER = "game_over"
 
 class GameMasterAgent(BaseAgent):
     """Deterministic game logic engine. No LLM calls."""
-    
+
     PHASE_TRANSITIONS = {
         GamePhase.SETUP: GamePhase.NIGHT,
         GamePhase.NIGHT: GamePhase.DAY_DISCUSSION,
         GamePhase.DAY_DISCUSSION: GamePhase.DAY_VOTE,
         GamePhase.DAY_VOTE: GamePhase.ELIMINATION,
-        GamePhase.ELIMINATION: GamePhase.NIGHT,  # or GAME_OVER
+        GamePhase.ELIMINATION: GamePhase.NIGHT,  # or GAME_OVER or SEANCE
+        # v5.1: Séance triggers conditionally from ELIMINATION when
+        # dead_count >= 2 AND dead_count >= total_players / 2.
+        # After séance completes, transitions to NIGHT.
+        GamePhase.SEANCE: GamePhase.NIGHT,
     }
     
     # **Implementation Update:** Role distribution is a list-based format keyed by
@@ -518,9 +523,10 @@ class GameMasterAgent(BaseAgent):
     async def check_win_condition(self, game_id: str) -> dict:
         """Check if game is over.
 
-        **Implementation Update (v4.0):** Iterates ai_characters[] array to find
-        traitor AI characters. Checks if ALL traitor AIs are eliminated (villagers
-        win) or if traitors outnumber/equal villagers (shapeshifter wins).
+        **Implementation Update (v5.1 — simplified parity win):** Shapeshifter
+        wins when non_shapeshifter_alive <= 1 (parity). No round guard — the
+        shapeshifter wins immediately at 1v1. The old <= 4 player round-2
+        requirement has been removed.
         """
         alive = await firestore_client.get_alive_players(game_id)
         ai_chars = await firestore_client.get_ai_characters(game_id)
@@ -533,11 +539,11 @@ class GameMasterAgent(BaseAgent):
             return {"game_over": True, "winner": "villagers",
                     "reason": "The shapeshifter has been identified and eliminated!"}
 
-        village_alive = len([p for p in alive if p["role"] != "shapeshifter"])
-        village_alive += sum(1 for ai in ai_chars if ai["alive"] and not ai.get("is_traitor"))
+        # v5.1: Simplified parity — shapeshifter wins at non_shapeshifter_alive <= 1
+        non_shapeshifter_alive = len([p for p in alive if p["role"] != "shapeshifter"])
+        non_shapeshifter_alive += sum(1 for ai in ai_chars if ai["alive"] and not ai.get("is_traitor"))
 
-        traitor_count = sum(1 for ai in ai_chars if ai["alive"] and ai.get("is_traitor"))
-        if traitor_count >= village_alive:
+        if non_shapeshifter_alive <= 1:
             return {"game_over": True, "winner": "shapeshifter",
                     "reason": "The shapeshifter has overtaken the village!"}
 
@@ -549,6 +555,15 @@ class GameMasterAgent(BaseAgent):
         **Implementation Update (v4.0):** Renamed from execute_night_actions().
         AI night actions are submitted via trigger_all_night_actions() before this
         function runs. Resolution order: Shapeshifter → Bodyguard check → Healer → Seer.
+
+        **Implementation Update (v5.1):**
+        - Concurrency guard: `_resolving_nights` set prevents double resolution.
+          If game_id is already in the set, returns early. Same pattern as
+          `_resolving_votes`.
+        - Defense-in-depth alive check: before applying kill, verifies target is
+          still alive in Firestore (prevents race with concurrent elimination).
+        - Night action timeout increased from 30s → 45s to accommodate AI Gemini
+          RPC latency.
 
         New in v4.0:
         - AI Bodyguard sacrifice: if an AI bodyguard guards the shapeshifter's
@@ -725,8 +740,8 @@ def start_phase_timer(game_id: str) -> dict:
     the server fires a safety fallback that starts the timer automatically. This
     prevents games from hanging indefinitely when the narrator is slow or silent.
 
-    Phase-specific timer values (v5.0 updated):
-    - night:          30s (down from 45s — night actions are faster without extra dialog)
+    Phase-specific timer values (v5.1 updated):
+    - night:          45s (reverted from 30s — AI Gemini RPC latency requires headroom)
     - day_discussion: dynamic (120–240s based on alive count — unchanged)
     - day_vote:       60s  (down from 90s — voting is a single tap)
 
@@ -857,9 +872,10 @@ async def run_night_phase(game: GameSession, game_id: str):
     await trigger_all_night_actions(game_id)
 
     # --- Step 3: Wait for human night actions ---
-    # Timeout is 30s (v5.0, down from 45s), started after narrator calls start_phase_timer.
+    # Timeout is 45s (v5.1, up from 30s to accommodate AI Gemini RPC latency).
+    # Started after narrator calls start_phase_timer.
     # 15s safety fallback fires if narrator does not call start_phase_timer in time.
-    await wait_for_night_actions(game_id, timeout_seconds=30)
+    await wait_for_night_actions(game_id, timeout_seconds=45)
 
     # --- Step 4: Resolve all night actions (deterministic) ---
     # resolve_night handles: shapeshifter kill, bodyguard sacrifice (human + AI),
@@ -1127,12 +1143,13 @@ Client (game WS)                Server              Client (audio WS)
 ```typescript
 // Server → Client messages
 type ServerMessage =
-  | { type: "connected"; playerId: string; characterName: string; gameState: GameState }
+  | { type: "connected"; playerId: string; characterName: string; gameState: GameState } // v5.1: sends ALL players (alive + dead) via get_all_players()
   | { type: "role"; role: Role; characterName: string; characterIntro: string; description: string } // PRIVATE
   | { type: "audio"; data: string; sampleRate: number }         // BROADCAST
   | { type: "transcript"; speaker: string; text: string }       // BROADCAST (speaker = character name)
   | { type: "input_transcript"; speaker: string; text: string } // BROADCAST — player mic voice transcript (§12.5.1)
-  | { type: "phase_change"; phase: GamePhase }                  // v5.0: timerSeconds removed; sent separately after narrator narrates
+  | { type: "phase_change"; phase: GamePhase;                    // v5.1: now includes full player roster + AI character data
+      players?: Player[]; aiCharacters?: AICharacter[] }           // Frontend dispatches UPDATE_PLAYERS + SET_AI_CHARACTERS
   | { type: "phase_timer_start"; phase: GamePhase; timerSeconds: number } // v5.0: narrator called start_phase_timer (or 15s fallback fired)
   | { type: "speaker_granted"; playerId: string }               // v5.0: PRIVATE — push-to-talk lock acquired
   | { type: "speaker_released"; playerId: string }              // v5.0: BROADCAST — another player's lock released
@@ -1151,6 +1168,11 @@ type ServerMessage =
       characterReveals: CharacterReveal[];                          // P0: character → player + role
       aiStrategyLog: AIStrategyEntry[];                             // P1: post-game reveal timeline
       storyRecap: string }
+  | { type: "ghost_message"; speaker: string; text: string;                  // v5.1: BROADCAST — dead player chat (source="ghost" in Firestore)
+      source: "ghost" }
+  | { type: "seance_start"; duration: number }                                // v5.1: BROADCAST — séance phase begins (45s push-to-talk for dead)
+  | { type: "seance_end" }                                                    // v5.1: BROADCAST — séance phase ends
+  | { type: "haunt_result"; ghostCharacter: string; accusedCharacter: string } // v5.1: BROADCAST — ghost haunt accusation (narrator incorporates)
   | { type: "error"; message: string; code: string }
 
 // P1: Spectator clue — eliminated player sends one-word hint
@@ -1192,6 +1214,8 @@ type ClientMessage =
   | { type: "skip_night_kill" }                                          // v5.0: Shapeshifter skips night kill (no target)
   | { type: "hunter_revenge"; target: string }                           // P1: Hunter's death target
   | { type: "shapeshifter_action"; target: string }                      // Human shapeshifter night kill (§12.5.5)
+  | { type: "ghost_message"; text: string }                              // v5.1: Dead player chat (rate-limited 2s per player)
+  | { type: "haunt_action"; target: string }                             // v5.1: Dead player accuses a living character during night
   | { type: "ready" }
   | { type: "ping" }
 
@@ -1376,6 +1400,10 @@ class GameSession:
         # v5.0: Phase timer state
         self._phase_timer_task: Optional[asyncio.Task] = None
         self._phase_timer_safety_task: Optional[asyncio.Task] = None
+
+        # v5.1: Concurrency guards — prevent double resolution
+        self._resolving_votes: Set[str] = set()   # game_ids currently resolving votes
+        self._resolving_nights: Set[str] = set()   # game_ids currently resolving night actions
 
     # --- Speaker lock management (v5.0) ---
 
@@ -1761,7 +1789,7 @@ fireside-db/
 ├── games/
 │   └── {gameId}/                          # 6-char alphanumeric code (ABCDEFGHJKLMNPQRSTUVWXYZ23456789)
 │       ├── status: string                 # "lobby" | "in_progress" | "finished"
-│       ├── phase: string                  # "setup" | "night" | "day_discussion" | "day_vote" | "elimination" | "game_over"
+│       ├── phase: string                  # "setup" | "night" | "day_discussion" | "day_vote" | "elimination" | "seance" | "game_over"
 │       ├── round: number                  # Current round (1-indexed)
 │       ├── difficulty: string             # "easy" | "normal" | "hard" — AI deception level
 │       ├── winner: string | null          # "villagers" | "shapeshifter" | "tanner" — set on game end
@@ -1816,6 +1844,8 @@ fireside-db/
 │       │       │                          # v4.0: "{fs_field}_night_{role}" pattern for AI night events
 │       │       │                          #   e.g. "ai_character_night_kill", "ai_character_2_night_heal"
 │       │       │                          # "ai_seer_result" (v4.0: AI Seer investigation result)
+│       │       │                          # "haunt_action" (v5.1: dead player accuses a living character)
+│       │       │                          # "ghost_dialog" (v5.1: AI ghost auto-generated dialog)
 │       │       ├── round: number          # Which round this event occurred in
 │       │       ├── phase: string          # Which phase
 │       │       ├── actor: string          # playerId | "ai" | "system"
@@ -1830,7 +1860,7 @@ fireside-db/
 │               ├── speaker: string        # Character name or "Narrator" (never real player name)
 │               ├── speaker_player_id: string | null  # Hidden: real player ID (for post-game reveal)
 │               ├── text: string           # Message content
-│               ├── source: string         # "typed" | "quick_reaction" | "narrator" | "ai_character"
+│               ├── source: string         # "typed" | "quick_reaction" | "narrator" | "ai_character" | "ghost" | "player"
 │               ├── phase: string          # When it was said
 │               ├── round: number
 │               └── timestamp: timestamp
@@ -2013,8 +2043,10 @@ App (GameProvider wraps all routes)
 │   ├── StoryLog (scrollable narrator transcript + chat messages)
 │   │   └── Day-phase contextual hint (one-time dismissible for first-timers)
 │   │
-│   ├── CharacterGridPanel (alive/dead indicators — character names only, NO AI slot)
-│   │   └── CharacterCard[] (name, alive, "You" badge on player's own card)
+│   ├── RosterPanel (v5.1: responsive character roster — replaces CharacterGridPanel)
+│   │   ├── RosterSidebar (desktop >= 768px: full vertical sidebar with character cards)
+│   │   ├── RosterIconStrip (mobile < 768px: compact horizontal avatar strip)
+│   │   └── buildCharacterList() (merges human players + AI characters, sorts alive-first)
 │   │
 │   ├── RoleStrip (bottom bar, always visible, expandable)
 │   │   ├── RoleIcon (8 roles: 🛡️ bodyguard, 🧶 tanner, 👁️ seer, etc.)
@@ -2029,6 +2061,11 @@ App (GameProvider wraps all routes)
 │   │   ├── CharacterVoteButton[] (alive characters)
 │   │   ├── CameraVote (in-person mode: host captures frame for hand count)
 │   │   └── VoteTally (live update)
+│   │
+│   ├── GhostRealmPanel (v5.1: dead player chat — translucent ethereal styling)
+│   │   ├── GhostChatInput (text input for ghost_message, 2s rate limit)
+│   │   ├── GhostMessageList (ghost chat history with spectral styling)
+│   │   └── HauntActionButton (night phase: accuse one living character)
 │   │
 │   └── useWebSocket hook (auto-reconnect, message dispatch to GameContext)
 │
@@ -2783,28 +2820,24 @@ EXPECTED_DURATION_DISPLAY = {
 }
 
 def check_win_condition(self, game_state: dict) -> dict | None:
-    """Check if game should end. Returns None if game continues."""
-    current_round = game_state["round"]
-    player_count = game_state["total_players"]
-    min_rounds = self.MINIMUM_ROUNDS.get(player_count, 3)
-    
-    alive_villagers = sum(1 for p in game_state["players"].values() 
+    """Check if game should end. Returns None if game continues.
+
+    **Implementation Update (v5.1 — simplified parity):**
+    Shapeshifter wins at parity: non_shapeshifter_alive <= 1.
+    No round guard — immediate win at 1v1.
+    Removed old <= 4 player round 2 requirement.
+    """
+    alive_villagers = sum(1 for p in game_state["players"].values()
                          if p["alive"] and p["role"] != "shapeshifter")
     ai_alive = game_state["ai_character"]["alive"]
-    
+
     # Standard win conditions
     if not ai_alive:
         return {"winner": "villagers", "reason": "Shapeshifter eliminated"}
+    # v5.1: Simplified parity — shapeshifter wins at non_shapeshifter_alive <= 1
     if alive_villagers <= 1:
         return {"winner": "shapeshifter", "reason": "Village overwhelmed"}
-    
-    # Minimum round enforcement — game continues even if it could 
-    # technically end (e.g., only 2 villagers left in round 1)
-    # EXCEPTION: If shapeshifter is eliminated, game always ends immediately
-    # This only prevents premature villager-loss endings
-    if current_round < min_rounds and alive_villagers > 1:
-        return None  # Game continues
-    
+
     return None  # No win condition met
 ```
 
@@ -4173,7 +4206,7 @@ A dedicated `_player_sender` coroutine per connection drains `control_queue` fir
 **Updated timeout values (v5.0):**
 | Phase | v4.0 timeout | v5.0 timeout | Notes |
 |-------|-------------|-------------|-------|
-| night | 45s | 30s | Night actions are a single tap; 30s is ample |
+| night | 45s | 45s | Reverted from 30s → 45s in v5.1 for AI Gemini RPC latency |
 | day_discussion | 120–240s | 120–240s | Unchanged (scaled to alive count) |
 | day_vote | 90s | 60s | Voting is a single tap; 60s is ample |
 
@@ -4212,6 +4245,99 @@ When a human player holds the shapeshifter role (via Random AI Alignment, §12.3
 - **Firestore write:** Logs a `shapeshifter_skip` event with `actor = player_id`. Records a night action with `action = "skip_night_kill", target = null`.
 - **Night resolution:** `resolve_night()` treats a null shapeshifter target as no kill — nobody is eliminated by the shapeshifter that night. Healer and Seer actions still resolve normally.
 - **Frontend:** A "Skip" button appears alongside the character selection grid for shapeshifter players during night phase. Tapping it sends `skip_night_kill` and hides the selection UI.
+
+# 12.7 v5.1 Architecture Additions (Shipped March 2026)
+
+The following features were added in v5.1. They introduce a dead-player engagement system, concurrency hardening, and frontend responsiveness improvements.
+
+## 12.7.1 Ghost Council / Dead Player System
+
+**Files:** `backend/routers/ws_router.py` (ghost_message handler), `backend/agents/traitor_agent.py` (AI ghost dialog), `frontend/src/components/Game/GhostRealmPanel.jsx`
+
+Dead players can communicate through a parallel "Ghost Council" chat channel:
+
+- **`ghost_message` WebSocket message type:** Dead players send `{ type: "ghost_message", text: "..." }`. The server validates the player is dead, applies a **2-second rate limit per player**, then broadcasts `{ type: "ghost_message", speaker: "<character_name>", text: "...", source: "ghost" }` to all connected players.
+- **Firestore persistence:** Ghost messages are stored in `games/{id}/chat` with `source: "ghost"`. This allows post-game review of ghost chatter.
+- **Dead AI ghost dialog:** Dead AI characters generate ghost dialog with ~30% probability per discussion round. The dialog is atmospheric and cryptic (e.g., "The shadows know who holds the blade..."). Generated via `generate_ghost_dialog()` in `traitor_agent.py`.
+- **GhostRealmPanel:** A frontend component that renders ghost chat in a distinct visual style (translucent, ethereal color scheme). Living players see ghost messages in a collapsed sidebar; dead players see the full panel as their primary interaction surface.
+
+## 12.7.2 Séance Phase
+
+**Files:** `backend/routers/ws_router.py` (séance orchestration), `backend/agents/narrator_agent.py` (séance narration prompt), `frontend/src/components/Game/GameScreen.jsx` (séance UI)
+
+A new phase in the game lifecycle that allows dead players to briefly address the living:
+
+- **Trigger condition:** Séance activates after ELIMINATION when `dead_count >= 2 AND dead_count >= total_players / 2`. This ensures séances only occur when enough players have died to make ghost testimony meaningful.
+- **Duration:** 45 seconds of push-to-talk re-enabled for dead players. Living players listen but cannot interrupt.
+- **Phase cycle:** ELIMINATION → SEANCE → NIGHT (conditional). If séance conditions are not met, the standard ELIMINATION → NIGHT transition applies.
+- **Narrator moderation:** The narrator introduces the séance with dramatic flavor ("The veil between worlds grows thin...") and moderates ghost testimony. A SYSTEM prompt instructs the narrator to call `start_phase_timer` after its séance introduction.
+- **Frontend:** Dead players' push-to-talk button is re-enabled during séance. A 45-second countdown is displayed. Living players see a "Séance in progress" overlay with ghost audio streaming.
+
+## 12.7.3 Haunt Actions (Dead Player Night Action)
+
+**Files:** `backend/routers/ws_router.py` (haunt_action handler), `backend/agents/traitor_agent.py` (AI ghost auto-accuse)
+
+Dead players can influence the game during the night phase:
+
+- **Mechanic:** Each dead player (human or AI) can accuse one living character per round during the night phase via `{ type: "haunt_action", target: "<character_name>" }`.
+- **Storage:** Haunt actions are stored as `haunt_action` events in Firestore with `actor` = ghost character name, `target` = accused living character.
+- **Narrator integration:** The narrator incorporates haunt accusations into the next discussion phase narration: "The spirits grow restless... whispers from beyond accuse [character]."
+- **AI ghosts:** Dead AI characters auto-accuse based on game events analysis. Traitor AI ghosts try to deflect suspicion from the living shapeshifter. Loyal AI ghosts accuse the character they most suspect.
+- **Rate limit:** One haunt action per dead player per night round.
+
+## 12.7.4 AI Auto-Reply System
+
+**Files:** `backend/agents/narrator_agent.py` (`NarratorSession._maybe_trigger_ai_reply`)
+
+AI characters can now respond organically when mentioned by name during discussion:
+
+- **Trigger:** `_maybe_trigger_ai_reply()` is called on each transcript flush from the Gemini Live API. It scans the transcript for any word (>= 3 characters) matching an AI character's name using whole-word regex (`\b{word}\b`, case-insensitive).
+- **Cooldown:** 30-second cooldown per AI character. Only one AI reply is generated per transcript flush to prevent dialog flooding.
+- **Broadcast:** AI replies are broadcast as `{ type: "transcript", speaker: "<ai_character_name>", text: "..." }` with `source: "player"` in Firestore chat collection — indistinguishable from human player messages.
+- **Persistence:** Replies are written to the `games/{id}/chat` subcollection with `source: "player"` for consistency with the hide-AI-identity pattern.
+
+## 12.7.5 Discussion Timer Enforcement
+
+**Files:** `backend/routers/ws_router.py` (`handle_advance_phase`)
+
+Guard in `handle_advance_phase()` prevents premature phase advancement:
+
+- **Rule:** Rejects `advance_phase` calls during `DAY_DISCUSSION` if `start_phase_timer` has not been called yet.
+- **Narrator feedback:** When rejected, the server sends a SYSTEM message to the narrator instructing it to call `start_phase_timer`: "You must call start_phase_timer before advancing the phase. Players need time to discuss."
+- **Constant:** `MIN_DISCUSSION_SECONDS = 45` — the minimum elapsed time before the timer can start (existing guard from v5.0, now enforced as a prerequisite for phase advancement).
+
+## 12.7.6 Responsive Roster Architecture
+
+**Files:** `frontend/src/components/Game/RosterPanel.jsx`, `frontend/src/components/Game/GameScreen.jsx` (game-layout wrapper)
+
+The character roster adapts to screen size:
+
+- **RosterPanel.jsx** contains two sub-components:
+  - `RosterSidebar` (desktop): Full vertical sidebar with character cards, alive/dead status, role icons. Visible at >= 768px viewport width.
+  - `RosterIconStrip` (mobile): Compact horizontal strip of character avatars with alive/dead indicators. Visible at < 768px viewport width.
+- **CSS media query:** `@media (max-width: 768px)` switches between the two layouts.
+- **game-layout wrapper:** `display: contents` on mobile (RosterIconStrip flows inline), `flex-row` on desktop (sidebar + main content).
+- **`buildCharacterList()`:** Utility function that merges human players and AI characters into a unified character list for rendering. Sorts by alive status (alive first), then alphabetically by character name.
+
+## 12.7.7 Phase Change Data Sync
+
+**Files:** `backend/routers/ws_router.py`, `frontend/src/hooks/useWebSocket.js`, `frontend/src/context/GameContext.jsx`
+
+WebSocket messages now carry richer state to prevent client-server desync:
+
+- **`phase_change` messages:** Now include the full player roster (`players` array with alive/dead status) and AI character data (`aiCharacters` array). This ensures the frontend has accurate state after every phase transition, even if intermediate messages were missed.
+- **`connected` messages:** Now send ALL players (alive + dead) via `get_all_players()` instead of only alive players. This is critical for reconnecting players to see the full game state.
+- **Frontend handler:** The `phase_change` message handler in `useWebSocket.js` dispatches both `UPDATE_PLAYERS` and `SET_AI_CHARACTERS` actions to GameContext, ensuring roster and AI state are always synchronized with the server.
+
+## 12.7.8 Concurrency Guards
+
+**Files:** `backend/routers/ws_router.py`
+
+Defense-in-depth concurrency protections:
+
+- **`_resolving_nights: Set[str]`:** Prevents double night resolution. When `resolve_night()` is entered, the game_id is added to this set. If the game_id is already present, the function returns early. The game_id is removed in a `finally` block. This mirrors the existing `_resolving_votes` pattern.
+- **Night action timeout:** Increased from 30s → 45s to accommodate AI Gemini RPC latency. The previous 30s timeout caused premature resolution when Gemini was slow to respond.
+- **Alive check in resolve_night():** Before applying a shapeshifter kill, `resolve_night()` now verifies the target is still alive in Firestore. This prevents a race condition where a concurrent elimination (e.g., Hunter revenge) could cause a double-elimination.
 
 ---
 
@@ -4290,6 +4416,17 @@ When a human player holds the shapeshifter role (via Random AI Alignment, §12.3
 | Phase timer: 45s min discussion guard | §12.6.4 | ✅ Shipped |
 | WebSocket keepalive (ping 20s / timeout 30s) | §12.6.5 | ✅ Shipped — re-enabled; disconnect events logged |
 | Shapeshifter skip (skip_night_kill) | §12.6.6, §5.2 | ✅ Shipped — frontend button + backend null-target resolution |
+| **v5.1 Architecture** | | |
+| Ghost Council dead-player chat | §12.7.1 | ✅ Shipped — ghost_message WS type, GhostRealmPanel, 2s rate limit |
+| Séance phase | §12.7.2, §3.3 | ✅ Shipped — conditional phase after ELIMINATION, 45s ghost testimony |
+| Haunt actions (dead player night action) | §12.7.3 | ✅ Shipped — ghost accusation per round, AI auto-accuse |
+| AI auto-reply system | §12.7.4 | ✅ Shipped — name-match trigger, 30s cooldown, source="player" |
+| Discussion timer enforcement | §12.7.5 | ✅ Shipped — rejects advance_phase without start_phase_timer |
+| Responsive roster (RosterPanel) | §12.7.6 | ✅ Shipped — RosterSidebar + RosterIconStrip, 768px breakpoint |
+| Phase change data sync | §12.7.7, §5.2 | ✅ Shipped — full roster + AI chars in phase_change, all players in connected |
+| Concurrency guards (_resolving_nights) | §12.7.8, §5.3 | ✅ Shipped — double-resolution prevention, alive check before kill |
+| Simplified win condition (parity) | §3.3 | ✅ Shipped — non_shapeshifter_alive <= 1, no round guard |
+| Night timeout 45s (Gemini RPC latency) | §12.7.8, §12.6.4 | ✅ Shipped — reverted from 30s |
 
 ---
 
@@ -4330,6 +4467,6 @@ PORT=8080
 ---
 
 *Document created: February 21, 2026*
-*Last updated: March 12, 2026 — v5.0: separate audio WebSocket (/ws/audio/{gameId}), push-to-talk speaker lock, per-player priority queues (ConnectionManager), phase timer improvements (start_phase_timer narrator tool + 15s safety fallback + updated timeouts), WebSocket keepalive re-enabled with disconnect logging, Shapeshifter skip (skip_night_kill)*
+*Last updated: March 12, 2026 — v5.1: Ghost Council dead-player chat (ghost_message WS type, GhostRealmPanel), Séance phase (conditional ghost testimony), haunt actions (dead player night accusations), concurrency guards (_resolving_nights + alive check), AI auto-reply system (_maybe_trigger_ai_reply), discussion timer enforcement, simplified win condition (parity), responsive roster (RosterPanel), phase change data sync (full roster in phase_change + connected messages)*
 *Companion PRD: PRD.md v2.0*
 *Hackathon deadline: March 16, 2026*

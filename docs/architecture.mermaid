@@ -17,11 +17,18 @@ graph TB
                 TRIGGER["Trigger Functions<br/>trigger_all_night_actions()<br/>trigger_all_votes()<br/>trigger_all_dialogs()<br/>asyncio.gather parallel exec"]
                 INDIV["Individual AI Functions<br/>generate_dialog()<br/>select_night_target()<br/>select_vote()<br/>select_loyal_night_action()<br/>Loops via _ai_chars_with_fields()"]
             end
-            GM["Game Master<br/>Deterministic Python<br/>Role Assignment + Phase Transitions<br/>Win Conditions + Vote Resolution<br/>Human Shapeshifter Support"]
+            GM["Game Master<br/>Deterministic Python<br/>Role Assignment + Phase Transitions<br/>Win Conditions (parity) + Vote Resolution<br/>Human Shapeshifter Support<br/>_resolving_nights guard"]
             SA["Scene Agent<br/>Image Generation<br/>Phase Transition Illustrations"]
             CV["Camera Vote Agent<br/>Gemini Vision<br/>Hand-Counting (In-Person)"]
             AR["Audio Recorder<br/>Highlight Reel<br/>Post-Game Playback"]
             SL["Strategy Logger<br/>Cross-Game Learning<br/>Intelligence Brief"]
+        subgraph GhostSystem["Ghost Council / Séance (v5.1)"]
+                GC["Ghost Council<br/>Dead Player Chat<br/>ghost_message WS type<br/>2s rate limit per player"]
+                SEANCE["Séance Phase<br/>Triggered: dead >= 2 AND<br/>dead >= total/2<br/>45s ghost push-to-talk"]
+                HAUNT["Haunt Actions<br/>Dead player night accusation<br/>AI ghost auto-accuse<br/>Narrator incorporates"]
+            end
+
+            AIREPLY["AI Auto-Reply<br/>_maybe_trigger_ai_reply()<br/>Name-match regex (≥3 chars)<br/>30s cooldown per character"]
         end
 
         subgraph VoicePipeline["Player Voice Input Pipeline (Audio WS only)"]
@@ -94,6 +101,20 @@ graph TB
     API --> FS
     DECODE -.->|"character_name lookup"| FS
 
+    %% Ghost Council / Séance connections
+    GC -->|"ghost_message broadcast"| API
+    GC -->|"stored in chat collection"| FS
+    SEANCE -->|"re-enables dead player PTT"| PTT
+    SEANCE -->|"narrator moderates testimony"| NA
+    HAUNT -->|"haunt_action events"| FS
+    HAUNT -->|"narrator incorporates in discussion"| NA
+    GM -->|"séance trigger check<br/>dead >= 2 AND dead >= total/2"| SEANCE
+
+    %% AI Auto-Reply connections
+    TBUF -->|"transcript flush triggers"| AIREPLY
+    AIREPLY -->|"generate dialog"| GFlash
+    AIREPLY -->|"broadcast as source=player"| API
+
     %% Discussion timer connections
     DT -->|"wrap-up prompt at T-30s"| NA
     DT -->|"timer_seconds in phase_change"| API
@@ -111,12 +132,14 @@ graph TB
     classDef voice fill:#2d6a4f,stroke:#40916c,color:#fff
     classDef infra fill:#374151,stroke:#6b7280,color:#fff
     classDef timer fill:#92400e,stroke:#d97706,color:#fff
+    classDef ghost fill:#4a1942,stroke:#9b59b6,color:#fff
 
     class P1,P2,P3,FE_STATE,PTT player
     class API cloud
-    class NA,TRIGGER,INDIV,GM,SA,CV,AR,SL agent
+    class NA,TRIGGER,INDIV,GM,SA,CV,AR,SL,AIREPLY agent
     class FS gcp
     class GLive,GFlash,GTTS gemini
     class AWS,DECODE,SPKR,TBUF voice
     class TF,DOCK infra
     class DT timer
+    class GC,SEANCE,HAUNT ghost

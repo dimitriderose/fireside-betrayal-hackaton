@@ -5,7 +5,7 @@
 **Tagline:** The AI is one of you. Trust no one.
 **Core Technology:** Gemini Live API (real-time bidirectional voice)
 
-Version 4.1 | March 12, 2026 *(updated to reflect push-to-talk mic control, phase timer improvements, Shapeshifter "No Kill Tonight," and chat local echo)*
+Version 4.2 | March 12, 2026 *(updated to reflect Ghost Council, Séance phase, Haunt actions, responsive character roster, AI auto-reply to voice mentions, discussion timer enforcement, night resolution concurrency guard, and win condition simplification)*
 Hackathon Deadline: **March 16, 2026 at 5:00 PM PDT**
 Prize Target: $10K (category) + $25K (grand prize)
 
@@ -76,8 +76,9 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 | 4. Night Phase | AI privately contacts special-role holders. Seer investigates (Drunk gets false results). Healer protects. Hunter has no night action. If the shapeshifter is an AI character, it picks a target from all other characters (human or AI). AI characters with special roles (Seer, Bodyguard, Healer) use their abilities automatically with correct game logic. | Private text on individual phones. Other players see "Night has fallen..." with atmospheric narration. |
 | 5. Day Discussion | AI narrates what happened overnight. The discussion timer starts only after the narrator finishes speaking — players always get the full window. A minimum 45-second floor ensures discussion cannot be skipped past by a fast narrator. Timer scales by player count (3–4 players: 2 min, 5–6: 3 min, 7–8: 4 min). Players debate by holding the **"Speak" push-to-talk button** on their phone — one player holds the floor at a time, with a 30-second auto-release. OR text input OR quick-reaction buttons. Eliminated players cannot use the mic. Narrator acts as **active moderator/game show host**: relays player speech for the village, reacts with provocative one-liners, stirs debate by challenging weak arguments, and redirects when discussion loops. AI participates as its character. 30-second narrator warning before timer expires. | Visible M:SS countdown in sticky header with color transitions (gray → amber at 30s → red pulse at 15s). Hold the Speak button to take the floor — it glows to show who is active. Quick-reaction buttons for fast text participation. Narrator engages actively as moderator, not passive observer. |
 | 6. Voting | Players vote to eliminate a suspect character using buttons on their phones. AI tallies votes and handles ties. Vote window is 60 seconds (timer begins after the narrator's voting prompt finishes). | Character portrait buttons to vote. Timer countdown. AI announces results with dramatic narration. |
-| 7. Elimination | AI narrates the elimination with story consequences. If the eliminated player was the Hunter, they immediately choose someone to take with them. Reveals whether the eliminated character was the traitor or innocent. | Dramatic reveal moment. Hunter's revenge kill creates unexpected second elimination. Eliminated players become spectators. |
-| 8. Resolution | Repeat Night/Day cycles until villagers correctly identify the shapeshifter OR the shapeshifter eliminates enough villagers to win OR the Tanner gets voted out (solo win). | Win/lose screen with **post-game reveal timeline**: round-by-round interactive view showing every hidden action, the AI's strategy reasoning, audio highlight reel, and key turning points. All character-to-player mappings revealed. Share results with a copy-to-clipboard summary. Direct URL navigation to `/gameover/:gameId` works via REST fallback. |
+| 7. Elimination | AI narrates the elimination with story consequences. If the eliminated player was the Hunter, they immediately choose someone to take with them. Reveals whether the eliminated character was the traitor or innocent. Eliminated players join the Ghost Council (private dead-player chat channel) and can use Haunt actions (accuse one living character per round during night). | Dramatic reveal moment. Hunter's revenge kill creates unexpected second elimination. Eliminated players enter the Ghost Realm — they can chat with other dead players and influence the game through haunt accusations. |
+| 7b. Séance *(conditional)* | Triggered when dead_count >= 2 AND dead_count >= total/2. Dead players get push-to-talk re-enabled for 45 seconds. Narrator moderates, calling on each dead character by name. Rule: "speak in feelings, not facts." | Dead players briefly return to address the living. Ghost Realm panel dims. Atmospheric, high-tension moment. |
+| 8. Resolution | Repeat Night/Day cycles until villagers correctly identify the shapeshifter OR the shapeshifter reaches parity (non_shapeshifter_alive ≤ 1) OR the Tanner gets voted out (solo win). | Win/lose screen with **post-game reveal timeline**: round-by-round interactive view showing every hidden action, the AI's strategy reasoning, audio highlight reel, and key turning points. All character-to-player mappings revealed. Share results with a copy-to-clipboard summary. Direct URL navigation to `/gameover/:gameId` works via REST fallback. |
 
 ---
 
@@ -190,11 +191,13 @@ games/{gameId}/
   ├── Scene image (generated per phase, optional)
   ├── Role reveal overlay (dramatic role assignment at game start)
   ├── Role card (private, only visible to this player)
-  ├── Player list (alive/dead status, vote indicators)
+  ├── Character roster (responsive: 160px sticky sidebar on desktop, horizontal icon strip on mobile; dead players with 💀/dashed/strikethrough; "X of Y alive" counter)
   ├── Discussion timer (sticky header, M:SS countdown with color transitions)
   ├── Chat input (text + quick reactions, fallback to mic)
+  ├── Ghost Council panel (dead-player private chat; dims during séance)
   ├── Vote buttons (appear during voting phase only)
   ├── Night kill UI (for human shapeshifters via Random AI Alignment)
+  ├── Haunt UI (dead players accuse one living character per round during night)
   └── Story log (scrollable narrative history)
 ```
 
@@ -247,7 +250,7 @@ games/{gameId}/
 | Landing page | **P1** | ✅ Shipped | Hero with narrator audio preview button, CTA to create/join game. Mobile-first at 420px. |
 | Narrator contextual reactivity | **P1** | ✅ Shipped | Scene descriptions reference previous round events. `get_game_state` tool feeds recent events into narrator context. |
 | Narrator quiet-player engagement | **P1** | ✅ Shipped | Narrator tracks `characters_not_yet_spoken` and prompts after 60s silence. Max one prompt per silent player per round. |
-| Spectator actions for eliminated players | **P1** | ✅ Shipped | One-word whisper clue per game, delivered during day discussion. Narrator narrates eerie in-story delivery. |
+| Spectator actions for eliminated players | **P1** | ✅ Shipped | One-word whisper clue per game, delivered during day discussion. Narrator narrates eerie in-story delivery. Superseded by Ghost Council, Séance, and Haunt actions in Sprint 11. |
 | Camera vote counting | **P2** | ✅ Shipped | Host enables "In-Person Mode" in lobby. Gemini Vision counts raised hands from camera frame. Hand count capped at alive player count. Phone voting remains fallback. |
 | Scene image generation | **P2** | ✅ Shipped | Atmospheric illustrations on phase transitions (game start, night, dawn, elimination, game over). Gemini generates images with 1.5 MB guard. Fire-and-forget async. |
 | Tutorial mode | **P2** | ✅ Shipped | 5-step interactive walkthrough: role reveal, night action, day discussion, voting, game over. Mock cast and timeline. Narrator audio preview on role reveal step. No backend required — fully client-side. |
@@ -278,6 +281,14 @@ games/{gameId}/
 | **New: Human Shapeshifter Night Kill** | **P1** | ✅ Shipped | When Random AI Alignment gives a human player the shapeshifter role, they can perform night kills via the game UI. Complete implementation of human shapeshifter night kill action with backend logic and frontend target selection interface. |
 | **New: Shapeshifter "No Kill Tonight"** | **P1** | ✅ Shipped | The shapeshifter can intentionally skip their night kill. Adds strategic depth — a shapeshifter who is under suspicion can go quiet for a round to appear innocent, at the cost of leaving a potential threat alive. Applies to both human and AI shapeshifters. AI shapeshifters factor this into their deception strategy. |
 | **New: Chat Local Echo** | **P1** | ✅ Shipped | Chat messages appear instantly on the sender's own screen without waiting for a server round-trip. Deduplication logic prevents messages from appearing twice when the server echo arrives. Removes perceived latency from in-game text communication and makes the interface feel immediate. |
+| **New: Ghost Council (Dead Player Chat)** | **P1** | ✅ Shipped | Dead players can send messages to other dead players in a private ghost channel. Dead AI characters generate atmospheric ghost dialog (~30% chance per message). Ghost messages have a 2-second rate limit per player. Ghost Realm panel dims during séance. |
+| **New: Séance Phase** | **P1** | ✅ Shipped | New phase triggered when dead_count >= 2 AND dead_count >= total/2. Dead players get push-to-talk re-enabled for 45 seconds. Narrator moderates, calling on each dead character by name. Rule: "speak in feelings, not facts." Séance timeout: 45 seconds total. |
+| **New: Haunt Actions (Dead Player Accuse)** | **P1** | ✅ Shipped | Dead players can accuse one living character per round during the night phase. Narrator raises suspicion in the next discussion. AI ghosts auto-accuse based on game events and chat history. |
+| **New: Responsive Character Roster** | **P1** | ✅ Shipped | Desktop (≥768px): 160px sticky left sidebar. Mobile (<768px): horizontal icon strip below header with character names. Dead players shown with 💀, dashed border, strikethrough. Shows "X of Y alive" counter. |
+| **New: AI Auto-Reply to Voice Mentions** | **P1** | ✅ Shipped | During DAY_DISCUSSION, if a player mentions any word (≥3 chars) from an AI character's name via voice, auto-trigger that AI's dialog response. 30-second cooldown per character. One reply per transcript flush. |
+| **New: Discussion Timer Enforcement** | **P1** | ✅ Shipped | Narrator must call start_phase_timer before advancing from discussion to vote. Minimum 45 seconds of discussion guaranteed. If narrator tries to advance early, system rejects and instructs it to continue facilitating. |
+| **New: Night Resolution Concurrency Guard** | **P1** | ✅ Shipped | `_resolving_nights` guard prevents double-kill from race condition between action submission and timeout. Defense-in-depth alive verification before applying kill. |
+| **New: Win Condition Simplification** | **P1** | ✅ Shipped | Shapeshifter wins immediately at parity (non_shapeshifter_alive ≤ 1). No round guard. Removes old ≤4 player round 2 requirement. |
 | **New: Role Reveal Overlay** | **P2** | ✅ Shipped | Visual overlay showing role assignment on game screen at the start of the game. Provides a clear, dramatic moment when players learn their character and role. |
 | **New: Terraform IaC** | **P2** | ✅ Shipped | Full Terraform configuration for automated Cloud Run deployment in `terraform/` directory (main.tf, variables.tf, terraform.tfvars.example). Infrastructure-as-code for reproducible production deployments. |
 | **New: Deployment Guide** | **P2** | ✅ Shipped | `docs/DEPLOYMENT.md` with complete local development setup and Cloud Run production deployment instructions. |
@@ -313,6 +324,8 @@ games/{gameId}/
 11. In-person camera voting — Gemini Vision counts raised hands for physical gatherings
 12. Cross-game AI learning — the AI improves its deception strategy from past game data
 13. Built on Gemini Live API — native voice, not bolted-on text-to-speech
+14. Dead player agency — Ghost Council chat, Séance phase (dead players regain voice), and Haunt actions (dead players accuse from beyond the grave)
+15. AI auto-reply to voice mentions — AI characters respond naturally when named aloud during discussion
 
 ---
 
@@ -365,7 +378,7 @@ games/{gameId}/
 
 ## Post-Hackathon P2 Roadmap
 
-> **Status Update (Mar 12, 2026):** All features from Sprints 4–9 have been implemented and shipped ahead of the hackathon deadline. Sprint 9 delivered multi-AI character support (2 AI characters in small games), unified AI architecture, parallel AI execution, full AI role abilities, and vote reliability fixes. The roadmap below is preserved for historical context — all items marked ✅.
+> **Status Update (Mar 12, 2026):** All features from Sprints 4–11 have been implemented and shipped ahead of the hackathon deadline. Sprint 11 delivered dead player agency (Ghost Council chat, Séance phase, Haunt actions), responsive character roster, AI auto-reply to voice mentions, discussion timer enforcement, night resolution concurrency guard, and win condition simplification. The roadmap below is preserved for historical context — all items marked ✅.
 
 ### Sprint 4: Narrator Intelligence — ✅ ALL SHIPPED
 
@@ -448,6 +461,19 @@ games/{gameId}/
 | Phase Timer Improvements | ✅ | Timers now start after the narrator finishes narrating, not on phase entry. Minimum 45-second discussion floor before narrator can call voting. Night action window reduced from 45s to 30s. Vote window reduced from 90s to 60s. New `start_phase_timer` narrator tool triggers countdowns at the right moment. Tightens pacing while ensuring players never lose debate time to narration. |
 | Shapeshifter "No Kill Tonight" | ✅ | Shapeshifter can intentionally skip their night kill. Gives the traitor a meaningful strategic choice each round: strike and risk pattern recognition, or stay quiet and buy goodwill. Applies to both human-controlled and AI-controlled shapeshifters. AI factors this option into its deception strategy. |
 | Chat Local Echo | ✅ | Chat messages appear instantly on the sender's screen. Server-echo deduplication prevents double-display. Makes text input feel as immediate as voice and removes friction from quick-reaction use. |
+
+### Sprint 11: Dead Player Agency, Responsive UI & Game Logic Hardening — ✅ ALL SHIPPED
+
+| Feature | Status | Notes |
+|---|---|---|
+| Ghost Council (Dead Player Chat) | ✅ | Private ghost channel for dead players. Dead AI characters generate atmospheric dialog (~30% chance). 2-second rate limit. Panel dims during séance. |
+| Séance Phase | ✅ | Triggered at dead_count >= 2 AND dead_count >= total/2. Dead players regain push-to-talk for 45 seconds. Narrator calls on each dead character by name. Rule: "speak in feelings, not facts." |
+| Haunt Actions (Dead Player Accuse) | ✅ | Dead players accuse one living character per round during night. Narrator raises suspicion in next discussion. AI ghosts auto-accuse based on game events and chat history. |
+| Responsive Character Roster | ✅ | Desktop: 160px sticky sidebar. Mobile: horizontal icon strip below header. Dead players shown with 💀, dashed border, strikethrough. "X of Y alive" counter. |
+| AI Auto-Reply to Voice Mentions | ✅ | Voice mention of AI character name (≥3 char match) during DAY_DISCUSSION triggers auto-reply. 30-second cooldown per character. One reply per transcript flush. |
+| Discussion Timer Enforcement | ✅ | Narrator must call `start_phase_timer` before advancing to vote. System rejects early advancement and instructs narrator to continue facilitating. Minimum 45 seconds guaranteed. |
+| Night Resolution Concurrency Guard | ✅ | `_resolving_nights` guard prevents double-kill race condition. Defense-in-depth alive verification before applying kill. |
+| Win Condition Simplification | ✅ | Shapeshifter wins at parity (non_shapeshifter_alive ≤ 1). No round guard. Removes old ≤4 player round 2 requirement. |
 
 ### Remaining (Post-Hackathon)
 
