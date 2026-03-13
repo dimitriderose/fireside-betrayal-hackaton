@@ -3,8 +3,8 @@
 # Builds the Docker image, pushes to Artifact Registry, and deploys to Cloud Run.
 # Triggered on push to main (via Terraform google_cloudbuild_trigger or manually).
 #
-# Manual trigger:
-#   gcloud builds submit --config=cloudbuild.yaml --substitutions=_REGION=us-central1
+# Manual trigger (always use this — never run `gcloud run deploy` directly):
+#   gcloud builds submit --config=cloudbuild.yaml --substitutions=_REGION=us-central1,SHORT_SHA=$(git rev-parse --short HEAD)
 # ──────────────────────────────────────────────────────────────────────────────
 
 steps:

@@ -213,19 +213,10 @@ Internet → Cloud Run :8000
 
 The `main.py` auto-mounts `frontend/dist/` if it exists at `../frontend/dist` relative to the backend.
 
-### 2.2 Build the Docker Image
-
-From the **repo root**:
+### 2.2 Test Docker Locally (Optional)
 
 ```bash
 docker build -t fireside-betrayal .
-```
-
-The root `Dockerfile` is a multi-stage build: Stage 1 compiles the React frontend with Node 18, Stage 2 installs Python deps and copies both `backend/` and the compiled `frontend/dist/` into the final image. No separate frontend build step is needed.
-
-### 2.3 Test Docker Locally
-
-```bash
 docker run -p 8000:8000 \
   -e GOOGLE_CLOUD_PROJECT=your-project-id \
   -e GEMINI_API_KEY=your-key \
@@ -234,56 +225,25 @@ docker run -p 8000:8000 \
   fireside-betrayal
 ```
 
-Visit `http://localhost:8000` — should serve the React app with the API on the same origin.
+### 2.3 Deploy to Cloud Run
 
-### 2.4 Deploy to Cloud Run
+All deploys MUST go through `cloudbuild.yaml`. This ensures the existing Cloud Run service is updated in-place and the URL never changes.
 
 ```bash
-# Set your project
-export PROJECT_ID=your-gcp-project-id
-gcloud config set project $PROJECT_ID
-
-# Enable required APIs
-gcloud services enable \
-  run.googleapis.com \
-  cloudbuild.googleapis.com \
-  firestore.googleapis.com \
-  aiplatform.googleapis.com
-
-# Create Artifact Registry repo (if needed)
-gcloud artifacts repositories create fireside \
-  --repository-format=docker \
-  --location=us-central1 \
-  --project=$PROJECT_ID 2>/dev/null || true
-
-# Build and push to Artifact Registry
-export IMAGE=us-central1-docker.pkg.dev/$PROJECT_ID/fireside/fireside-betrayal:latest
-gcloud builds submit --tag $IMAGE --timeout=600
-
-# Deploy to Cloud Run
-gcloud run deploy fireside-betrayal \
-  --image $IMAGE \
-  --platform managed \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --port 8000 \
-  --memory 1Gi \
-  --cpu 1 \
-  --min-instances 0 \
-  --max-instances 10 \
-  --session-affinity \
-  --timeout 3600 \
-  --no-cpu-throttling \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GEMINI_API_KEY=your-key,DEBUG=false"
+# From repo root — this is the only deploy command you should run:
+gcloud builds submit \
+  --config=cloudbuild.yaml \
+  --substitutions=_REGION=us-central1,SHORT_SHA=$(git rev-parse --short HEAD)
 ```
 
-**Critical flags:**
-- `--session-affinity` — Required for WebSocket connections. Without this, subsequent WS frames may route to a different instance.
-- `--port 8000` — Matches Dockerfile `EXPOSE 8000`
-- `--no-cpu-throttling` — Keeps CPU allocated between requests, required for long-lived WebSocket connections and background AI tasks.
-- `--timeout 3600` — 1-hour request timeout for WebSocket connections (default 300s is too short for game sessions).
+Do NOT run `gcloud run deploy` directly — `cloudbuild.yaml` handles the build, push, and deploy as a single pipeline targeting the existing `fireside-betrayal` service.
 
-> **Tip:** Use `./deploy.sh` instead of running these commands manually. It handles API enablement, Artifact Registry creation, Firestore provisioning, image build, deployment, and automatically sets `EXTRA_ORIGIN` to the Cloud Run URL for CORS.
+For first-time setup only (before the first deploy):
+```bash
+gcloud config set project $PROJECT_ID
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com firestore.googleapis.com aiplatform.googleapis.com
+gcloud artifacts repositories create fireside --repository-format=docker --location=us-central1 2>/dev/null || true
+```
 
 ### 2.5 Post-Deploy: Set CORS Origin
 

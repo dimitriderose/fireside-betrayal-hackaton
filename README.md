@@ -2,7 +2,7 @@
 
 **The AI is one of you. Trust no one.**
 
-🌐 **[Play Now](https://fireside-betrayal-vrdh6pblnq-uc.a.run.app)**
+🌐 **[Play Now](https://fireside-betrayal-seimyaykpa-uc.a.run.app)**
 
 A real-time, voice-first multiplayer social deduction game where an AI narrator leads players through an immersive story — and one of the characters is secretly controlled by AI.
 
