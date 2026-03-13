@@ -243,6 +243,21 @@ For first-time setup only (before the first deploy):
 gcloud config set project $PROJECT_ID
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com firestore.googleapis.com aiplatform.googleapis.com
 gcloud artifacts repositories create fireside --repository-format=docker --location=us-central1 2>/dev/null || true
+
+# Create required Firestore composite indexes
+gcloud firestore indexes composite create \
+  --collection-group=events \
+  --field-config field-path=round,order=ascending \
+  --field-config field-path=timestamp,order=ascending
+```
+
+### 2.4 Set Secrets (First-Time Only)
+
+After the first deploy, set env vars that persist across future deploys (`--update-env-vars` in `cloudbuild.yaml` merges, not replaces):
+
+```bash
+gcloud run services update fireside-betrayal --region us-central1 \
+  --update-env-vars="GEMINI_API_KEY=your-gemini-api-key"
 ```
 
 ### 2.5 Post-Deploy: Set CORS Origin
@@ -458,6 +473,8 @@ terraform destroy   # Removes all provisioned resources
 | `--workers 1` in Dockerfile | Required — WebSocket state is per-process | Do not increase workers; scale via Cloud Run instances instead |
 | `terraform plan` fails with auth error | Not authenticated with GCP | Run `gcloud auth application-default login` |
 | `terraform apply` — image not found | Docker image not pushed yet | Build and push the image first (see §5.3), then `terraform apply` |
+| `FailedPrecondition: The query requires an index` | Missing Firestore composite index | Run the `gcloud firestore indexes composite create` command from §2.3 first-time setup |
+| URL changed after deploy | New Cloud Run service was created instead of updating | Always deploy via `cloudbuild.yaml` (see §2.3). Never run `gcloud run deploy` directly |
 
 ---
 
