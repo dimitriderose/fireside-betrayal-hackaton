@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException
 from config import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -55,13 +56,24 @@ app.include_router(game_router, prefix="/api")
 app.include_router(ws_router)
 
 
-# Serve compiled frontend in production (Cloud Run)
-# In Docker: WORKDIR /app/backend, so frontend/dist is at /app/frontend/dist
+# SPA-aware static file server: serves index.html for unknown paths so
+# React Router handles client-side routes (/join/:code, /game/:id, etc.)
+class SPAStaticFiles(StaticFiles):
+    """Serve index.html for any path not found on disk (SPA catch-all)."""
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except HTTPException as ex:
+            if ex.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 _frontend_dist = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 )
 if os.path.isdir(_frontend_dist):
-    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="static")
+    app.mount("/", SPAStaticFiles(directory=_frontend_dist, html=True), name="static")
     logger.info(f"Serving frontend from {_frontend_dist}")
 
 

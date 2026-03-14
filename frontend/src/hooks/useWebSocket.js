@@ -159,12 +159,20 @@ export function useWebSocket(gameId, playerId) {
         break
 
       case 'elimination':
-        // msg: { type, characterName, wasTraitor, role, triggerHunterRevenge, tally }
+        // msg: { type, characterName, wasTraitor, role, triggerHunterRevenge, tally, individualVotes, isTie }
         dispatch({
           type: 'ELIMINATION',
           character: msg.characterName,
           wasTraitor: msg.wasTraitor,
           triggerHunterRevenge: msg.triggerHunterRevenge ?? false,
+          voteResult: Object.keys(msg.tally ?? {}).length > 0 ? {
+            tally: msg.tally ?? {},
+            individualVotes: msg.individualVotes ?? {},
+            eliminated: msg.characterName,
+            wasTraitor: msg.wasTraitor,
+            role: msg.role,
+            isTie: msg.isTie ?? false,
+          } : null,
         })
         break
 
@@ -291,7 +299,7 @@ export function useWebSocket(gameId, playerId) {
 
   const connect = useCallback(() => {
     if (!gameId || !playerId) return
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return
 
     // Use wss:// on HTTPS (production), ws:// on HTTP (local dev)
     // In dev, Vite proxies /ws → ws://localhost:8000 via vite.config.js
@@ -343,6 +351,19 @@ export function useWebSocket(gameId, playerId) {
       clearInterval(syncRef.current)
       wsRef.current?.close()
     }
+  }, [gameId, playerId, connect])
+
+  // Page Visibility API: when tab becomes visible, reconnect immediately if WS is dead
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (!document.hidden && wsRef.current?.readyState !== WebSocket.OPEN && mountedRef.current && gameId && playerId) {
+        clearTimeout(timerRef.current)
+        attemptRef.current = 0 // bypass backoff for immediate reconnect
+        connect()
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [gameId, playerId, connect])
 
   // Sync heartbeat: every 2s ask the server "what phase are you on?"

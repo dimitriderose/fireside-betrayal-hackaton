@@ -20,54 +20,48 @@ logger = logging.getLogger(__name__)
 # ── Scene description templates ───────────────────────────────────────────────
 
 _STYLE = (
-    "Dark painterly illustration, firelit, medieval fantasy. "
-    "Campfire-tale aesthetic meets woodcut print. Muted earth tones with "
-    "warm amber firelight accents. No text. No characters visible — atmosphere only. "
-    "Output image must be under 1.5MB file size. 512x512 pixels maximum. "
-    "Simple composition, flat colors, minimal fine detail."
+    "Flat vector illustration, limited color palette (5-6 colors max), "
+    "medieval fantasy. Bold shapes, no gradients, no fine textures. "
+    "Woodcut-inspired with solid fills and hard edges. "
+    "Dark muted earth tones, single warm amber accent color. "
+    "No text, no characters, no faces. Minimal composition — one focal point only. "
+    "Small thumbnail style, low detail, clean silhouettes against simple backgrounds."
 )
 
 _PHASE_SCENES = {
     "game_started": (
-        "The village of Thornwood at night. Dark forest silhouettes surround a cluster of "
-        "candlelit stone cottages. A crescent moon half-hidden behind storm clouds. "
-        "Smoke curls from chimneys. The village square is empty and still.",
+        "Village silhouette at night. Dark tree shapes against a deep blue sky. "
+        "One crescent moon. A few cottage shapes with tiny amber window squares.",
         "ominous",
     ),
     "day_discussion": (
-        "The village square of Thornwood at pale dawn. Stone well at the center, "
-        "torches guttering in morning mist, wet cobblestones. An empty chair overturned. "
-        "Crows on the roof of the inn.",
+        "Village square at dawn. A stone well silhouette in center. "
+        "Pale grey-blue sky, faint orange horizon line. Empty cobblestone ground.",
         "tense",
     ),
     "night": (
-        "Thornwood after midnight. The forest edge creeps close. A single lantern "
-        "swinging in the wind outside the smithy. Shadows lengthen between the houses. "
-        "Something moves in the dark between the trees.",
+        "Dark forest edge. A single lantern glow between black tree silhouettes. "
+        "Deep indigo sky, no stars.",
         "ominous",
     ),
     "elimination": (
-        "A single chair at the center of Thornwood's square, empty, a melted candle "
-        "beside it. The cobblestones are cold. The village holds its breath. "
-        "Morning light filters through iron-grey clouds.",
+        "A single empty chair silhouette. A melted candle beside it. "
+        "Cold grey background, faint dawn light at the horizon.",
         "tragic",
     ),
     "game_over_villagers": (
-        "Thornwood at sunrise. Golden light breaks over the treeline. The village square "
-        "is peaceful, smoke rising from hearths. A fire burns in the central pit, "
-        "villagers' silhouettes gathered in relief around its warmth.",
+        "Sunrise over village rooftops. Warm golden-orange sky gradient. "
+        "Simple cottage silhouettes, one campfire glow in the center.",
         "hopeful",
     ),
     "game_over_shapeshifter": (
-        "Thornwood in darkness. The village square empty, torches extinguished. "
-        "A lone shadowed figure at the forest's edge, half-turned to look back. "
-        "The moon is hidden. The fire in the square has gone cold.",
+        "Dark empty village square. All lights extinguished. "
+        "A single shadow shape at the forest edge. Black and deep grey tones.",
         "tragic",
     ),
     "game_over_tanner": (
-        "Thornwood village square. A crowd of silhouettes faces away from a single "
-        "departing figure who raises both arms in triumph. The sky is an unusual amber, "
-        "neither dawn nor dusk. The village stands dumbfounded.",
+        "Village square, amber sky. A single figure silhouette with raised arms. "
+        "Other silhouettes turned away. Unusual warm light.",
         "tense",
     ),
 }

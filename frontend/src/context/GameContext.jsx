@@ -45,6 +45,7 @@ function createInitialState() {
     currentSpeakerId: null,      // player ID of the current speaker
     nightTargets: null,          // string[] | null — backend-filtered night action targets (excludes self)
     voteCandidates: null,        // string[] | null — backend-filtered vote candidates (excludes self)
+    lastVoteResult: null,        // { tally, individualVotes, eliminated, wasTraitor, role, isTie }
     error: null,
   }
 }
@@ -129,6 +130,7 @@ function gameReducer(state, action) {
           isLocalPlayerEliminated && (action.triggerHunterRevenge ?? false)
             ? true
             : state.hunterRevengeNeeded,
+        lastVoteResult: action.voteResult ?? state.lastVoteResult,
       }
     }
     case 'HUNTER_REVENGE_DONE':
@@ -168,6 +170,8 @@ function gameReducer(state, action) {
         votes: {},
         voteMap: {},
         myVote: null,
+        // Keep vote results visible during elimination phase, clear on next transition
+        lastVoteResult: action.phase === 'elimination' ? state.lastVoteResult : null,
         // Clear push-to-talk speaker on phase transition
         currentSpeaker: null,
         currentSpeakerId: null,

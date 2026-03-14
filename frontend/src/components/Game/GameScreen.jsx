@@ -5,6 +5,7 @@ import { useWebSocket } from '../../hooks/useWebSocket.js'
 import { useAudioPlayer } from '../../hooks/useAudioPlayer.js'
 import { useAudioCapture } from '../../hooks/useAudioCapture.js'
 import VotePanel from '../Voting/VotePanel.jsx'
+import VoteTallyOverlay from '../Voting/VoteTallyOverlay.jsx'
 import RoleStrip from './RoleStrip.jsx'
 import { RosterIconStrip, RosterSidebar } from './RosterPanel.jsx'
 
@@ -1101,7 +1102,7 @@ export default function GameScreen() {
     players, aiCharacters, storyLog, role, isEliminated,
     nightActionSubmitted, hunterRevengeNeeded, clueSent, hauntUsed,
     ghostMessages, showRoleReveal, nightTargets, voteCandidates,
-    timerSeconds, currentSpeaker, currentSpeakerId,
+    timerSeconds, currentSpeaker, currentSpeakerId, lastVoteResult,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
@@ -1553,6 +1554,11 @@ export default function GameScreen() {
         {/* Day vote */}
         {phase === 'day_vote' && (
           <VotePanel sendMessage={sendMessage} />
+        )}
+
+        {/* Vote tally results — shown during elimination phase */}
+        {phase === 'elimination' && lastVoteResult && (
+          <VoteTallyOverlay voteResult={lastVoteResult} />
         )}
 
         {/* Hunter revenge */}

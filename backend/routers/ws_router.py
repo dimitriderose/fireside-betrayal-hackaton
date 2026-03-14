@@ -816,6 +816,8 @@ class ConnectionManager:
         role: Optional[str],
         needs_hunter_revenge: bool = False,
         tally: Optional[Dict] = None,
+        individual_votes: Optional[Dict] = None,
+        is_tie: bool = False,
     ) -> None:
         await self.broadcast(game_id, {
             "type": "elimination",
@@ -824,6 +826,8 @@ class ConnectionManager:
             "role": role,
             "triggerHunterRevenge": needs_hunter_revenge,
             "tally": tally or {},
+            "individualVotes": individual_votes or {},
+            "isTie": is_tie,
         }, reliable=True)
 
     async def broadcast_game_over(
@@ -1356,6 +1360,19 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
                 break
             await asyncio.sleep(2)
 
+        # Capture individual vote map BEFORE tally_votes clears AI votes
+        all_players_pre = await fs.get_all_players(game_id)
+        individual_votes = {
+            p.character_name: p.voted_for
+            for p in all_players_pre
+            if p.alive and p.voted_for and p.character_name
+        }
+        game_pre = await fs.get_game(game_id)
+        if game_pre:
+            for ai in [game_pre.ai_character, game_pre.ai_character_2]:
+                if ai and ai.alive and ai.voted_for:
+                    individual_votes[ai.name] = ai.voted_for
+
         tally_result = await game_master.tally_votes(game_id)
 
         if tally_result["result"] == "no_votes":
@@ -1372,6 +1389,8 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
         eliminated = tally_result["eliminated"]
         elim_result = await game_master.eliminate_character(game_id, eliminated)
 
+        is_tie = tally_result["result"] == "tie"
+
         # Tanner solo win: voted out by the village is exactly what the Tanner wants
         if elim_result.get("role") == Role.TANNER.value:
             await manager.broadcast_elimination(
@@ -1381,6 +1400,8 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
                 role=Role.TANNER.value,
                 needs_hunter_revenge=False,
                 tally=tally_result.get("tally", {}),
+                individual_votes=individual_votes,
+                is_tie=is_tie,
             )
             await _end_game(game_id, "tanner", "The Tanner outsmarted the village — voted out exactly as planned!", fs)
             return
@@ -1392,6 +1413,8 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             role=elim_result["role"],
             needs_hunter_revenge=elim_result["needs_hunter_revenge"],
             tally=tally_result["tally"],
+            individual_votes=individual_votes,
+            is_tie=is_tie,
         )
 
         # Record dynamic difficulty signals based on vote outcome (§12.3.12)

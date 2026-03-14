@@ -39,12 +39,18 @@ class PCMProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-processor', PCMProcessor)
 `
 
+const RECONNECT_DELAYS = [500, 1000, 2000, 4000, 8000]
+const MAX_RECONNECT_ATTEMPTS = 10 // ~40s total — stop trying after this to save battery
+
 /**
  * Hook for capturing microphone audio, downsampling to 16kHz PCM16,
  * and streaming binary frames via a dedicated audio WebSocket.
  *
  * The audio WS is separate from the game control WS to prevent audio
  * traffic from causing disconnections (matches Amplifi's architecture).
+ *
+ * The mic stream and AudioContext are kept alive across WS reconnects
+ * so audio resumes immediately without re-prompting for mic permission.
  */
 export function useAudioCapture(gameId, playerId) {
   const [micActive, setMicActive] = useState(false)
@@ -55,31 +61,87 @@ export function useAudioCapture(gameId, playerId) {
   const sourceRef = useRef(null)
   const workletRef = useRef(null)
   const audioWsRef = useRef(null)
+  const mountedRef = useRef(true)
+  const attemptRef = useRef(0)
+  const reconnectTimerRef = useRef(null)
+  const captureActiveRef = useRef(false) // tracks whether capture is intentionally active
+  const connectingRef = useRef(false) // true during startCapture's initial connection
+
+  const buildWsUrl = useCallback(() => {
+    const wsBase = import.meta.env.VITE_WS_URL
+      ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+    return `${wsBase}/ws/audio/${gameId}?playerId=${playerId}`
+  }, [gameId, playerId])
+
+  const connectAudioWs = useCallback(() => {
+    if (!gameId || !playerId || !mountedRef.current || !captureActiveRef.current || connectingRef.current) return
+
+    // Clean up existing WS
+    if (audioWsRef.current) {
+      audioWsRef.current.onclose = null
+      audioWsRef.current.onerror = null
+      audioWsRef.current.close()
+      audioWsRef.current = null
+    }
+
+    const audioWs = new WebSocket(buildWsUrl())
+    audioWs.binaryType = 'arraybuffer'
+    audioWsRef.current = audioWs
+
+    audioWs.onopen = () => {
+      attemptRef.current = 0
+    }
+
+    audioWs.onclose = () => {
+      audioWsRef.current = null
+      if (!captureActiveRef.current || !mountedRef.current) return
+      if (attemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        setMicError('Audio connection lost. Tap the mic to reconnect.')
+        stopCapture()
+        return
+      }
+      const delay = RECONNECT_DELAYS[Math.min(attemptRef.current, RECONNECT_DELAYS.length - 1)]
+      attemptRef.current++
+      reconnectTimerRef.current = setTimeout(connectAudioWs, delay)
+    }
+
+    audioWs.onerror = () => audioWs.close()
+  }, [gameId, playerId, buildWsUrl])
 
   const startCapture = useCallback(async () => {
-    if (!gameId || !playerId) { stopCapture(); return } // no valid session — clean up any active capture
-    if (streamRef.current) return // already capturing
+    if (!gameId || !playerId) { stopCapture(); return }
+    if (captureActiveRef.current) return // already capturing
     setMicError(null)
+    captureActiveRef.current = true
+    connectingRef.current = true
 
     try {
       // Open dedicated audio WebSocket (binary mode)
-      const wsBase = import.meta.env.VITE_WS_URL
-        ?? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
-      const wsUrl = `${wsBase}/ws/audio/${gameId}?playerId=${playerId}`
-      const audioWs = new WebSocket(wsUrl)
+      const audioWs = new WebSocket(buildWsUrl())
       audioWs.binaryType = 'arraybuffer'
       audioWsRef.current = audioWs
 
       // Wait for WS to open before starting mic capture
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Audio WebSocket connection timeout')), 5000)
-        audioWs.onopen = () => { clearTimeout(timer); resolve() }
-        audioWs.onerror = () => { clearTimeout(timer); reject(new Error('Audio WebSocket failed to connect')) }
+        audioWs.onopen = () => { clearTimeout(timer); attemptRef.current = 0; connectingRef.current = false; resolve() }
+        audioWs.onerror = () => { clearTimeout(timer); connectingRef.current = false; reject(new Error('Audio WebSocket failed to connect')) }
       })
 
-      // Auto-cleanup if audio WS drops mid-capture
-      audioWs.onclose = () => stopCapture()
-      audioWs.onerror = () => stopCapture()
+      // On WS drop, reconnect (keep mic alive) — same logic as connectAudioWs
+      audioWs.onclose = () => {
+        audioWsRef.current = null
+        if (!captureActiveRef.current || !mountedRef.current) return
+        if (attemptRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          setMicError('Audio connection lost. Tap the mic to reconnect.')
+          stopCapture()
+          return
+        }
+        const delay = RECONNECT_DELAYS[Math.min(attemptRef.current, RECONNECT_DELAYS.length - 1)]
+        attemptRef.current++
+        reconnectTimerRef.current = setTimeout(connectAudioWs, delay)
+      }
+      audioWs.onerror = () => audioWs.close()
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -124,12 +186,15 @@ export function useAudioCapture(gameId, playerId) {
         ? 'Microphone permission denied'
         : `Mic error: ${err.message}`
       setMicError(msg)
-      // Clean up partial state on error
+      captureActiveRef.current = false
+      connectingRef.current = false
       stopCapture()
     }
-  }, [gameId, playerId])
+  }, [gameId, playerId, buildWsUrl, connectAudioWs])
 
   const stopCapture = useCallback(() => {
+    captureActiveRef.current = false
+    clearTimeout(reconnectTimerRef.current)
     if (sourceRef.current) {
       sourceRef.current.disconnect()
       sourceRef.current = null
@@ -147,15 +212,46 @@ export function useAudioCapture(gameId, playerId) {
       streamRef.current = null
     }
     if (audioWsRef.current) {
+      audioWsRef.current.onclose = null // prevent reconnect
       audioWsRef.current.close()
       audioWsRef.current = null
     }
     setMicActive(false)
   }, [])
 
+  // Page Visibility API: reconnect audio WS when tab becomes visible
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.hidden) {
+        // Page hidden — proactively close audio WS (it'll die anyway on mobile)
+        if (audioWsRef.current) {
+          audioWsRef.current.onclose = null // prevent normal reconnect
+          audioWsRef.current.close()
+          audioWsRef.current = null
+        }
+        clearTimeout(reconnectTimerRef.current)
+      } else {
+        // Page visible — resume AudioContext (may be suspended by browser) and reconnect WS
+        if (captureActiveRef.current) {
+          ctxRef.current?.resume?.()
+          if (!audioWsRef.current) {
+            attemptRef.current = 0
+            connectAudioWs()
+          }
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [connectAudioWs])
+
   // Cleanup on unmount
   useEffect(() => {
-    return () => stopCapture()
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      stopCapture()
+    }
   }, [stopCapture])
 
   return { micActive, micError, startCapture, stopCapture }

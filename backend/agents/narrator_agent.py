@@ -567,7 +567,7 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
                     "session memory or prior knowledge about character roles."
                 )
             except Exception:
-                logger.warning("[%s] Failed to pre-fetch vote context", game_id)
+                logger.warning("[%s] Failed to pre-fetch vote context", game_id, exc_info=True)
 
         return result
     finally:
@@ -955,6 +955,13 @@ class NarratorSession:
                             logger.debug(
                                 "[%s] Narrator session handle refreshed", self.game_id
                             )
+                        continue
+
+                    # Known informational Gemini Live API signals — skip silently
+                    if getattr(response, "voice_activity", None) is not None:
+                        continue
+                    if getattr(response, "voice_activity_detection_signal", None) is not None:
+                        continue
 
                     # PCM audio → broadcast to all players + record for highlight reel (§12.3.15)
                     if response.data:
@@ -996,7 +1003,7 @@ class NarratorSession:
                                 "status": "thinking",
                             })
                         else:
-                            logger.info(
+                            logger.debug(
                                 "[%s] NON-STANDARD response: type=%s server_content=%s keys=%s",
                                 self.game_id, type(response).__name__, sc,
                                 [a for a in dir(response) if not a.startswith("_")],
