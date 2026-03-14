@@ -4,7 +4,7 @@
 **Category:** 🗣️ Live Agents
 **Author:** Software Architecture Team
 **Companion Document:** PRD — Fireside — Betrayal v1.0
-**Version:** 5.1 | March 12, 2026 *(updated to reflect: Ghost Council dead-player chat system, Séance phase, haunt actions, concurrency guards for night resolution, AI auto-reply system, discussion timer enforcement, simplified win condition (parity), responsive roster panel, phase change data sync improvements)*
+**Version:** 5.2 | March 14, 2026 *(updated to reflect: Ghost Council dead-player chat system, Séance phase, haunt actions, concurrency guards for night resolution, AI auto-reply system, discussion timer enforcement, simplified win condition (parity), responsive roster panel, phase change data sync improvements, SPA catch-all routing, audio WebSocket reconnection architecture with separated mic/WS lifecycles, Page Visibility API integration for mobile tab-switch resilience, vote tally data flow with individual vote capture, production WebSocket keep-alive tuning, scene image prompt optimization for smaller file sizes, Gemini Live API log cleanup)*
 
 ---
 
@@ -12,7 +12,7 @@
 
 This Technical Design Document specifies the implementation architecture for Fireside — Betrayal, a real-time voice-first multiplayer social deduction game powered by the Gemini Live API, Google ADK, and Google Cloud. It translates the PRD's product requirements into concrete engineering decisions, API contracts, data models, code structure, and deployment specifications.
 
-**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern. **v5.1 additions:** Ghost Council dead-player chat system (`ghost_message` WS type, GhostRealmPanel), Séance phase (conditional ghost testimony when dead >= 2 and dead >= total/2), haunt actions (dead player night accusations), concurrency guards (`_resolving_nights` set, alive check in resolve_night), AI auto-reply system (`_maybe_trigger_ai_reply` with name-match regex and 30s cooldown), discussion timer enforcement (rejects advance_phase without start_phase_timer), simplified win condition (parity: non_shapeshifter_alive <= 1), responsive roster architecture (RosterPanel with RosterSidebar/RosterIconStrip at 768px breakpoint), and phase change data sync (full roster + AI chars in phase_change messages).
+**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern. **v5.1 additions:** Ghost Council dead-player chat system (`ghost_message` WS type, GhostRealmPanel), Séance phase (conditional ghost testimony when dead >= 2 and dead >= total/2), haunt actions (dead player night accusations), concurrency guards (`_resolving_nights` set, alive check in resolve_night), AI auto-reply system (`_maybe_trigger_ai_reply` with name-match regex and 30s cooldown), discussion timer enforcement (rejects advance_phase without start_phase_timer), simplified win condition (parity: non_shapeshifter_alive <= 1), responsive roster architecture (RosterPanel with RosterSidebar/RosterIconStrip at 768px breakpoint), and phase change data sync (full roster + AI chars in phase_change messages). **v5.2 additions:** SPA catch-all routing (`SPAStaticFiles` subclass serves `index.html` for non-API/non-WS 404s, enabling React Router deep links in production), audio WebSocket reconnection architecture (mic stream lifecycle separated from WS lifecycle — MediaStream/AudioContext/AudioWorkletNode persist across WS reconnects; exponential backoff [500,1000,2000,4000,8000]ms with max 10 attempts; Page Visibility API proactive disconnect/reconnect), game WebSocket mobile resilience (CONNECTING state guard, Page Visibility API immediate reconnect on tab visible, 2s sync heartbeat with phase mismatch detection), vote tally data flow (individual votes captured before `tally_votes()` clears AI voted_for, `broadcast_elimination` includes `individualVotes` and `isTie`, new `VoteTallyOverlay` component), production WebSocket keep-alive tuning (`--ws-ping-interval=15 --ws-ping-timeout=20` in Dockerfile CMD), scene image prompt optimization (flat vector illustration with 5-6 color palette replacing dark painterly style for smaller file sizes), and Gemini Live API log cleanup (proper `continue` for `session_resumption_update`/`voice_activity` handlers, NON-STANDARD log demoted to `logger.debug`).
 
 **Out of scope:** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). P3 features are additive and do not affect core architecture.
 
@@ -142,6 +142,13 @@ Rationale: Game rules must be deterministic and correct. LLM agents can hallucin
 Microphone audio is transmitted over a dedicated binary WebSocket endpoint (`/ws/audio/{game_id}`) that is entirely separate from the game-state WebSocket (`/ws/{game_id}`). The audio WS sends raw binary PCM frames — no JSON wrapper, no base64 encoding. `useAudioCapture.js` connects to this endpoint independently; it auto-cleans up if the audio WS drops mid-capture without affecting game state.
 
 Rationale: Mixing high-volume binary audio frames with JSON game-state messages on a single WebSocket caused intermittent code 1006 disconnections. The combined traffic also inflated JSON message size by ~33% due to base64 encoding. Splitting the channels isolates failure domains: a dropped audio connection no longer tears down game state, and the binary transport eliminates encoding overhead.
+
+**Implementation Update (v5.2):** The audio WS lifecycle is now fully decoupled from the microphone lifecycle. The mic stream (MediaStream, AudioContext, AudioWorkletNode) stays alive across WS reconnects — only the WebSocket connection is torn down and re-established. This prevents the costly re-initialization of the Web Audio pipeline on every reconnect. The audio WS has exponential backoff reconnection (delays: 500, 1000, 2000, 4000, 8000ms; max 10 attempts) and Page Visibility API integration (proactive WS close on page hidden, reconnect + AudioContext resume on page visible). A `connectingRef` guard prevents the visibility handler from orphaning `startCapture`'s pending connection promise.
+
+**Decision 8: SPA Catch-All Routing (v5.2)**
+The backend serves a React SPA via an `SPAStaticFiles` subclass of Starlette's `StaticFiles`. When a request path does not match any static file (404), the subclass catches the exception and serves `index.html` instead. This enables React Router client-side routing in production — deep links like `/join/C1E7F362` resolve correctly without a separate reverse proxy.
+
+Rationale: API routes (`/api/*`) and WebSocket routes (`/ws/*`) are registered on the FastAPI app before the static file mount. FastAPI evaluates routes in registration order, so API and WS paths take priority over the catch-all. This avoids the need for a separate Nginx or Caddy layer in the single-container Cloud Run deployment.
 
 **Decision 6: Push-to-Talk Speaker Lock**
 The server maintains a per-game speaker lock (`_current_speaker: Dict[str, Optional[str]]`) so only one player can hold the mic at a time. The lock is claimed immediately on `start_speaking` before any async validation (TOCTOU-safe). A 30-second `asyncio.Task` (`_speaker_timeout_tasks`) auto-releases the lock if the player forgets to release it. Dead players receive an error response and cannot claim the lock. The lock is also released on: `stop_speaking`, game WS disconnect, audio WS disconnect, phase transition, and game end.
@@ -1015,8 +1022,8 @@ async def handle_game_over(game: GameSession, game_id: str, win_check: dict):
 ## 5.1 Connection Lifecycle
 
 Two separate WebSocket connections per player:
-- **Game WS** (`/ws/{game_id}?playerId=xxx`) — JSON messages for game state, chat, votes, and narrator audio broadcast.
-- **Audio WS** (`/ws/audio/{game_id}?playerId=xxx`) — binary PCM frames only; no JSON, no base64. Opened when player activates push-to-talk. Closed when they release or navigate away. Independent lifecycle from Game WS.
+- **Game WS** (`/ws/{game_id}?playerId=xxx`) — JSON messages for game state, chat, votes, and narrator audio broadcast. **v5.2:** CONNECTING state guard prevents duplicate connections on mobile tab-switch. Page Visibility API triggers immediate reconnect (bypass backoff) when tab becomes visible. A 2-second sync heartbeat detects phase drift and forces reconnect on mismatch.
+- **Audio WS** (`/ws/audio/{game_id}?playerId=xxx`) — binary PCM frames only; no JSON, no base64. Opened when player activates push-to-talk. Closed when they release or navigate away. Independent lifecycle from Game WS. **v5.2:** Mic stream (MediaStream, AudioContext, AudioWorkletNode) is now persistent — only the WS connection is torn down and rebuilt on reconnect. Exponential backoff [500, 1000, 2000, 4000, 8000]ms with max 10 attempts. Page Visibility API proactively closes the WS on page hidden and reconnects on page visible.
 
 ```
 Client (game WS)                Server              Client (audio WS)
@@ -1160,7 +1167,9 @@ type ServerMessage =
   | { type: "vote_result"; result: "eliminated" | "tie" | "no_votes";  // v5.0: explicit tally result broadcast
       eliminated: string | null; tally: Record<string, number> }
   | { type: "elimination"; characterName: string; wasTraitor: boolean;
-      role: Role; triggerHunterRevenge?: boolean }                   // P1: Hunter flag
+      role: Role; triggerHunterRevenge?: boolean;                     // P1: Hunter flag
+      individualVotes?: Record<string, string>;                      // v5.2: {voter: votedFor} — captured before tally_votes() clears AI voted_for
+      isTie?: boolean }                                              // v5.2: true if vote was tied (no elimination)
   | { type: "hunter_revenge"; hunterCharacter: string; targetCharacter: string;
       targetWasTraitor: boolean }                                    // P1: Hunter's death kill
   | { type: "night_result"; result: any }                           // PRIVATE (Seer/Drunk)
@@ -1218,19 +1227,23 @@ type ClientMessage =
   | { type: "haunt_action"; target: string }                             // v5.1: Dead player accuses a living character during night
   | { type: "ready" }
   | { type: "ping" }
+  | { type: "sync" }                                                    // v5.2: Heartbeat — server responds with current phase for drift detection
 
 // Audio WebSocket (/ws/audio/{gameId}?playerId=xxx)
 // Sends raw binary PCM16 frames, 16 kHz, mono — NO JSON envelope.
-// useAudioCapture.js opens this connection on start_speaking and closes on stop_speaking
-// or component unmount. If the audio WS drops mid-capture, the speaker lock is released
-// automatically server-side; game WS is unaffected.
+// v5.2: Mic stream (MediaStream, AudioContext, AudioWorkletNode) persists across WS
+// reconnects. Only the WS connection is opened/closed. Exponential backoff reconnect
+// (500-8000ms, max 10 attempts). Page Visibility API: close WS on hidden, reconnect on
+// visible. connectingRef guard prevents orphaned connection promises.
+// If the audio WS drops mid-capture, the speaker lock is released automatically
+// server-side; game WS is unaffected.
 
 type QuickReaction = "suspect" | "trust" | "agree" | "have_info";
 ```
 
 **Wire Protocol Note (v4.0):** The backend game state WebSocket message (sent on `connected` and on state updates) still carries separate `aiCharacter` and `aiCharacter2` top-level fields, matching the Firestore document model. The frontend (`useWebSocket.js`) assembles these into a unified `aiCharacters[]` array and dispatches a single `SET_AI_CHARACTERS` action to `GameContext`. This keeps the Firestore schema stable while giving the frontend a clean N-element array. The Narrator Agent's `get_game_state` tool response uses `ai_characters[]` directly (not the split fields) because it reads from the game master's resolved state rather than the raw WebSocket payload.
 
-**Audio Transport Note (v5.0):** Player microphone audio is no longer embedded in JSON messages on the game-state WebSocket. `useAudioCapture.js` opens a separate binary WebSocket to `/ws/audio/{gameId}` and streams raw PCM16 frames (no encoding, no envelope). This reduces per-frame overhead by ~33% and eliminates the code 1006 game WS disconnections that occurred when audio frame bursts saturated the shared queue. The audio WS has an independent lifecycle: it opens on `start_speaking` and closes on `stop_speaking`, component unmount, or push-to-talk lock expiry. The game WS is unaffected by audio WS drops.
+**Audio Transport Note (v5.0, updated v5.2):** Player microphone audio is no longer embedded in JSON messages on the game-state WebSocket. `useAudioCapture.js` opens a separate binary WebSocket to `/ws/audio/{gameId}` and streams raw PCM16 frames (no encoding, no envelope). This reduces per-frame overhead by ~33% and eliminates the code 1006 game WS disconnections that occurred when audio frame bursts saturated the shared queue. **v5.2 architecture change:** The mic stream (MediaStream, AudioContext, AudioWorkletNode) lifecycle is now fully separated from the audio WS lifecycle. The mic stays alive across WS reconnects; only the WS connection is torn down and re-established. On WS drop, exponential backoff reconnection fires (delays [500,1000,2000,4000,8000]ms, max 10 attempts). Page Visibility API proactively closes the WS on page hidden and reconnects + resumes AudioContext on page visible. A `connectingRef` guard prevents orphaned connection promises from the visibility handler.
 
 **Phase Timer Note (v5.0):** `phase_change` messages no longer include `timerSeconds`. Instead, a separate `phase_timer_start` message is sent when the narrator explicitly calls `start_phase_timer` (signalling narration is done) or when the 15-second safety fallback fires. The frontend must not start its countdown until it receives `phase_timer_start`. This prevents the countdown from racing ahead of the narrator's opening speech.
 
@@ -1255,12 +1268,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve frontend static files (Vite build output)
-from fastapi.staticfiles import StaticFiles
+# Serve frontend static files (Vite build output) — SPA catch-all routing (v5.2)
+# SPAStaticFiles subclass catches 404s from StaticFiles and serves index.html instead,
+# enabling React Router client-side routing in production (e.g., /join/C1E7F362 works).
+# API routes (/api/*) and WebSocket routes (/ws/*) are registered BEFORE this mount,
+# so they take priority over the catch-all.
+from starlette.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import os
+
+class SPAStaticFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as ex:
+            if ex.status_code == 404:
+                return await super().get_response(".", scope)
+            raise
+
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.exists(frontend_dir):
-    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+    app.mount("/", SPAStaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 # Active game sessions: gameId → GameSession
 active_games: dict[str, "GameSession"] = {}
@@ -2062,6 +2090,10 @@ App (GameProvider wraps all routes)
 │   │   ├── CameraVote (in-person mode: host captures frame for hand count)
 │   │   └── VoteTally (live update)
 │   │
+│   ├── VoteTallyOverlay (v5.2: elimination phase — shows who voted for whom)
+│   │   ├── VoteMapping[] (voter → target arrows)
+│   │   └── TieIndicator (when isTie=true: "TIE — No elimination")
+│   │
 │   ├── GhostRealmPanel (v5.1: dead player chat — translucent ethereal styling)
 │   │   ├── GhostChatInput (text input for ghost_message, 2s rate limit)
 │   │   ├── GhostMessageList (ghost chat history with spectral styling)
@@ -2159,8 +2191,10 @@ COPY backend/ ./backend/
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 WORKDIR /app/backend
 EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--ws-ping-interval", "15", "--ws-ping-timeout", "20"]
 ```
+
+**Implementation Update (v5.2):** The production CMD now includes `--ws-ping-interval=15 --ws-ping-timeout=20` flags. These uvicorn-level WebSocket pings keep connections alive through Cloud Run's idle timeout and mobile browser network switches. See section 12.6.5 for the keepalive design rationale and history.
 
 ```txt
 # requirements.txt
@@ -3316,8 +3350,8 @@ def generate_scene_image(description: str, phase: str, mood: str) -> str:
         Scene: {description}
         Phase: {phase}
         Mood: {mood}
-        Style: Dark, painterly, firelit. Think campfire tales meets medieval woodcuts. 
-        Muted earth tones with warm firelight accents. No text in the image.
+        Style: Flat vector illustration, limited color palette (5-6 colors max).
+        Silhouettes and solid shapes. No text in the image.
         """,
         config=genai.types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"]
@@ -3344,6 +3378,8 @@ type ServerMessage =
 ```
 
 **Frontend:** `NarratorPanel` displays scene image above the story log. Fades in/out between phases.
+
+**Implementation Update (v5.2):** The prompt style was changed from "dark painterly illustration" to "flat vector illustration, limited color palette (5-6 colors max)" with simplified scene descriptions (2-3 sentences, silhouettes and solid shapes). This reduces generated image file sizes from ~2.3MB (which exceeded serving limits and got skipped) to well under 500KB, ensuring images are consistently deliverable to clients.
 
 ---
 
@@ -4085,12 +4121,13 @@ COPY backend/ ./backend/
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 WORKDIR /app/backend
 EXPOSE 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--ws-ping-interval", "15", "--ws-ping-timeout", "20"]
 ```
 
 Key changes from the original single-stage design (section 9.1):
 - **Two stages** instead of installing Node.js inside the Python image. Stage 1 (`node:18-slim`) builds the frontend; Stage 2 (`python:3.11-slim`) copies only the compiled `dist/` output. This reduces final image size by ~400 MB.
 - **Port 8000** instead of 8080 (aligned with actual uvicorn config).
+- **(v5.2)** `--ws-ping-interval=15 --ws-ping-timeout=20` added to CMD for production WebSocket keep-alive (see §12.6.5).
 - **Python 3.11** base image (pinned for compatibility with dependencies).
 - **Single worker** (`--workers 1`) since the app manages WebSocket state in-process.
 
@@ -4219,16 +4256,23 @@ A dedicated `_player_sender` coroutine per connection drains `control_queue` fir
 
 ## 12.6.5 WebSocket Keepalive
 
-**Files:** `backend/routers/ws_router.py`, `backend/main.py`
+**Files:** `backend/routers/ws_router.py`, `backend/main.py`, `Dockerfile`
 
 WebSocket ping/pong was previously disabled (contributed to silent 1006 disconnections). Re-enabled in v5.0:
 
 ```python
-# uvicorn launch / websocket accept configuration
+# uvicorn launch / websocket accept configuration (v5.0 values)
 # Ping interval: 20s — server sends a ping every 20 seconds
 # Ping timeout: 30s — if no pong received within 30s of sending ping, connection is closed
 # These values match the Cloud Run request timeout headroom (60s max idle)
 ```
+
+**Implementation Update (v5.2):** Production keepalive is now configured via Dockerfile CMD flags rather than application-level code:
+```dockerfile
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--ws-ping-interval", "15", "--ws-ping-timeout", "20"]
+```
+
+The v5.2 values are tighter than v5.0 (15s interval / 20s timeout vs. 20s / 30s) based on production observation: Cloud Run's load balancer was dropping WebSocket connections before the 20s server ping fired. The 15s interval keeps connections alive through Cloud Run's idle detection, and the 20s timeout provides sufficient margin for mobile network jitter without holding dead connections too long.
 
 Disconnect events on both the game WS and audio WS are now logged with structured fields (`game_id`, `player_id`, `code`) rather than silently swallowed. This surfaces 1006 codes in Cloud Logging for diagnosis.
 
@@ -4341,6 +4385,89 @@ Defense-in-depth concurrency protections:
 
 ---
 
+# 12.8 v5.2 Architecture Additions (Bug Fix Sprint — March 14, 2026)
+
+The following changes were shipped in the `fix/share-link-audio-votes` branch (commit `c3bf8d7`). They address production issues discovered during R4 playtesting: broken share/join links, audio WS drops on mobile, missing vote tally visibility, oversized scene images, and log noise.
+
+## 12.8.1 SPA Catch-All Routing
+
+**Files:** `backend/main.py`
+
+Production deep links (e.g., `/join/C1E7F362`) returned 404 because Starlette's `StaticFiles` only serves files that exist on disk. React Router requires the server to serve `index.html` for all non-API paths so the client-side router can resolve the route.
+
+- **`SPAStaticFiles` subclass:** Extends Starlette's `StaticFiles`. Overrides `get_response()` to catch 404 exceptions and serve `index.html` (via `super().get_response(".", scope)`) instead.
+- **Route priority:** API routes (`/api/*`) and WebSocket routes (`/ws/*`) are registered on the FastAPI app before the `app.mount("/", SPAStaticFiles(...))` call. FastAPI evaluates routes in registration order, so API and WS endpoints always take priority over the SPA catch-all.
+- **No reverse proxy needed:** This approach avoids adding Nginx, Caddy, or a Cloud Run URL rewrite rule — the single-container deployment model is preserved.
+
+## 12.8.2 Audio WebSocket Reconnection Architecture
+
+**Files:** `frontend/src/hooks/useAudioCapture.js`
+
+Mobile browsers aggressively suspend WebSocket connections when the page loses focus (tab switch, screen lock, notification tray). The previous implementation tore down the entire mic pipeline (MediaStream, AudioContext, AudioWorkletNode) on WS disconnect, causing a costly re-initialization on every reconnect.
+
+**Separated lifecycle model:**
+- **Mic layer (persistent):** MediaStream, AudioContext, and AudioWorkletNode are created once per `startCapture()` call and persist until `stopCapture()`. They are NOT destroyed on WS disconnect.
+- **WS layer (reconnectable):** The WebSocket connection to `/ws/audio/{game_id}` can be torn down and re-established independently. On reconnect, the existing AudioWorkletNode resumes sending PCM frames to the new WS connection.
+
+**Reconnection strategy:**
+- **Exponential backoff:** Delays [500, 1000, 2000, 4000, 8000]ms, max 10 attempts. After 10 failures, the mic is released and the user is notified.
+- **Page Visibility API:** On `visibilitychange` to `hidden`, the audio WS is proactively closed (prevents mobile browsers from sending a stale close frame later). On `visibilitychange` to `visible`, the WS is reconnected and `AudioContext.resume()` is called (browsers suspend AudioContext when the page is hidden).
+- **`connectingRef` guard:** A ref tracks whether a connection attempt is in flight. The visibility handler checks this guard to prevent orphaning `startCapture`'s pending connection promise when the user rapidly switches tabs.
+
+## 12.8.3 Game Control WebSocket Mobile Resilience
+
+**Files:** `frontend/src/hooks/useWebSocket.js`
+
+The game-state WebSocket (`/ws/{game_id}`) had similar mobile tab-switch issues:
+
+- **CONNECTING state guard:** Prevents duplicate WebSocket connections when `visibilitychange` fires during an in-progress connection attempt. Without this guard, mobile tab-switches could spawn parallel connections, causing duplicate message delivery.
+- **Page Visibility API integration:** On `visibilitychange` to `visible`, an immediate reconnect is triggered (bypassing the normal backoff delay). This ensures the game state is re-synced as fast as possible when the user returns to the tab.
+- **Sync heartbeat:** Every 2 seconds, the client sends a `{ type: "sync" }` message and the server responds with the current game phase. If the client's local phase does not match the server's phase, the client force-disconnects and reconnects. On reconnect, the server replays the latest state (via the `connected` message), bringing the client back in sync. This catches state drift that occurs when WS messages are delivered while the page is hidden (some browsers buffer but do not process them).
+
+## 12.8.4 Vote Tally Data Flow
+
+**Files:** `backend/routers/ws_router.py`, `frontend/src/components/Game/VoteTallyOverlay.jsx`, `frontend/src/context/GameContext.jsx`
+
+Vote tallies were previously invisible to players after voting concluded. The `tally_votes()` function in the Game Master clears AI characters' `voted_for` fields as a side effect, so individual vote data was lost before it could be broadcast.
+
+**Data capture timing:**
+- **Before `tally_votes()`:** The WS router now snapshots individual votes (`{voter_character_name: voted_for_character_name}`) from all players and AI characters BEFORE calling `tally_votes()`.
+- **`broadcast_elimination` payload:** The elimination broadcast now includes two new fields:
+  - `individualVotes: Record<string, string>` — who voted for whom.
+  - `isTie: boolean` — whether the vote resulted in a tie (no elimination).
+
+**Frontend:**
+- **`VoteTallyOverlay`:** New component that renders during the `elimination` phase. Displays each character's vote as a visual mapping (voter arrow target). Shows "TIE — No elimination" when `isTie` is true.
+- **`GameContext` reducer:** The `ELIMINATION` action stores `lastVoteResult` (containing `individualVotes` and `isTie`). This state is preserved while the phase remains `elimination` and cleared on transition to any other phase.
+
+## 12.8.5 Scene Image Prompt Optimization
+
+**Files:** `backend/agents/scene_agent.py`
+
+Production scene images were averaging 2.3MB — too large for reliable delivery to mobile clients and occasionally exceeding serving limits (images were silently skipped).
+
+- **Style change:** Prompt changed from "dark painterly illustration" to "flat vector illustration, limited color palette (5-6 colors max)".
+- **Description simplification:** Scene descriptions are now 2-3 sentences with silhouettes and solid shapes, rather than detailed realistic descriptions.
+- **Result:** Generated images are consistently under 500KB, eliminating the silent-skip issue.
+
+## 12.8.6 Gemini Live API Log Cleanup
+
+**Files:** `backend/agents/narrator_agent.py`
+
+Non-standard Gemini Live API response fields were flooding production logs:
+
+- **`session_resumption_update`:** Handler now properly `continue`s in the message processing loop. Previously it fell through to the NON-STANDARD catch-all logger, producing a log line for every session resumption update.
+- **`voice_activity` and `voice_activity_detection_signal`:** Explicitly handled with `continue` — these are informational Gemini signals that do not require processing.
+- **NON-STANDARD log level:** Changed from `logger.info` to `logger.debug`. Unknown Gemini fields are still logged for diagnostic purposes but no longer pollute production log aggregations at the default log level.
+
+## 12.8.7 Production WebSocket Keep-Alive
+
+**Files:** `Dockerfile`
+
+The uvicorn CMD in the Dockerfile now includes `--ws-ping-interval=15 --ws-ping-timeout=20`. This is tighter than the v5.0 application-level configuration (20s/30s) based on production data showing that Cloud Run's load balancer dropped idle WebSocket connections before the server's 20s ping could fire. The 15s interval keeps connections alive through Cloud Run's idle detection.
+
+---
+
 # 13. PRD Cross-Reference & Compliance Matrix
 
 | PRD Requirement | TDD Section | Status |
@@ -4427,6 +4554,14 @@ Defense-in-depth concurrency protections:
 | Concurrency guards (_resolving_nights) | §12.7.8, §5.3 | ✅ Shipped — double-resolution prevention, alive check before kill |
 | Simplified win condition (parity) | §3.3 | ✅ Shipped — non_shapeshifter_alive <= 1, no round guard |
 | Night timeout 45s (Gemini RPC latency) | §12.7.8, §12.6.4 | ✅ Shipped — reverted from 30s |
+| **v5.2 Bug Fix Sprint** | | |
+| SPA catch-all routing (SPAStaticFiles) | §12.8.1, §2.2 Decision 8, §5.3 | ✅ Shipped — React Router deep links work in production |
+| Audio WS reconnection (separated mic/WS lifecycle) | §12.8.2, §12.6.1, §2.2 Decision 5 | ✅ Shipped — exponential backoff, Page Visibility API, connectingRef guard |
+| Game WS mobile resilience | §12.8.3 | ✅ Shipped — CONNECTING guard, visibility reconnect, 2s sync heartbeat |
+| Vote tally data flow (individualVotes, isTie) | §12.8.4, §5.2 | ✅ Shipped — VoteTallyOverlay, pre-tally vote capture |
+| Scene image prompt optimization | §12.8.5, §12.3.14 | ✅ Shipped — flat vector style, <500KB images |
+| Gemini Live API log cleanup | §12.8.6 | ✅ Shipped — proper continue for voice_activity, debug-level NON-STANDARD |
+| Production WS keep-alive (Dockerfile CMD) | §12.8.7, §12.6.5 | ✅ Shipped — --ws-ping-interval=15 --ws-ping-timeout=20 |
 
 ---
 
