@@ -1380,7 +1380,7 @@ export default function GameScreen() {
     {currentSceneKey && sceneImageCache[currentSceneKey] && phase !== 'setup' && (
       <div key={currentSceneKey} className="fade-in" style={{
         position: 'fixed',
-        top: 0, left: 0, right: 0, bottom: 0,
+        inset: 0,
         overflow: 'hidden',
         opacity: 0.18,
         pointerEvents: 'none',
@@ -1389,7 +1389,12 @@ export default function GameScreen() {
         <img
           src={`data:image/png;base64,${sceneImageCache[currentSceneKey]}`}
           alt=""
-          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          style={{
+            display: 'block',
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+          }}
         />
       </div>
     )}
