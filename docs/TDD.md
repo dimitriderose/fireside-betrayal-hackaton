@@ -144,13 +144,17 @@ Rationale: Mixing high-volume binary audio frames with JSON game-state messages 
 
 **Implementation Update (v5.2):** The audio WS lifecycle is now fully decoupled from the microphone lifecycle. The mic stream (MediaStream, AudioContext, AudioWorkletNode) stays alive across WS reconnects — only the WebSocket connection is torn down and re-established. This prevents the costly re-initialization of the Web Audio pipeline on every reconnect. The audio WS has exponential backoff reconnection (delays: 500, 1000, 2000, 4000, 8000ms; max 10 attempts) and Page Visibility API integration (proactive WS close on page hidden, reconnect + AudioContext resume on page visible). A `connectingRef` guard prevents the visibility handler from orphaning `startCapture`'s pending connection promise.
 
+**Implementation Update (v5.4 — Audio WS Lifecycle Separation):** The audio WS lifecycle is now fully separated from the push-to-talk lifecycle. The WS connects once when the player enters a discussion or seance phase and stays alive across multiple PTT press/release cycles. It disconnects only when the player leaves the discussion/seance phase. Previously, the WS was torn down and rebuilt on every PTT press/release, adding latency and triggering unnecessary reconnection logic. A client-side keepalive (1-byte binary frame every 10 seconds) prevents Cloud Run's Envoy proxy from killing idle HTTP/2 streams between PTT cycles. The server filters keepalive frames with `len <= 1`. Additionally, `reconnectingRef` guard + `WebSocket.CONNECTING` state check prevent race conditions between `startCapture` and `connectAudioWs`.
+
 **Decision 8: SPA Catch-All Routing (v5.2)**
 The backend serves a React SPA via an `SPAStaticFiles` subclass of Starlette's `StaticFiles`. When a request path does not match any static file (404), the subclass catches the exception and serves `index.html` instead. This enables React Router client-side routing in production — deep links like `/join/C1E7F362` resolve correctly without a separate reverse proxy.
 
 Rationale: API routes (`/api/*`) and WebSocket routes (`/ws/*`) are registered on the FastAPI app before the static file mount. FastAPI evaluates routes in registration order, so API and WS paths take priority over the catch-all. This avoids the need for a separate Nginx or Caddy layer in the single-container Cloud Run deployment.
 
 **Decision 6: Push-to-Talk Speaker Lock**
-The server maintains a per-game speaker lock (`_current_speaker: Dict[str, Optional[str]]`) so only one player can hold the mic at a time. The lock is claimed immediately on `start_speaking` before any async validation (TOCTOU-safe). A 30-second `asyncio.Task` (`_speaker_timeout_tasks`) auto-releases the lock if the player forgets to release it. Dead players receive an error response and cannot claim the lock. The lock is also released on: `stop_speaking`, game WS disconnect, audio WS disconnect, phase transition, and game end.
+The server maintains a per-game speaker lock (`_current_speaker: Dict[str, Optional[str]]`) so only one player can hold the mic at a time. The lock is claimed immediately on `start_speaking` before any async validation (TOCTOU-safe). A 30-second `asyncio.Task` (`_speaker_timeout_tasks`) auto-releases the lock if the player forgets to release it. Dead players receive an error response and cannot claim the lock. The lock is also released on: `stop_speaking`, game WS disconnect, phase transition, and game end.
+
+**Implementation Update (v5.4 — Speaker Lock Ownership):** Speaker lock (`_current_speaker`) is now exclusively managed by the game WS. Audio WS disconnect no longer clears the speaker lock. Previously, audio WS disconnect would release the lock, which caused the narrator to go silent on reconnect because the server believed no one was speaking. The game WS is the single source of truth for speaker state — `start_speaking` claims the lock, `stop_speaking` releases it.
 
 Rationale: Gemini Live API's speaker identification degrades when concurrent audio streams overlap. The lock ensures clean speaker attribution and prevents audio collision artifacts.
 
@@ -1022,7 +1026,7 @@ async def handle_game_over(game: GameSession, game_id: str, win_check: dict):
 
 Two separate WebSocket connections per player:
 - **Game WS** (`/ws/{game_id}?playerId=xxx`) — JSON messages for game state, chat, votes, and narrator audio broadcast. **v5.2:** CONNECTING state guard prevents duplicate connections on mobile tab-switch. Page Visibility API triggers immediate reconnect (bypass backoff) when tab becomes visible. A 2-second sync heartbeat detects phase drift and forces reconnect on mismatch.
-- **Audio WS** (`/ws/audio/{game_id}?playerId=xxx`) — binary PCM frames only; no JSON, no base64. Opened when player activates push-to-talk. Closed when they release or navigate away. Independent lifecycle from Game WS. **v5.2:** Mic stream (MediaStream, AudioContext, AudioWorkletNode) is now persistent — only the WS connection is torn down and rebuilt on reconnect. Exponential backoff [500, 1000, 2000, 4000, 8000]ms with max 10 attempts. Page Visibility API proactively closes the WS on page hidden and reconnects on page visible.
+- **Audio WS** (`/ws/audio/{game_id}?playerId=xxx`) — binary PCM frames only (plus JSON text frames for signaling); no base64. **v5.4:** Connects once when entering discussion/seance phase, stays alive across PTT cycles, disconnects when leaving the phase. Client sends 1-byte keepalive every 10s to prevent Cloud Run idle timeout. On PTT release, client sends `{ type: "end_of_speech" }` text frame to improve Gemini VAD. Independent lifecycle from Game WS. **v5.2:** Mic stream (MediaStream, AudioContext, AudioWorkletNode) is now persistent — only the WS connection is torn down and rebuilt on reconnect. Exponential backoff [500, 1000, 2000, 4000, 8000]ms with max 10 attempts. Page Visibility API proactively closes the WS on page hidden and reconnects on page visible. **v5.4:** AudioContext and AudioWorklet module are created once and reused across PTT cycles; only MediaStream/source/worklet nodes are torn down on PTT release. AudioContext is suspended between PTT cycles for mobile battery savings.
 
 ```
 Client (game WS)                Server              Client (audio WS)
@@ -1063,11 +1067,20 @@ Client (game WS)                Server              Client (audio WS)
   │       text: "I think..." }     │                       │
   │     [BROADCAST to others]      │                       │
   │                                │                       │
-  │──── START_SPEAKING ───────────▶│                       │
-  │     { type: "start_speaking" } │                       │
+  │                                │                       │
+  │  [PHASE: discussion/seance]    │                       │
   │                                │──── WS CONNECT ──────▶│
   │                                │  /ws/audio/{gameId}   │
   │                                │  ?playerId=xxx        │
+  │                                │  [stays open across   │
+  │                                │   PTT cycles]         │
+  │                                │                       │
+  │                                │◀─── 1-byte keepalive──│
+  │                                │  every 10s (idle)     │
+  │                                │  [server filters ≤1B] │
+  │                                │                       │
+  │──── START_SPEAKING ───────────▶│                       │
+  │     { type: "start_speaking" } │                       │
   │◀─── SPEAKER_ACK ─────────────│                       │
   │     { type: "speaker_granted"} │                       │
   │     [PRIVATE — lock acquired]  │                       │
@@ -1078,8 +1091,15 @@ Client (game WS)                Server              Client (audio WS)
   │                                │   (no JSON wrapper)   │
   │                                │                       │
   │──── STOP_SPEAKING ────────────▶│                       │
-  │     { type: "stop_speaking" }  │──── WS CLOSE ────────▶│
-  │     [releases speaker lock]    │                       │
+  │     { type: "stop_speaking" }  │◀── end_of_speech JSON─│
+  │     [releases speaker lock]    │  { type:              │
+  │                                │    "end_of_speech" }  │
+  │                                │  [improves Gemini VAD]│
+  │                                │                       │
+  │  [PHASE: leaves discussion]    │                       │
+  │                                │──── WS CLOSE ────────▶│
+  │                                │  [audio WS torn down  │
+  │                                │   on phase exit only] │
   │                                │                       │
   │──── QUICK_REACTION ───────────▶│                       │  P1
   │     { type: "quick_reaction",  │                       │
@@ -1229,20 +1249,27 @@ type ClientMessage =
   | { type: "sync" }                                                    // v5.2: Heartbeat — server responds with current phase for drift detection
 
 // Audio WebSocket (/ws/audio/{gameId}?playerId=xxx)
-// Sends raw binary PCM16 frames, 16 kHz, mono — NO JSON envelope.
+// Sends raw binary PCM16 frames, 16 kHz, mono — NO JSON envelope for audio data.
+// v5.4: WS connects once on entering discussion/seance phase, stays alive across PTT
+// cycles, disconnects on leaving the phase. Client sends 1-byte binary keepalive every
+// 10s to prevent Cloud Run Envoy idle timeout. Server filters frames with len <= 1.
+// On PTT release, client sends JSON text frame: { type: "end_of_speech" } to signal
+// speech boundary to Gemini Live API (improves VAD behavior).
+// v5.4: Speaker lock is NOT cleared on audio WS disconnect — game WS owns lock state.
 // v5.2: Mic stream (MediaStream, AudioContext, AudioWorkletNode) persists across WS
 // reconnects. Only the WS connection is opened/closed. Exponential backoff reconnect
 // (500-8000ms, max 10 attempts). Page Visibility API: close WS on hidden, reconnect on
-// visible. connectingRef guard prevents orphaned connection promises.
-// If the audio WS drops mid-capture, the speaker lock is released automatically
-// server-side; game WS is unaffected.
+// visible. connectingRef + CONNECTING state check prevent duplicate connections.
+// v5.4: AudioContext + AudioWorklet module reused across PTT cycles. Only
+// MediaStream/source/worklet nodes torn down on PTT release. AudioContext suspended
+// between PTT cycles (mobile battery).
 
 type QuickReaction = "suspect" | "trust" | "agree" | "have_info";
 ```
 
 **Wire Protocol Note (v4.0):** The backend game state WebSocket message (sent on `connected` and on state updates) still carries separate `aiCharacter` and `aiCharacter2` top-level fields, matching the Firestore document model. The frontend (`useWebSocket.js`) assembles these into a unified `aiCharacters[]` array and dispatches a single `SET_AI_CHARACTERS` action to `GameContext`. This keeps the Firestore schema stable while giving the frontend a clean N-element array. The Narrator Agent's `get_game_state` tool response uses `ai_characters[]` directly (not the split fields) because it reads from the game master's resolved state rather than the raw WebSocket payload.
 
-**Audio Transport Note (v5.0, updated v5.2):** Player microphone audio is no longer embedded in JSON messages on the game-state WebSocket. `useAudioCapture.js` opens a separate binary WebSocket to `/ws/audio/{gameId}` and streams raw PCM16 frames (no encoding, no envelope). This reduces per-frame overhead by ~33% and eliminates the code 1006 game WS disconnections that occurred when audio frame bursts saturated the shared queue. **v5.2 architecture change:** The mic stream (MediaStream, AudioContext, AudioWorkletNode) lifecycle is now fully separated from the audio WS lifecycle. The mic stays alive across WS reconnects; only the WS connection is torn down and re-established. On WS drop, exponential backoff reconnection fires (delays [500,1000,2000,4000,8000]ms, max 10 attempts). Page Visibility API proactively closes the WS on page hidden and reconnects + resumes AudioContext on page visible. A `connectingRef` guard prevents orphaned connection promises from the visibility handler.
+**Audio Transport Note (v5.0, updated v5.4):** Player microphone audio is no longer embedded in JSON messages on the game-state WebSocket. `useAudioCapture.js` opens a separate binary WebSocket to `/ws/audio/{gameId}` and streams raw PCM16 frames (no encoding, no envelope). This reduces per-frame overhead by ~33% and eliminates the code 1006 game WS disconnections that occurred when audio frame bursts saturated the shared queue. **v5.2 architecture change:** The mic stream (MediaStream, AudioContext, AudioWorkletNode) lifecycle is now fully separated from the audio WS lifecycle. The mic stays alive across WS reconnects; only the WS connection is torn down and re-established. On WS drop, exponential backoff reconnection fires (delays [500,1000,2000,4000,8000]ms, max 10 attempts). Page Visibility API proactively closes the WS on page hidden and reconnects + resumes AudioContext on page visible. A `connectingRef` guard prevents orphaned connection promises from the visibility handler. **v5.4 architecture change:** The audio WS lifecycle is now separated from the PTT lifecycle. The WS connects once when entering discussion/seance phase and persists across PTT press/release cycles. A 1-byte binary keepalive is sent every 10s to prevent Cloud Run Envoy idle timeout. On PTT release, a `{ type: "end_of_speech" }` JSON text frame signals speech boundaries to Gemini. AudioContext and AudioWorklet module are reused across PTT cycles (only MediaStream/source/worklet nodes are torn down). AudioContext is suspended between PTT cycles for mobile battery savings. Speaker lock is now exclusively owned by the game WS — audio WS disconnect no longer clears it.
 
 **Phase Timer Note (v5.0):** `phase_change` messages no longer include `timerSeconds`. Instead, a separate `phase_timer_start` message is sent when the narrator explicitly calls `start_phase_timer` (signalling narration is done) or when the 15-second safety fallback fires. The frontend must not start its countdown until it receives `phase_timer_start`. This prevents the countdown from racing ahead of the narrator's opening speech.
 
@@ -1495,7 +1522,7 @@ class GameSession:
         await self.release_speaker_lock(player_id, reason="timeout")
 
     async def force_release_speaker_on_disconnect(self, player_id: str):
-        """Called when game WS or audio WS disconnects."""
+        """Called when game WS disconnects. v5.4: NOT called on audio WS disconnect."""
         await self.release_speaker_lock(player_id, reason="disconnect")
 
     async def force_release_speaker_on_phase_change(self):
@@ -1764,17 +1791,18 @@ async def game_websocket(websocket: WebSocket, game_id: str):
 
 @app.websocket("/ws/audio/{game_id}")
 async def audio_websocket(websocket: WebSocket, game_id: str):
-    """Dedicated binary audio WebSocket (v5.0).
+    """Dedicated binary audio WebSocket (v5.0, updated v5.4).
 
-    Receives raw binary PCM16 frames (16 kHz, mono) from the player's mic.
-    No JSON envelope. No base64 encoding. Each received binary frame is
-    forwarded directly to NarratorSession.send_audio().
+    Receives raw binary PCM16 frames (16 kHz, mono) from the player's mic,
+    plus JSON text frames for signaling (e.g., end_of_speech).
 
-    Lifecycle:
-    - Player opens this connection after server sends speaker_granted.
-    - useAudioCapture.js AudioWorklet feeds raw PCM chunks here.
-    - If this WS drops mid-capture (code 1006 or any disconnect), the server
-      releases the speaker lock and logs the event; the game WS is unaffected.
+    Lifecycle (v5.4):
+    - Player opens this connection when entering discussion/seance phase.
+    - Connection stays alive across multiple PTT press/release cycles.
+    - Client sends 1-byte binary keepalive every 10s between PTT cycles.
+    - On PTT release, client sends { type: "end_of_speech" } text frame.
+    - Connection closes when leaving discussion/seance phase.
+    - Audio WS disconnect does NOT release speaker lock (game WS owns it).
     """
     await websocket.accept()
     player_id = websocket.query_params.get("playerId")
@@ -1788,10 +1816,21 @@ async def audio_websocket(websocket: WebSocket, game_id: str):
 
     try:
         while True:
-            pcm_bytes = await websocket.receive_bytes()
-            # Forward raw PCM to the Gemini Live API session
-            if game.live_queue:
-                await game.narrator_session.send_audio(pcm_bytes, speaker=character_name)
+            message = await websocket.receive()
+            if "bytes" in message:
+                pcm_bytes = message["bytes"]
+                # v5.4: Filter keepalive frames (1-byte binary pings)
+                if len(pcm_bytes) <= 1:
+                    continue
+                # Forward raw PCM to the Gemini Live API session
+                if game.live_queue:
+                    await game.narrator_session.send_audio(pcm_bytes, speaker=character_name)
+            elif "text" in message:
+                import json
+                data = json.loads(message["text"])
+                if data.get("type") == "end_of_speech":
+                    # v5.4: Signal speech boundary to Gemini for better VAD
+                    await game.narrator_manager.signal_end_of_speech()
 
     except WebSocketDisconnect as exc:
         logger.info("audio_ws_disconnect", extra={
@@ -1801,8 +1840,7 @@ async def audio_websocket(websocket: WebSocket, game_id: str):
         })
     finally:
         game._audio_websockets.pop(player_id, None)
-        # Release speaker lock if this player held it
-        await game.force_release_speaker_on_disconnect(player_id)
+        # v5.4: Do NOT release speaker lock here — game WS owns lock state
 ```
 
 ---
@@ -4188,11 +4226,15 @@ The following features were added after the v4.0 milestone to fix the narrator d
 Player microphone audio is now transported over a dedicated binary WebSocket (`/ws/audio/{game_id}`) rather than being base64-encoded and embedded in JSON messages on the game-state WebSocket.
 
 **Protocol:**
-- Client opens `/ws/audio/{game_id}?playerId=xxx` after receiving `speaker_granted`.
+- Client opens `/ws/audio/{game_id}?playerId=xxx` when entering a discussion or seance phase. The connection stays alive across multiple PTT press/release cycles.
 - Each AudioWorklet processor callback sends one binary frame: raw 16-bit PCM, 16 kHz, mono. No JSON, no base64.
-- Server receives `bytes` via `websocket.receive_bytes()` and calls `narrator_session.send_audio(pcm_bytes, speaker=character_name)` directly.
-- If the audio WS drops (code 1006 or any error), the server releases the speaker lock and logs the disconnect. The game WS is completely unaffected.
-- `useAudioCapture.js` manages the audio WS lifecycle: creates on `start_speaking`, destroys on `stop_speaking` or component unmount.
+- Server receives frames via `websocket.receive()`. Binary frames with `len > 1` are forwarded to `narrator_session.send_audio(pcm_bytes, speaker=character_name)`. Frames with `len <= 1` are filtered as keepalive pings.
+- **Keepalive (v5.4):** Client sends a 1-byte binary frame every 10 seconds when idle (between PTT cycles). This prevents Cloud Run's Envoy proxy from killing idle HTTP/2 streams.
+- **End-of-speech signaling (v5.4):** When PTT is released, client sends `{ type: "end_of_speech" }` as a JSON text frame on the audio WS. Server forwards to `NarratorManager.signal_end_of_speech()` which sends a text annotation to the Gemini Live API, improving Gemini's voice activity detection behavior.
+- If the audio WS drops (code 1006 or any error), the server logs the disconnect. The game WS is completely unaffected. **v5.4:** Audio WS disconnect no longer releases the speaker lock — lock ownership is exclusive to the game WS.
+- `useAudioCapture.js` manages the audio WS lifecycle: connects on phase entry (discussion/seance), disconnects on phase exit or component unmount. PTT press/release only starts/stops the mic capture stream, not the WS connection.
+- **AudioContext reuse (v5.4):** AudioContext and AudioWorklet module are created once and reused across PTT cycles. Only MediaStream, source node, and worklet node are torn down on PTT release. AudioContext is suspended between PTT cycles to save mobile battery.
+- **Duplicate WS prevention (v5.4):** `reconnectingRef` guard + `WebSocket.CONNECTING` state check prevent race conditions between `startCapture` and `connectAudioWs`.
 
 **Benefits:**
 - ~33% reduction in per-frame bytes (no base64 encoding overhead).
@@ -4211,8 +4253,8 @@ Only one player can hold the microphone at a time. The server maintains `_curren
 1. Player sends `{ type: "start_speaking" }` on the game WS.
 2. Server checks: player alive? lock free? If both, `_current_speaker` is set immediately before any await (TOCTOU-safe).
 3. Server sends `{ type: "speaker_granted" }` to the player (private).
-4. Player opens the audio WS and begins streaming PCM.
-5. Lock is released on any of: `stop_speaking` message, game WS disconnect, audio WS disconnect, phase transition, game end, or 30s timeout.
+4. Player begins streaming PCM on the already-connected audio WS (audio WS was connected at phase entry, not per PTT press).
+5. Lock is released on any of: `stop_speaking` message, game WS disconnect, phase transition, game end, or 30s timeout. **v5.4:** Audio WS disconnect does NOT release the lock — the game WS is the sole owner of speaker lock state.
 6. On release, server broadcasts `{ type: "speaker_released", playerId, reason }` to all players.
 7. Dead players receive `{ type: "speaker_error", reason: "dead_players_cannot_speak" }` and cannot claim the lock.
 
@@ -4418,14 +4460,23 @@ Production deep links (e.g., `/join/C1E7F362`) returned 404 because Starlette's 
 
 Mobile browsers aggressively suspend WebSocket connections when the page loses focus (tab switch, screen lock, notification tray). The previous implementation tore down the entire mic pipeline (MediaStream, AudioContext, AudioWorkletNode) on WS disconnect, causing a costly re-initialization on every reconnect.
 
-**Separated lifecycle model:**
-- **Mic layer (persistent):** MediaStream, AudioContext, and AudioWorkletNode are created once per `startCapture()` call and persist until `stopCapture()`. They are NOT destroyed on WS disconnect.
-- **WS layer (reconnectable):** The WebSocket connection to `/ws/audio/{game_id}` can be torn down and re-established independently. On reconnect, the existing AudioWorkletNode resumes sending PCM frames to the new WS connection.
+**Separated lifecycle model (v5.2 + v5.4):**
+- **AudioContext + AudioWorklet layer (persistent, v5.4):** AudioContext and AudioWorklet module are created once and reused across all PTT cycles within a discussion/seance phase. They are NOT torn down between PTT presses. AudioContext is suspended between PTT cycles to save mobile battery and resumed on the next PTT press.
+- **Mic capture layer (per-PTT):** MediaStream, source node, and worklet node are created on each PTT press and torn down on PTT release. This layer feeds PCM frames to the WS connection.
+- **WS layer (per-phase, reconnectable):** The WebSocket connection to `/ws/audio/{game_id}` connects once on entering discussion/seance phase and persists across PTT cycles. It disconnects when the player leaves the phase. On unexpected disconnect, exponential backoff reconnection fires. A 1-byte binary keepalive is sent every 10 seconds to prevent Cloud Run Envoy proxy from killing idle HTTP/2 streams between PTT cycles.
+
+**End-of-speech signaling (v5.4):**
+- When PTT is released, client sends `{ type: "end_of_speech" }` as a JSON text frame on the audio WS.
+- Server forwards to `NarratorManager.signal_end_of_speech()` which sends a text annotation to the Gemini Live API.
+- This improves Gemini's voice activity detection (VAD) behavior by explicitly marking speech boundaries.
+
+**Speaker lock ownership (v5.4):**
+- Speaker lock (`_current_speaker`) is now exclusively managed by the game WS. Audio WS disconnect no longer clears the speaker lock. Previously, audio WS disconnect would release the lock, causing the narrator to go silent on reconnect because the server believed no one was speaking.
 
 **Reconnection strategy:**
 - **Exponential backoff:** Delays [500, 1000, 2000, 4000, 8000]ms, max 10 attempts. After 10 failures, the mic is released and the user is notified.
 - **Page Visibility API:** On `visibilitychange` to `hidden`, the audio WS is proactively closed (prevents mobile browsers from sending a stale close frame later). On `visibilitychange` to `visible`, the WS is reconnected and `AudioContext.resume()` is called (browsers suspend AudioContext when the page is hidden).
-- **`connectingRef` guard:** A ref tracks whether a connection attempt is in flight. The visibility handler checks this guard to prevent orphaning `startCapture`'s pending connection promise when the user rapidly switches tabs.
+- **`reconnectingRef` guard + CONNECTING check (v5.4):** A ref tracks whether a connection attempt is in flight, and the WebSocket.CONNECTING state is checked before initiating a new connection. This prevents race conditions between `startCapture` and `connectAudioWs` and prevents duplicate WS connections when the user rapidly switches tabs.
 
 ## 12.8.3 Game Control WebSocket Mobile Resilience
 
@@ -4879,6 +4930,13 @@ The `config.py` default for `narrator_voice` is now `Gacrux`. Notably, Horror no
 | Gemini model upgrades | §12.9.14, §14 | ✅ Shipped — gemini-3-flash-preview (traitor/camera), gemini-3.1-flash-image-preview (scene) |
 | Narrator voice updates | §12.9.15, §12.3.17, §3.1 | ✅ Shipped — Gacrux (Classic), Sulafat (Campfire), Enceladus (Horror), Zubenelgenubi (Comedy) |
 | Guided tour (11-step) | §12.3.7, §8.1 | ✅ Shipped — spotlight overlay, tab auto-switching (extends Tutorial Mode) |
+| **v5.4 Audio WS Architecture** | | |
+| Audio WS lifecycle separated from PTT | §12.6.1, §12.8.2, §2.2 Decision 5, §5.1 | ✅ Shipped — WS connects on phase entry, persists across PTT cycles, disconnects on phase exit |
+| Speaker lock ownership (game WS only) | §12.6.2, §2.2 Decision 6 | ✅ Shipped — audio WS disconnect no longer clears speaker lock |
+| Audio WS keepalive (1-byte binary) | §12.6.1, §12.8.2 | ✅ Shipped — 10s interval, prevents Cloud Run Envoy idle timeout, server filters len<=1 |
+| End-of-speech signaling | §12.6.1, §12.8.2 | ✅ Shipped — { type: "end_of_speech" } text frame on PTT release, forwarded to Gemini |
+| AudioContext reuse across PTT cycles | §12.8.2, §5.1 | ✅ Shipped — AudioContext + AudioWorklet module persistent, suspended between PTT cycles |
+| Duplicate WS prevention | §12.8.2, §2.2 Decision 5 | ✅ Shipped — reconnectingRef + CONNECTING state check prevent race conditions |
 
 ---
 
@@ -4917,6 +4975,6 @@ PORT=8080
 ---
 
 *Document created: February 21, 2026*
-*Last updated: March 15, 2026 — v5.3: modular ws/ package (8-module split from ws_router.py), constants.py centralization, utils/tasks.py safe task management, utils/game_utils.py shared helpers, state machine phase validation, Firestore transactions (try_set_resolving, start_game_transactional, eliminate_character_transactional), batch Firestore writes, slowapi rate limiting + WS chat rate limiting, CORS validation on WebSocket upgrade, narrator watchdog auto-restart (15s), narrator game state caching (5s TTL), per-player reliable delivery (seq/lastSeq replay), frontend state consolidation (window events → GameContext dispatch), scene image cache (30-min TTL sweep, lobby pre-generation), Gemini model upgrades (gemini-3-flash-preview, gemini-3.1-flash-image-preview), narrator voice updates (Gacrux/Sulafat/Enceladus/Zubenelgenubi)*
+*Last updated: March 15, 2026 — v5.4: audio WS lifecycle separated from PTT (connects on phase entry, persists across PTT cycles), speaker lock ownership exclusive to game WS, 1-byte keepalive for Cloud Run Envoy idle prevention, end_of_speech signaling to Gemini, AudioContext reuse across PTT cycles, duplicate WS prevention (reconnectingRef + CONNECTING check). v5.3: modular ws/ package (8-module split from ws_router.py), constants.py centralization, utils/tasks.py safe task management, utils/game_utils.py shared helpers, state machine phase validation, Firestore transactions (try_set_resolving, start_game_transactional, eliminate_character_transactional), batch Firestore writes, slowapi rate limiting + WS chat rate limiting, CORS validation on WebSocket upgrade, narrator watchdog auto-restart (15s), narrator game state caching (5s TTL), per-player reliable delivery (seq/lastSeq replay), frontend state consolidation (window events → GameContext dispatch), scene image cache (30-min TTL sweep, lobby pre-generation), Gemini model upgrades (gemini-3-flash-preview, gemini-3.1-flash-image-preview), narrator voice updates (Gacrux/Sulafat/Enceladus/Zubenelgenubi)*
 *Companion PRD: PRD.md v2.0*
 *Hackathon deadline: March 16, 2026*

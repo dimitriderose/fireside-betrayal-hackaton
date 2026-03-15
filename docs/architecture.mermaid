@@ -6,10 +6,12 @@ graph TB
         FE_STATE["Frontend State<br/>aiCharacters: [] array<br/>lastVoteResult: individualVotes + isTie<br/>(variable-count AI chars)"]
         PTT["Push-to-Talk<br/>Speaker Lock<br/>(one active speaker at a time)"]
 
-        subgraph AudioCapture["Audio Capture (Separated Lifecycles)"]
-            MIC["Mic Layer (Persistent)<br/>MediaStream + AudioContext<br/>+ AudioWorkletNode<br/>Survives WS reconnects"]
-            AUDIOWS_CLIENT["Audio WS Layer (Reconnectable)<br/>Exponential backoff:<br/>500/1000/2000/4000/8000ms<br/>Max 10 attempts"]
-            VISAPI_AUDIO["Page Visibility API<br/>Hidden: close WS proactively<br/>Visible: reconnect + resume AudioContext<br/>connectingRef guard"]
+        subgraph AudioCapture["Audio Capture (Separated Lifecycles v5.4)"]
+            ACTX["AudioContext Layer (Persistent)<br/>AudioContext + AudioWorklet module<br/>Created once, reused across PTT cycles<br/>Suspended between PTT (mobile battery)"]
+            MIC["Mic Layer (Per-PTT Cycle)<br/>MediaStream + source + worklet nodes<br/>Created on PTT press, torn down on release"]
+            AUDIOWS_CLIENT["Audio WS Layer (Per-Phase)<br/>Connects on discussion/seance entry<br/>Persists across PTT cycles<br/>1-byte keepalive every 10s<br/>Exponential backoff on drop"]
+            EOS["End-of-Speech Signal<br/>JSON text frame on PTT release<br/>{ type: 'end_of_speech' }<br/>→ NarratorManager → Gemini VAD"]
+            VISAPI_AUDIO["Page Visibility API<br/>Hidden: close WS proactively<br/>Visible: reconnect + resume AudioContext<br/>reconnectingRef + CONNECTING guard"]
         end
 
         subgraph GameWSClient["Game WS Client (Mobile Resilient)"]
@@ -76,7 +78,7 @@ graph TB
         end
 
         subgraph VoicePipeline["Player Voice Input Pipeline (Audio WS only)"]
-            AWS["Audio WS Handler<br/>/ws/audio/{game_id}<br/>Binary PCM frames<br/>Speaker lock enforced"]
+            AWS["Audio WS Handler<br/>/ws/audio/{game_id}<br/>Binary PCM + JSON text frames<br/>Filters keepalive (len≤1)<br/>Forwards end_of_speech → Narrator"]
             DECODE["Binary PCM Decode<br/>+ Speaker Lookup"]
             SPKR["Speaker Identification<br/>Character Name Annotation<br/>end_of_turn=False"]
             TBUF["Transcript Buffer<br/>0.8s Debounce Flush"]
@@ -114,11 +116,13 @@ graph TB
     %% Rate limiting
     RATELIMIT -.->|"decorates"| API
 
-    %% Audio WS — separated mic/WS lifecycle
+    %% Audio WS — separated phase/PTT/mic lifecycles (v5.4)
+    ACTX -->|"provides AudioContext"| MIC
     MIC -->|"PCM frames"| AUDIOWS_CLIENT
-    AUDIOWS_CLIENT -.->|"WS /ws/audio/{game_id}<br/>binary PCM16 16kHz frames<br/>(reconnectable, backoff)"| AWS
+    AUDIOWS_CLIENT -.->|"WS /ws/audio/{game_id}<br/>binary PCM16 16kHz frames<br/>+ 1-byte keepalive (10s)<br/>+ end_of_speech JSON text<br/>(per-phase, reconnectable)"| AWS
+    EOS -.->|"on PTT release"| AUDIOWS_CLIENT
     VISAPI_AUDIO -.->|"close/reconnect<br/>WS on visibility change"| AUDIOWS_CLIENT
-    PTT -.->|"grants / revokes<br/>speaker lock"| AWS
+    PTT -.->|"grants / revokes<br/>speaker lock<br/>(game WS only — v5.4)"| API
 
     %% Game WS client resilience
     GWSC <-->|"game WS connection"| API
@@ -131,6 +135,7 @@ graph TB
     TAB_RECORDS -.->|"vote + investigation data"| GWSC
 
     %% Voice input flow: Audio WS -> Decode -> Speaker ID -> Narrator only
+    AWS -->|"end_of_speech signal<br/>(v5.4: text annotation)"| NA
     AWS -->|"raw PCM bytes + player_id"| DECODE
     DECODE -->|"PCM bytes + character_name"| SPKR
     SPKR -->|"[VOICE] Speaker annotation<br/>+ raw PCM"| NA
@@ -236,7 +241,7 @@ graph TB
     class AWS,DECODE,SPKR,TBUF voice
     class TF,DOCK infra
     class GC,SEANCE,HAUNT ghost
-    class MIC,AUDIOWS_CLIENT,VISAPI_AUDIO,GWSC,VISAPI_GAME,SYNC_HB reconnect
+    class ACTX,MIC,AUDIOWS_CLIENT,EOS,VISAPI_AUDIO,GWSC,VISAPI_GAME,SYNC_HB reconnect
     class VCAP,VELIM,VTO vote
     class SPAPATH,RATELIMIT spa
     class WS_CONN,WS_MSG,WS_CONV,WS_STATE,WS_PHASE,WS_VOTE,WS_NIGHT,WS_LIFE wsmod
