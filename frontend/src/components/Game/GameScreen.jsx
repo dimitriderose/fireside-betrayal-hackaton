@@ -1113,7 +1113,7 @@ export default function GameScreen() {
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
   const { isPlaying, volume, setVolume } = useAudioPlayer()
-  const { micActive, micError, startCapture, stopCapture } = useAudioCapture(gameId, playerId)
+  const { micActive, micError, startCapture, stopCapture, disconnectWs } = useAudioCapture(gameId, playerId)
 
   const logRef = useRef(null)
   const [chatText, setChatText] = useState('')
@@ -1172,12 +1172,13 @@ export default function GameScreen() {
     }
   }, [phase, gameId, navigate])
 
-  // Stop mic capture when leaving discussion phase
+  // Tear down audio WS + mic when leaving discussion/seance phase
   useEffect(() => {
-    if (phase !== 'day_discussion') {
+    if (phase !== 'day_discussion' && phase !== 'seance') {
       stopCapture()
+      disconnectWs()
     }
-  }, [phase, stopCapture])
+  }, [phase, stopCapture, disconnectWs])
 
   // Poll player count from REST API during lobby (WS player_joined only fires post-game-start)
   useEffect(() => {

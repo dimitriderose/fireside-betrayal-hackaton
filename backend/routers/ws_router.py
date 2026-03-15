@@ -257,22 +257,28 @@ async def audio_websocket(
 
     try:
         while True:
-            raw = await ws.receive_bytes()
-            if _current_speaker.get(game_id) != playerId:
-                continue
-            await narrator_manager.forward_player_audio(game_id, raw, speaker=speaker_name)
+            msg = await ws.receive()
+            # Fix 4: Handle both binary (audio) and text (JSON control) messages
+            if "bytes" in msg and msg["bytes"] is not None:
+                raw = msg["bytes"]
+                # Fix 3: Skip keepalive pings (1-byte frames)
+                if len(raw) <= 1:
+                    continue
+                if _current_speaker.get(game_id) != playerId:
+                    continue
+                await narrator_manager.forward_player_audio(game_id, raw, speaker=speaker_name)
+            elif "text" in msg and msg["text"] is not None:
+                try:
+                    data = json.loads(msg["text"])
+                    if data.get("type") == "end_of_speech":
+                        # Fix 4: Signal Gemini that the player stopped speaking
+                        await narrator_manager.signal_end_of_speech(game_id, speaker_name)
+                except (json.JSONDecodeError, Exception) as e:
+                    logger.debug("[%s] Audio WS text parse error: %s", game_id, e)
     except WebSocketDisconnect:
         logger.info("[%s] Audio WS disconnected: %s", game_id, playerId)
     except RuntimeError:
         logger.info("[%s] Audio WS runtime error: %s", game_id, playerId)
     finally:
-        if _current_speaker.get(game_id) == playerId:
-            _current_speaker[game_id] = None
-            try:
-                await manager.broadcast(game_id, {
-                    "type": "speaker_changed",
-                    "speaker": None,
-                    "playerId": None,
-                })
-            except Exception:
-                logger.debug("[%s] Audio WS cleanup broadcast failed (game may have ended)", game_id)
+        # Fix 2: Do NOT clear speaker lock here — the game WS manages speaker state
+        logger.debug("[%s] Audio WS cleanup for %s", game_id, playerId)

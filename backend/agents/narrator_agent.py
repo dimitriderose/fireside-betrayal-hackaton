@@ -1260,6 +1260,22 @@ class NarratorManager:
             return
         await session.send_audio(pcm_bytes, speaker=speaker)
 
+    async def signal_end_of_speech(self, game_id: str, speaker: str) -> None:
+        """
+        Signal that a player has stopped speaking (PTT released).
+        Clears the voice speaker tracker and sends a text annotation to Gemini
+        so the narrator knows the player finished their turn.
+        """
+        session = self._sessions.get(game_id)
+        if not session:
+            return
+        if session._current_voice_speaker:
+            session._current_voice_speaker = None
+            await session.send(
+                f'[VOICE] {speaker} has stopped speaking.',
+                end_of_turn=False,
+            )
+
     async def send_phase_event(
         self,
         game_id: str,
