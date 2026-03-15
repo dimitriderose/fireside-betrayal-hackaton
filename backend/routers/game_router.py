@@ -172,10 +172,10 @@ async def start_game(
     opening_scene_b64 = None
     try:
         opening_scene_b64 = await asyncio.wait_for(
-            generate_scene_image("game_started"), timeout=15.0
+            generate_scene_image("game_started"), timeout=45.0
         )
     except asyncio.TimeoutError:
-        logger.warning("[%s] Opening scene image timed out after 15s — starting without it", game_id)
+        logger.warning("[%s] Opening scene image timed out after 45s — starting without it", game_id)
     except Exception:
         logger.warning("[%s] Opening scene image failed — starting without it", game_id, exc_info=True)
 
