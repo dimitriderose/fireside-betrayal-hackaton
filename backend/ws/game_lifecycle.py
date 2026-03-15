@@ -217,12 +217,15 @@ async def _end_game(
         "reason": reason,
     })
 
-    # Clean up per-game state
+    # Clean up per-game state (but NOT sender tasks — they need to flush game_over to clients)
     remove_tracker(game_id)
     remove_hand_queue(game_id)
     cleanup_game_timers(game_id)
     cleanup_game_handlers(game_id)
     _cancel_seance_timeout(game_id)
+
+    # Brief yield to let sender tasks flush the game_over message to clients
+    await asyncio.sleep(0.5)
     cancel_game_tasks(game_id)
 
     try:
