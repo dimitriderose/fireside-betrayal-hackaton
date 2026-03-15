@@ -44,19 +44,12 @@ _GAME_CODE_RE = re.compile(r"^[A-Z0-9]{8}$")
 async def verify_player_access(game_id: str, player_id: Optional[str]) -> None:
     """Check that the player_id belongs to this game. Raises 403 if not.
 
-    During LOBBY phase, player_id is not required (allows share-link access).
-    Once the game is in progress or finished, player_id is mandatory.
+    If player_id is not provided, access is allowed (the frontend doesn't
+    always have it available, e.g. on initial page load from a share link).
+    The WebSocket endpoint has its own player validation.
     """
     if not player_id:
-        # Allow unauthenticated access during lobby for share-link join flow
-        fs = get_firestore_service()
-        game = await fs.get_game(game_id)
-        if game and game.status == GameStatus.LOBBY:
-            return
-        raise HTTPException(
-            status_code=403,
-            detail="player_id query parameter is required to access this game",
-        )
+        return  # Allow unauthenticated reads — WS endpoint enforces real auth
 
     fs = get_firestore_service()
     player = await fs.get_player(game_id, player_id)

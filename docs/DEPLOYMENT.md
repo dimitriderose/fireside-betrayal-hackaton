@@ -435,13 +435,16 @@ firestore_database = "(default)"
 
 ### 5.5 Post-Deploy: Set CORS
 
-After the first deploy, update `EXTRA_ORIGIN` with the Cloud Run URL from the output:
+After the first deploy, update `EXTRA_ORIGIN` with the Cloud Run URL from the output.
+**This is required for both HTTP CORS and WebSocket Origin validation.**
 
 ```bash
 gcloud run services update fireside-betrayal \
   --region us-central1 \
-  --set-env-vars="EXTRA_ORIGIN=https://fireside-betrayal-abc123-uc.a.run.app"
+  --update-env-vars="EXTRA_ORIGIN=https://fireside-betrayal-seimyaykpa-uc.a.run.app"
 ```
+
+> **Current production URL:** `https://fireside-betrayal-seimyaykpa-uc.a.run.app`
 
 ### 5.6 Tear Down (if needed)
 
