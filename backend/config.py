@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     firestore_emulator_host: Optional[str] = None
     narrator_model: str = "gemini-2.5-flash-native-audio-latest"
     traitor_model: str = "gemini-3-flash-preview"
-    narrator_voice: str = "Charon"
+    narrator_voice: str = "Gacrux"
     # CORS origins — set ALLOWED_ORIGINS env var for production (comma-separated)
     allowed_origins: List[str] = [
         "http://localhost:5173",

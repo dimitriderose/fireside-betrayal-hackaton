@@ -197,7 +197,7 @@ These signals adjust DELIVERY only. Never reveal game secrets through tone adjus
 # The base NARRATOR_SYSTEM_PROMPT (tools, pacing, rules) is always appended.
 NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
     "classic": {
-        "voice": "Charon",
+        "voice": "Gacrux",
         "prompt_prefix": (
             "You are a classic fantasy narrator. Speak with gravitas and dramatic weight. "
             "Your tone is rich, immersive, and carries the authority of ancient legend. "
@@ -208,7 +208,7 @@ NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
         ),
     },
     "campfire": {
-        "voice": "Puck",
+        "voice": "Sulafat",
         "prompt_prefix": (
             "You are a campfire storyteller. Address the players as 'friends' and tell the "
             "story like you're sharing a tale around a fire on a cool night. Your tone is warm, "
@@ -220,7 +220,7 @@ NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
         ),
     },
     "horror": {
-        "voice": "Charon",
+        "voice": "Enceladus",
         "prompt_prefix": (
             "You are a horror narrator. Speak slowly. Every word carries weight. Your whispers "
             "are more terrifying than shouts. Build dread through what you DON'T say — implication "
@@ -233,7 +233,7 @@ NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
         ),
     },
     "comedy": {
-        "voice": "Kore",
+        "voice": "Zubenelgenubi",
         "prompt_prefix": (
             "You are a comedic narrator who takes the story seriously but finds the players "
             "hilarious. You're the host who can't help commenting on bad decisions. Your tone is "
