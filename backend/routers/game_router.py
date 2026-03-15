@@ -192,12 +192,21 @@ async def start_game(
         raise HTTPException(status_code=409, detail="Game is not in lobby state")
 
     # Retrieve pre-generated scene image from cache (generated at game creation time).
-    # If not ready yet, proceed without it — fire-and-forget will generate on game start.
+    # If not ready yet, wait up to 30s for it to finish generating.
     opening_scene_b64 = _scene_cache.pop(game_id, None)
     if opening_scene_b64:
         logger.info("[%s] Using cached opening scene image", game_id)
     else:
-        logger.info("[%s] No cached scene — will fire-and-forget on game start", game_id)
+        logger.info("[%s] No cached scene — waiting up to 30s for generation", game_id)
+        from agents.scene_agent import generate_scene_image
+        try:
+            opening_scene_b64 = await asyncio.wait_for(
+                generate_scene_image("game_started"), timeout=30.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[%s] Scene generation timed out after 30s — starting without it", game_id)
+        except Exception:
+            logger.warning("[%s] Scene generation failed — starting without it", game_id, exc_info=True)
 
     try:
         assignment = await role_assigner.assign_roles(game_id)

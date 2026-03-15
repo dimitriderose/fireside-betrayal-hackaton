@@ -376,13 +376,15 @@ class ConnectionManager:
                 "candidates": candidates,
             })
 
-        # Trigger atmospheric scene image for the new phase
+        # Trigger atmospheric scene image for the new phase.
+        # Skip first NIGHT (round 1) — the "game_started" image is already showing.
         _scene_map = {
             Phase.NIGHT: "night",
             Phase.DAY_DISCUSSION: "day_discussion",
             Phase.ELIMINATION: "elimination",
         }
-        if phase in _scene_map:
+        skip_scene = (phase == Phase.NIGHT and game and game.round <= 1)
+        if phase in _scene_map and not skip_scene:
             from agents.scene_agent import trigger_scene_image
             safe_create_task(
                 trigger_scene_image(game_id, _scene_map[phase]),
