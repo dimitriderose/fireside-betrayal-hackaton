@@ -4,7 +4,7 @@
 **Category:** 🗣️ Live Agents
 **Author:** Software Architecture Team
 **Companion Document:** PRD — Fireside — Betrayal v1.0
-**Version:** 5.2 | March 14, 2026 *(updated to reflect: Ghost Council dead-player chat system, Séance phase, haunt actions, concurrency guards for night resolution, AI auto-reply system, discussion timer enforcement, simplified win condition (parity), responsive roster panel, phase change data sync improvements, SPA catch-all routing, audio WebSocket reconnection architecture with separated mic/WS lifecycles, Page Visibility API integration for mobile tab-switch resilience, vote tally data flow with individual vote capture, production WebSocket keep-alive tuning, scene image prompt optimization for smaller file sizes, Gemini Live API log cleanup)*
+**Version:** 5.3 | March 15, 2026 *(updated to reflect: modular ws/ package (8-module split), constants.py centralization, utils/tasks.py safe task management, utils/game_utils.py shared helpers, state machine phase validation, Firestore transactions for atomic vote/night resolution guards, batch Firestore writes, slowapi rate limiting on HTTP + in-memory chat rate limiting on WS, CORS validation on WebSocket upgrade, narrator watchdog auto-restart, narrator game state caching (5s TTL), per-player reliable delivery with seq/lastSeq replay, frontend state consolidation via GameContext dispatch, scene image cache with TTL sweep (30min) and lobby pre-generation, Gemini model upgrades (gemini-3-flash-preview, gemini-3.1-flash-image-preview), narrator voice updates (Gacrux, Sulafat, Enceladus, Zubenelgenubi), guided tour system)*
 
 ---
 
@@ -12,7 +12,7 @@
 
 This Technical Design Document specifies the implementation architecture for Fireside — Betrayal, a real-time voice-first multiplayer social deduction game powered by the Gemini Live API, Google ADK, and Google Cloud. It translates the PRD's product requirements into concrete engineering decisions, API contracts, data models, code structure, and deployment specifications.
 
-**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern. **v5.1 additions:** Ghost Council dead-player chat system (`ghost_message` WS type, GhostRealmPanel), Séance phase (conditional ghost testimony when dead >= 2 and dead >= total/2), haunt actions (dead player night accusations), concurrency guards (`_resolving_nights` set, alive check in resolve_night), AI auto-reply system (`_maybe_trigger_ai_reply` with name-match regex and 30s cooldown), discussion timer enforcement (rejects advance_phase without start_phase_timer), simplified win condition (parity: non_shapeshifter_alive <= 1), responsive roster architecture (RosterPanel with RosterSidebar/RosterIconStrip at 768px breakpoint), and phase change data sync (full roster + AI chars in phase_change messages). **v5.2 additions:** SPA catch-all routing (`SPAStaticFiles` subclass serves `index.html` for non-API/non-WS 404s, enabling React Router deep links in production), audio WebSocket reconnection architecture (mic stream lifecycle separated from WS lifecycle — MediaStream/AudioContext/AudioWorkletNode persist across WS reconnects; exponential backoff [500,1000,2000,4000,8000]ms with max 10 attempts; Page Visibility API proactive disconnect/reconnect), game WebSocket mobile resilience (CONNECTING state guard, Page Visibility API immediate reconnect on tab visible, 2s sync heartbeat with phase mismatch detection), vote tally data flow (individual votes captured before `tally_votes()` clears AI voted_for, `broadcast_elimination` includes `individualVotes` and `isTie`, new `VoteTallyOverlay` component), production WebSocket keep-alive tuning (`--ws-ping-interval=15 --ws-ping-timeout=20` in Dockerfile CMD), scene image prompt optimization (flat vector illustration with 5-6 color palette replacing dark painterly style for smaller file sizes), and Gemini Live API log cleanup (proper `continue` for `session_resumption_update`/`voice_activity` handlers, NON-STANDARD log demoted to `logger.debug`).
+**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern. **v5.1 additions:** Ghost Council dead-player chat system (`ghost_message` WS type, GhostRealmPanel), Séance phase (conditional ghost testimony when dead >= 2 and dead >= total/2), haunt actions (dead player night accusations), concurrency guards (`_resolving_nights` set, alive check in resolve_night), AI auto-reply system (`_maybe_trigger_ai_reply` with name-match regex and 30s cooldown), discussion timer enforcement (rejects advance_phase without start_phase_timer), simplified win condition (parity: non_shapeshifter_alive <= 1), responsive roster architecture (RosterPanel with RosterSidebar/RosterIconStrip at 768px breakpoint), and phase change data sync (full roster + AI chars in phase_change messages). **v5.2 additions:** SPA catch-all routing (`SPAStaticFiles` subclass serves `index.html` for non-API/non-WS 404s, enabling React Router deep links in production), audio WebSocket reconnection architecture (mic stream lifecycle separated from WS lifecycle — MediaStream/AudioContext/AudioWorkletNode persist across WS reconnects; exponential backoff [500,1000,2000,4000,8000]ms with max 10 attempts; Page Visibility API proactive disconnect/reconnect), game WebSocket mobile resilience (CONNECTING state guard, Page Visibility API immediate reconnect on tab visible, 2s sync heartbeat with phase mismatch detection), vote tally data flow (individual votes captured before `tally_votes()` clears AI voted_for, `broadcast_elimination` includes `individualVotes` and `isTie`, new `VoteTallyOverlay` component), production WebSocket keep-alive tuning (`--ws-ping-interval=15 --ws-ping-timeout=20` in Dockerfile CMD), scene image prompt optimization (flat vector illustration with 5-6 color palette replacing dark painterly style for smaller file sizes), and Gemini Live API log cleanup (proper `continue` for `session_resumption_update`/`voice_activity` handlers, NON-STANDARD log demoted to `logger.debug`). **v5.3 additions:** Modular `ws/` package (8-module split from monolithic `ws_router.py`: `connection_manager`, `conversation`, `game_lifecycle`, `message_handlers`, `night_resolver`, `phase_timers`, `state_machine`, `vote_manager`), centralized `constants.py` (WSInbound/WSOutbound/ErrorCode/FSField classes, timeout constants, role sets), `utils/tasks.py` (safe_create_task with per-game/per-player tracking, cancel_game_tasks, cancel_player_tasks), `utils/game_utils.py` (shared helpers: all_ai_chars, alive_ai_names, get_alive_character_names, build_candidate_pool), phase transition state machine (`state_machine.py` with ALLOWED_TRANSITIONS dict and validate_transition enforcement), Firestore transactions for atomic resolution guards (`try_set_resolving`, `start_game_transactional`, `eliminate_character_transactional`), batch Firestore writes (`clear_votes` and `clear_night_actions` via `batch.commit()`), slowapi rate limiting on HTTP endpoints + in-memory chat rate limiting on WebSocket (10 msg/10s sliding window), CORS validation on WebSocket upgrade (Origin header check, code 4403 rejection), narrator watchdog (`_watchdog_loop` auto-restarts dead Gemini session tasks every 15s), narrator game state caching (5s TTL via `_cached_state`, invalidated on phase change events), per-player reliable delivery with seq/lastSeq replay (100-event buffer, `get_events_since` for reconnection), frontend state consolidation (window CustomEvents replaced with GameContext dispatch for audio, scene images, camera votes), scene image cache on backend (`_scene_cache` dict in `game_router.py`, 30-min TTL sweep, pre-generated during lobby via `_pregenerate_scene`), Gemini model upgrades (gemini-3-flash-preview for traitor/camera, gemini-3.1-flash-image-preview for scene), narrator voice updates (Gacrux for Classic, Sulafat for Campfire, Enceladus for Horror, Zubenelgenubi for Comedy), and 11-step guided tour with spotlight overlay and tab auto-switching.
 
 **Out of scope:** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). P3 features are additive and do not affect core architecture.
 
@@ -70,7 +70,7 @@ This Technical Design Document specifies the implementation architecture for Fir
 │  │   │ native-audio-   │  │ (text-only)      │               │  │
 │  │   │ preview-12-2025 │  │                  │               │  │
 │  │   │                 │  │ Functions:       │               │  │
-│  │   │ Voice: Charon   │  │ generate_dialog  │               │  │
+│  │   │ Voice: Gacrux   │  │ generate_dialog  │               │  │
 │  │   │ Affective: ON   │  │ select_night_tgt │               │  │
 │  │   │                 │  │ select_vote      │               │  │
 │  │   │ Tools:          │  │ select_loyal_ngt │               │  │
@@ -268,7 +268,7 @@ live_config = types.LiveConnectConfig(
     speech_config=types.SpeechConfig(
         voice_config=types.VoiceConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                voice_name="Charon"  # Deep, dramatic
+                voice_name="Gacrux"  # Deep, dramatic (v5.3: replaced Charon)
             )
         )
     ),
@@ -1591,7 +1591,7 @@ class GameSession:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name="Gacrux"  # v5.3: replaced Charon
                     )
                 )
             ),
@@ -2382,13 +2382,26 @@ fireside-betrayal/
 │   ├── models/
 │   │   └── game.py                # Pydantic models (GameState, Role, Phase, AICharacter, etc.)
 │   ├── routers/
-│   │   ├── game_router.py         # REST API (create/join/start/events/result)
-│   │   └── ws_router.py           # WebSocket hub: /ws/{gameId} (game state) + /ws/audio/{gameId} (binary mic PCM)
+│   │   ├── game_router.py         # REST API (create/join/start/events/result) + scene cache
+│   │   └── ws_router.py           # WebSocket endpoints: /ws/{gameId} + /ws/audio/{gameId} (delegates to ws/)
+│   ├── ws/                        # v5.3: Modular WebSocket package (split from monolithic ws_router.py)
+│   │   ├── __init__.py            # Re-exports all public symbols for backward compatibility
+│   │   ├── connection_manager.py  # ConnectionManager: dual-queue architecture, reliable delivery (seq/lastSeq)
+│   │   ├── conversation.py        # ConversationTracker, AffectiveSignals, HandRaiseQueue
+│   │   ├── game_lifecycle.py      # _end_game, _build_timeline, _check_seance_trigger
+│   │   ├── message_handlers.py    # _dispatch_message, speaker lock, chat rate limiting
+│   │   ├── night_resolver.py      # _on_night_action, _resolve_night_and_notify_narrator
+│   │   ├── phase_timers.py        # start_phase_timers, narrator timeouts, safety fallbacks
+│   │   ├── state_machine.py       # ALLOWED_TRANSITIONS, validate_transition (phase validation)
+│   │   └── vote_manager.py        # _on_vote, _resolve_vote_and_advance, camera voting
 │   ├── services/
-│   │   └── firestore_service.py   # Async Firestore wrapper (games, players, events CRUD)
+│   │   └── firestore_service.py   # Async Firestore wrapper (games, players, events CRUD, transactions)
 │   ├── utils/
-│   │   └── audio.py               # PCM ↔ WAV conversion utilities
-│   ├── main.py                    # FastAPI app setup, CORS, route registration, static file serving
+│   │   ├── audio.py               # PCM ↔ WAV conversion utilities
+│   │   ├── tasks.py               # v5.3: safe_create_task with per-game/player tracking + cancel
+│   │   └── game_utils.py          # v5.3: shared helpers (all_ai_chars, alive_ai_names, build_candidate_pool)
+│   ├── constants.py               # v5.3: centralized constants (WS types, error codes, timeouts, role sets)
+│   ├── main.py                    # FastAPI app setup, CORS, slowapi rate limiting, static file serving
 │   ├── config.py                  # Pydantic Settings (API keys, model names, CORS origins)
 │   ├── requirements.txt
 │   └── .env.example
@@ -2687,7 +2700,7 @@ All accusation, vote, discussion, and elimination events are `public`. Night act
 
 ## 12.3.3 Narrator Pacing Intelligence (Sprint 4) — ✅ SHIPPED
 
-**Effort:** 4–6 hours | **Type:** Server-side tracking + prompt engineering | **Actual:** `ConversationTracker` in `ws_router.py`
+**Effort:** 4–6 hours | **Type:** Server-side tracking + prompt engineering | **Actual:** `ConversationTracker` in `ws/conversation.py` (v5.3: moved from `ws_router.py`)
 
 ```python
 # Add to WebSocket server — conversation flow tracker
@@ -2764,7 +2777,7 @@ OR
 
 ## 12.3.4 Affective Dialog Input Signals (Sprint 4) — ✅ SHIPPED
 
-**Effort:** 3–4 hours | **Type:** Signal computation + prompt engineering | **Actual:** `AffectiveSignals` in `ws_router.py`
+**Effort:** 3–4 hours | **Type:** Signal computation + prompt engineering | **Actual:** `AffectiveSignals` in `ws/conversation.py` (v5.3: moved from `ws_router.py`)
 
 ```python
 class AffectiveSignals:
@@ -3006,7 +3019,7 @@ TUTORIAL_SCRIPT = {
 
 ## 12.3.8 Conversation Structure for Large Groups (Sprint 5) — ✅ SHIPPED
 
-**Effort:** 4–6 hours | **Type:** Quick reaction + prompt engineering | **Actual:** `HandRaiseQueue` in `ws_router.py`
+**Effort:** 4–6 hours | **Type:** Quick reaction + prompt engineering | **Actual:** `HandRaiseQueue` in `ws/conversation.py` (v5.3: moved from `ws_router.py`)
 
 **Frontend addition:**
 ```
@@ -3546,7 +3559,7 @@ Host selects a narrator personality in the lobby. Each preset changes the narrat
 ```python
 NARRATOR_PRESETS = {
     "classic": {
-        "voice": "Charon",  # Deep, dramatic (current default)
+        "voice": "Gacrux",  # Deep, dramatic (v5.3: replaced Charon)
         "prompt_prefix": """You are a classic fantasy narrator. Speak with gravitas 
         and dramatic weight. Your tone is rich, immersive, and carries the authority 
         of ancient legend. Build tension with deliberate pacing. Pauses are your 
@@ -3555,7 +3568,7 @@ NARRATOR_PRESETS = {
         "pacing": "measured",
     },
     "campfire": {
-        "voice": "Puck",  # Warmer, friendlier
+        "voice": "Sulafat",  # Warmer, friendlier (v5.3: replaced Puck)
         "prompt_prefix": """You are a campfire storyteller. Address the players as 
         "friends" and tell the story like you're sharing a tale around a fire on a 
         cool night. Your tone is warm, conspiratorial, and intimate. You lean in 
@@ -3565,7 +3578,7 @@ NARRATOR_PRESETS = {
         "pacing": "natural-conversational",
     },
     "horror": {
-        "voice": "Charon",  # Same deep voice, different delivery
+        "voice": "Enceladus",  # Eerie, unsettling (v5.3: replaced Charon)
         "prompt_prefix": """You are a horror narrator. Speak slowly. Every word 
         carries weight. Your whispers are more terrifying than shouts. Build dread 
         through what you DON'T say — implication over exposition. Describe sensory 
@@ -3577,7 +3590,7 @@ NARRATOR_PRESETS = {
         "pacing": "slow-with-long-pauses",
     },
     "comedy": {
-        "voice": "Kore",  # Lighter, more expressive
+        "voice": "Zubenelgenubi",  # Lighter, more expressive (v5.3: replaced Kore)
         "prompt_prefix": """You are a comedic narrator who takes the story seriously 
         but finds the players hilarious. You're the DM who can't help breaking 
         character to comment on bad decisions. Your tone is wry, self-aware, and 
@@ -3602,7 +3615,14 @@ def build_narrator_prompt(preset: str, base_instruction: str) -> str:
     {base_instruction}"""
 
 def get_voice_config(preset: str) -> str:
-    """Return the Gemini voice name for this preset."""
+    """Return the Gemini voice name for this preset.
+
+    v5.3 voice mapping:
+    - Classic: Gacrux (deep, dramatic)
+    - Campfire: Sulafat (warm, conversational)
+    - Horror: Enceladus (eerie, unsettling)
+    - Comedy: Zubenelgenubi (expressive, witty)
+    """
     return NARRATOR_PRESETS.get(preset, NARRATOR_PRESETS["classic"])["voice"]
 ```
 
@@ -4461,6 +4481,292 @@ The uvicorn CMD in the Dockerfile now includes `--ws-ping-interval=15 --ws-ping-
 
 ---
 
+# 12.9 v5.3 Architecture Additions (March 15, 2026)
+
+The following changes were shipped in the last 13 commits. They address codebase modularity, operational hardening, and runtime reliability.
+
+---
+
+## 12.9.1 Modular `ws/` Package
+
+**Files:** `backend/ws/__init__.py`, `backend/ws/connection_manager.py`, `backend/ws/conversation.py`, `backend/ws/game_lifecycle.py`, `backend/ws/message_handlers.py`, `backend/ws/night_resolver.py`, `backend/ws/phase_timers.py`, `backend/ws/state_machine.py`, `backend/ws/vote_manager.py`
+
+The monolithic `ws_router.py` (which had grown to contain all WebSocket logic) was split into 8 focused modules under a `ws/` package:
+
+| Module | Responsibility |
+|--------|---------------|
+| `connection_manager.py` | `ConnectionManager` singleton, dual-queue architecture (control + audio), reliable delivery with seq/lastSeq replay, broadcast helpers |
+| `conversation.py` | `ConversationTracker`, `AffectiveSignals`, `HandRaiseQueue` — pacing intelligence and conversation flow tracking |
+| `game_lifecycle.py` | `_end_game`, `_build_timeline`, `_delayed_narrator_stop`, `_check_seance_trigger` — game end and séance orchestration |
+| `message_handlers.py` | `_dispatch_message`, speaker lock management (`_current_speaker`, `_speaker_timeout_tasks`), `broadcast_to_dead`, chat rate limiting |
+| `night_resolver.py` | `_on_night_action`, `_resolve_night_and_notify_narrator`, `_on_hunter_revenge` — night phase resolution with Firestore transaction guards |
+| `phase_timers.py` | `start_phase_timers`, narrator timeouts, safety fallbacks, vote timeout, night action timeout |
+| `state_machine.py` | `ALLOWED_TRANSITIONS` dict, `validate_transition()` — phase transition validation with enforcement |
+| `vote_manager.py` | `_on_vote`, `_resolve_vote_and_advance`, `_on_in_person_vote_frame` — vote processing with Firestore transaction guards |
+
+**Backward compatibility:** `ws/__init__.py` re-exports all public symbols so existing imports like `from routers.ws_router import manager` continue to work via `ws_router.py`'s backward-compat imports. The `ws_router.py` file remains as the WebSocket endpoint definitions (route handlers) but delegates all logic to the `ws/` package modules.
+
+---
+
+## 12.9.2 Centralized Constants (`constants.py`)
+
+**File:** `backend/constants.py`
+
+All magic strings, timeout values, and repeated sets were consolidated into a single module, wired into 5+ modules across the codebase. This eliminates scattered string literals and makes configuration changes atomic.
+
+```python
+# Key constant classes:
+class WSInbound:    # 14 client→server message types (ping, sync, ready, message, vote, ...)
+class WSOutbound:   # 24 server→client message types (pong, phase_change, audio, elimination, ...)
+class EventType:    # 10 Firestore event type strings (night_target, elimination, ...)
+class NarratorEvent: # 10 narrator event types (game_started, night_resolved, ...)
+class ErrorCode:    # 8 WS error codes (PARSE_ERROR, WRONG_PHASE, INVALID_TARGET, ...)
+class FSField:      # 17 Firestore field paths (phase, round, status, alive, voted_for, ...)
+class ChatSource:   # 5 chat message source values (player, narrator, quick_reaction, ...)
+
+# Timeout constants (seconds):
+GHOST_MSG_COOLDOWN = 2.0
+MIN_DISCUSSION_SECONDS = 45
+MAX_SPEAKING_SECONDS = 30
+NIGHT_ACTION_TIMEOUT = 45
+TIMER_FALLBACK_DELAY = 15
+SEANCE_DURATION = 45
+VOTE_TIMEOUT_SECONDS = 60
+
+# Discussion timeout scaled by player count:
+DISCUSSION_TIMEOUT_BY_PLAYERS = { 7: 240, 5: 180, 3: 120 }
+
+# Role sets:
+NIGHT_ROLE_SET = frozenset({Role.SEER, Role.HEALER, Role.DRUNK, Role.BODYGUARD, Role.SHAPESHIFTER})
+AI_NIGHT_ROLES = frozenset({"seer", "healer", "bodyguard"})
+
+# Audio constants:
+AUDIO_SAMPLE_RATE_OUTPUT = 24000
+AUDIO_SAMPLE_RATE_INPUT = 16000
+MAX_PCM_BYTES = 480_000   # ~10 seconds at 24kHz 16-bit mono
+MAX_STORED_SEGMENTS = 10
+AUDIO_SEGMENT_PRIORITY = { "elimination": 0, "game_over": 1, ... }
+```
+
+---
+
+## 12.9.3 Safe Task Management (`utils/tasks.py`)
+
+**File:** `backend/utils/tasks.py`
+
+A `safe_create_task` wrapper around `asyncio.create_task` that provides:
+
+- **Exception logging:** Fire-and-forget tasks log exceptions via `logger.exception` instead of silently swallowing them. Cancellations are ignored.
+- **Per-game tracking:** Tasks created with `game_id=` are tracked in `_game_tasks: dict[str, list[asyncio.Task]]`. `cancel_game_tasks(game_id)` cancels all tracked tasks for a game on cleanup.
+- **Per-player tracking:** Tasks created with both `game_id=` and `player_id=` are additionally tracked in `_player_tasks`. `cancel_player_tasks(game_id, player_id)` cancels all tasks for a specific player on disconnect.
+- **Automatic cleanup:** Done callbacks remove completed tasks from tracking lists, preventing memory leaks.
+
+Used by the narrator watchdog, scene pre-generation, phase timer fallbacks, and other background tasks throughout the codebase.
+
+---
+
+## 12.9.4 Shared Game Utilities (`utils/game_utils.py`)
+
+**File:** `backend/utils/game_utils.py`
+
+Deduplicates game state logic that was previously copy-pasted across `ws/` and `agents/` modules:
+
+```python
+def all_ai_chars(game) -> list:
+    """Return list of non-None AI characters from a game object."""
+
+def alive_ai_names(game) -> List[str]:
+    """Return names of alive AI characters."""
+
+def get_alive_character_names(game, players) -> List[str]:
+    """Combined list of alive character names (human players + AI characters)."""
+
+def build_candidate_pool(game, alive_players, exclude=None) -> List[str]:
+    """Vote/night target candidate list, optionally excluding one name (e.g. self)."""
+```
+
+The `connection_manager.py` module re-exports `all_ai_chars` and `alive_ai_names` from `utils.game_utils` for backward compatibility with existing imports.
+
+---
+
+## 12.9.5 Phase Transition State Machine
+
+**File:** `backend/ws/state_machine.py`
+
+Phase transition validation is now enforced through an explicit `ALLOWED_TRANSITIONS` dictionary:
+
+```python
+ALLOWED_TRANSITIONS: Dict[Phase, Set[Phase]] = {
+    Phase.SETUP:          {Phase.NIGHT},
+    Phase.NIGHT:          {Phase.DAY_DISCUSSION, Phase.SEANCE},
+    Phase.DAY_DISCUSSION: {Phase.DAY_VOTE},
+    Phase.DAY_VOTE:       {Phase.ELIMINATION},
+    Phase.ELIMINATION:    {Phase.NIGHT, Phase.SEANCE, Phase.GAME_OVER},
+    Phase.SEANCE:         {Phase.DAY_DISCUSSION},
+}
+```
+
+`validate_transition(current, target, actor)` returns `True`/`False` and logs warnings on invalid transitions with the actor identity and allowed alternatives. Note: SEANCE transitions bypass `game_master.advance_phase()` by design — `_check_seance_trigger()` in `narrator_agent.py` calls `fs.set_phase(SEANCE)` directly because séance is conditional and fires from the ELIMINATION narrator callback.
+
+---
+
+## 12.9.6 Firestore Transactions for Atomic Operations
+
+**Files:** `backend/services/firestore_service.py`, `backend/ws/vote_manager.py`, `backend/ws/night_resolver.py`, `backend/routers/game_router.py`, `backend/agents/game_master.py`
+
+Critical game operations now use Firestore transactions instead of in-memory guards:
+
+- **`try_set_resolving(game_id, field)`:** Atomically check+set a boolean resolving flag (`vote_resolving` or `night_resolving`) on the game document. Uses `@firestore.transactional` decorator. Only one concurrent caller wins — losers get `False` and skip resolution. Replaces the previous in-memory `_resolving_votes`/`_resolving_nights` sets which were not safe across process restarts.
+- **`start_game_transactional(game_id)`:** Atomically verifies `status == LOBBY` and sets `IN_PROGRESS`. Prevents double-start from concurrent host clicks.
+- **`eliminate_character_transactional(game_id, character_name)`:** Atomically verifies a character is alive and marks them dead. Handles both human players (subcollection documents) and AI characters (fields on game document). Prevents double-elimination from concurrent kill events (e.g., vote + Hunter revenge racing).
+
+**Batch Firestore writes:** `clear_votes()` and `clear_night_actions()` now use `batch.update()` + `batch.commit()` to reset all player fields in a single atomic write, replacing individual sequential updates.
+
+---
+
+## 12.9.7 Rate Limiting
+
+**Files:** `backend/main.py`, `backend/routers/game_router.py`, `backend/ws/message_handlers.py`
+
+Two-layer rate limiting protects against abuse:
+
+**HTTP layer (slowapi):**
+- `slowapi.Limiter` middleware with `get_remote_address` key function is added to the FastAPI app.
+- `RateLimitExceeded` exceptions return HTTP 429 responses.
+- Applied to REST endpoints in `game_router.py`.
+
+**WebSocket layer (in-memory):**
+- **Chat messages:** Sliding window rate limit of 10 messages per 10 seconds per player. Tracked via `_chat_msg_timestamps: Dict[str, collections.deque]`. Messages exceeding the limit receive a `WRONG_PHASE` error response.
+- **Ghost messages:** 2-second cooldown per player (`_ghost_msg_last: Dict[str, float]`), using `GHOST_MSG_COOLDOWN` from `constants.py`.
+
+---
+
+## 12.9.8 CORS Validation on WebSocket Upgrade
+
+**File:** `backend/routers/ws_router.py`
+
+Both WebSocket endpoints (`/ws/{game_id}` and `/ws/audio/{game_id}`) now validate the `Origin` header on upgrade:
+
+```python
+origin = ws.headers.get("origin", "")
+allowed = list(settings.allowed_origins) + ([settings.extra_origin] if settings.extra_origin else [])
+if origin and not settings.debug and origin not in allowed:
+    await ws.close(code=4403, reason="Origin not allowed")
+    return
+```
+
+This prevents cross-origin WebSocket connections from unauthorized domains. The check is bypassed when `settings.debug` is `True` (local development). The custom close code `4403` is used to signal origin rejection distinctly from other close codes.
+
+---
+
+## 12.9.9 Narrator Watchdog
+
+**Files:** `backend/agents/narrator_agent.py` (`NarratorManager._start_watchdog`, `_watchdog_loop`)
+
+A background watchdog coroutine auto-restarts dead Gemini Live API session tasks:
+
+- **Check interval:** Every 15 seconds.
+- **Detection:** If `session._task.done()` is `True` while `session._running` is still `True`, the session task died unexpectedly (e.g., Gemini WS dropped, unhandled exception in session loop).
+- **Recovery:** The watchdog creates a new `_session_loop()` task to restart the Gemini connection. No manual intervention required.
+- **Lifecycle:** One watchdog per active game, tracked in `_watchdog_tasks: Dict[str, asyncio.Task]`. Started when the narrator session starts, stopped when the game ends. Created via `safe_create_task` for proper tracking and cleanup.
+
+This addresses the BLOCKER from Round 4 playtesting where the narrator went silent for the entire game due to a dead Gemini session.
+
+---
+
+## 12.9.10 Narrator Game State Caching
+
+**Files:** `backend/agents/narrator_agent.py` (`NarratorSession`)
+
+The narrator's `get_game_state` tool call now uses a 5-second in-memory cache to avoid redundant Firestore reads:
+
+- **Cache fields:** `_cached_state: Optional[Dict]` and `_cache_timestamp: float` on each `NarratorSession`.
+- **TTL:** 5 seconds (`time.monotonic()` comparison). If the cache is fresh, the cached result is returned without a Firestore read.
+- **Invalidation:** On phase change events, `session._cache_timestamp` is set to 0, forcing a fresh read on the next `get_game_state` call. This ensures the narrator always sees the latest state after a phase transition.
+
+---
+
+## 12.9.11 Per-Player Reliable Delivery (seq/lastSeq)
+
+**Files:** `backend/ws/connection_manager.py`
+
+The `ConnectionManager` now supports reliable message delivery with sequence numbering and replay:
+
+- **Monotonic sequence counter:** `_seq: Dict[str, int]` tracks a per-game incrementing sequence number. Every broadcast and reliable private message is tagged with a `seq` field.
+- **Event buffer:** `_event_log: Dict[str, list]` stores the last 100 events per game with their sequence numbers. Private messages are stored with a `target` field.
+- **Replay on reconnect:** `get_events_since(game_id, last_seq)` returns all buffered events with `seq > last_seq`. When a player reconnects, they send their `lastSeq` value in the query string, and the server replays missed events.
+- **`send_to_reliable` and `broadcast(..., reliable=True)`:** Wrapper methods that automatically assign sequence numbers and buffer events.
+
+This eliminates state drift when players briefly disconnect (mobile tab switch, network blip) and rejoin — they receive all missed game events in order rather than getting a stale snapshot.
+
+---
+
+## 12.9.12 Frontend State Consolidation
+
+**Files:** `frontend/src/hooks/useWebSocket.js`, `frontend/src/context/GameContext.jsx`
+
+Window `CustomEvent` dispatches for audio chunks, scene images, and camera vote results were replaced with `GameContext` dispatch actions:
+
+| Message Type | Before (v5.2) | After (v5.3) |
+|-------------|---------------|-------------|
+| `audio` | `window.dispatchEvent(new CustomEvent('narrator-audio', ...))` | `dispatch({ type: 'ADD_AUDIO_CHUNK', data: msg.data })` |
+| `scene_image` | `window.dispatchEvent(new CustomEvent('scene-image', ...))` | `dispatch({ type: 'SET_SCENE_IMAGE', data: msg.data, sceneKey: msg.sceneKey })` |
+| `camera_vote_result` | `window.dispatchEvent(new CustomEvent('camera-vote', ...))` | `dispatch({ type: 'SET_CAMERA_VOTE_RESULT', ... })` |
+| `camera_vote_fallback` | `window.dispatchEvent(new CustomEvent('camera-vote', ...))` | `dispatch({ type: 'SET_CAMERA_VOTE_RESULT', fallback: true, ... })` |
+
+**Benefits:** All game state now flows through a single `useReducer` dispatch, eliminating the need for `addEventListener`/`removeEventListener` pairs on `window`. Components consume state via `useGame()` context hook instead of subscribing to global events. The `narrator_status` message is the only remaining `window.dispatchEvent` (for the NarratorBar "thinking" indicator).
+
+**Scene image cache in GameContext:** The reducer stores `sceneImageCache: { [sceneKey]: base64PNG }` — a map keyed by scene identifier. Stale entries are not actively evicted on the frontend since games are short-lived.
+
+---
+
+## 12.9.13 Scene Image Cache (Backend)
+
+**Files:** `backend/routers/game_router.py`, `backend/ws/game_lifecycle.py`
+
+Opening scene images are pre-generated during the lobby phase and cached on the server:
+
+- **Cache:** `_scene_cache: dict[str, tuple[str, float]]` maps `game_id` to `(base64_image_string, timestamp)`.
+- **Pre-generation:** When a game is created (`POST /api/games`), `_pregenerate_scene(game_id)` is fired as a background task via `safe_create_task`. By the time the host clicks "Start Game", the image is typically already cached.
+- **TTL sweep:** `_sweep_scene_cache()` runs opportunistically (on each new pre-generation) and removes entries older than 30 minutes (`_SCENE_CACHE_TTL = 30 * 60`). This prevents memory leaks from abandoned lobbies.
+- **Consumption:** On `POST /api/games/{id}/start`, the cached image is popped from `_scene_cache` and passed to `broadcast_game_start()` for immediate delivery. If the cache misses (generation timed out or failed), a fallback fire-and-forget generation is triggered.
+- **Cleanup:** `_end_game()` in `game_lifecycle.py` pops the game's entry from `_scene_cache` to prevent leaks.
+
+---
+
+## 12.9.14 Gemini Model Upgrades
+
+**Files:** `backend/config.py`, `backend/agents/traitor_agent.py`, `backend/agents/camera_vote.py`, `backend/agents/scene_agent.py`
+
+Three Gemini model references were updated:
+
+| Agent | Previous Model | New Model |
+|-------|---------------|-----------|
+| Traitor AI / Camera Vote | `gemini-2.0-flash` | `gemini-3-flash-preview` |
+| Scene Image Generation | `gemini-2.0-flash` | `gemini-3.1-flash-image-preview` |
+| Narrator (Live API) | `gemini-2.5-flash-native-audio-latest` | `gemini-2.5-flash-native-audio-latest` (unchanged) |
+
+The `config.py` default for `traitor_model` is now `gemini-3-flash-preview`. The scene agent uses `gemini-3.1-flash-image-preview` which provides improved image generation quality for the flat vector illustration style.
+
+---
+
+## 12.9.15 Narrator Voice Updates
+
+**Files:** `backend/config.py`, `backend/agents/narrator_agent.py` (`NARRATOR_PRESETS`)
+
+All four narrator preset voices were updated to new Gemini voice identifiers:
+
+| Preset | Previous Voice | New Voice |
+|--------|---------------|-----------|
+| Classic | Charon | Gacrux |
+| Campfire | Puck | Sulafat |
+| Horror | Charon | Enceladus |
+| Comedy | Kore | Zubenelgenubi |
+
+The `config.py` default for `narrator_voice` is now `Gacrux`. Notably, Horror now uses a distinct voice (`Enceladus`) rather than sharing the Classic voice — this provides better tonal differentiation between presets.
+
+---
+
 # 13. PRD Cross-Reference & Compliance Matrix
 
 | PRD Requirement | TDD Section | Status |
@@ -4555,6 +4861,24 @@ The uvicorn CMD in the Dockerfile now includes `--ws-ping-interval=15 --ws-ping-
 | Scene image prompt optimization | §12.8.5, §12.3.14 | ✅ Shipped — flat vector style, <500KB images |
 | Gemini Live API log cleanup | §12.8.6 | ✅ Shipped — proper continue for voice_activity, debug-level NON-STANDARD |
 | Production WS keep-alive (Dockerfile CMD) | §12.8.7, §12.6.5 | ✅ Shipped — --ws-ping-interval=15 --ws-ping-timeout=20 |
+| **v5.3 Architecture** | | |
+| Modular ws/ package (8-module split) | §12.9.1, §10 | ✅ Shipped — connection_manager, conversation, game_lifecycle, message_handlers, night_resolver, phase_timers, state_machine, vote_manager |
+| Centralized constants.py | §12.9.2 | ✅ Shipped — WSInbound/WSOutbound/ErrorCode/FSField classes, timeout constants, role sets |
+| Safe task management (utils/tasks.py) | §12.9.3 | ✅ Shipped — safe_create_task, cancel_game_tasks, cancel_player_tasks |
+| Shared game utilities (utils/game_utils.py) | §12.9.4 | ✅ Shipped — all_ai_chars, alive_ai_names, get_alive_character_names, build_candidate_pool |
+| Phase transition state machine | §12.9.5, §3.3 | ✅ Shipped — ALLOWED_TRANSITIONS dict, validate_transition enforcement |
+| Firestore transactions (atomic guards) | §12.9.6 | ✅ Shipped — try_set_resolving, start_game_transactional, eliminate_character_transactional |
+| Batch Firestore writes | §12.9.6 | ✅ Shipped — clear_votes, clear_night_actions via batch.commit() |
+| Rate limiting (slowapi + WS in-memory) | §12.9.7 | ✅ Shipped — HTTP 429 on REST, 10 msg/10s chat limit on WS |
+| CORS validation on WebSocket upgrade | §12.9.8 | ✅ Shipped — Origin header check, code 4403 rejection |
+| Narrator watchdog (auto-restart) | §12.9.9 | ✅ Shipped — 15s check interval, auto-restart dead Gemini sessions |
+| Narrator game state caching (5s TTL) | §12.9.10 | ✅ Shipped — _cached_state, invalidated on phase change |
+| Per-player reliable delivery (seq/lastSeq) | §12.9.11 | ✅ Shipped — 100-event buffer, get_events_since replay on reconnect |
+| Frontend state consolidation | §12.9.12 | ✅ Shipped — window events → GameContext dispatch for audio/scene/camera |
+| Scene image cache (backend) | §12.9.13 | ✅ Shipped — _scene_cache dict, 30-min TTL sweep, lobby pre-generation |
+| Gemini model upgrades | §12.9.14, §14 | ✅ Shipped — gemini-3-flash-preview (traitor/camera), gemini-3.1-flash-image-preview (scene) |
+| Narrator voice updates | §12.9.15, §12.3.17, §3.1 | ✅ Shipped — Gacrux (Classic), Sulafat (Campfire), Enceladus (Horror), Zubenelgenubi (Comedy) |
+| Guided tour (11-step) | §12.3.7, §8.1 | ✅ Shipped — spotlight overlay, tab auto-switching (extends Tutorial Mode) |
 
 ---
 
@@ -4570,7 +4894,7 @@ The uvicorn CMD in the Dockerfile now includes `--ws-ping-interval=15 --ws-ping-
 | `FIRESTORE_EMULATOR_HOST` | | Firestore emulator address (local dev) | `localhost:8081` |
 | `NARRATOR_MODEL` | | Narrator Gemini model | `gemini-2.5-flash-native-audio-latest` |
 | `TRAITOR_MODEL` | | Traitor strategy model | `gemini-3-flash-preview` |
-| `NARRATOR_VOICE` | | Default narrator voice | `Charon` |
+| `NARRATOR_VOICE` | | Default narrator voice | `Gacrux` |
 | `ALLOWED_ORIGINS` | | CORS allowed origins (comma-separated) | `https://app.example.com` |
 | `EXTRA_ORIGIN` | | Additional CORS origin (e.g., Cloud Run URL) | `https://fireside-xxx.run.app` |
 | `DEBUG` | | Enable debug logging | `true` |
@@ -4584,7 +4908,7 @@ GOOGLE_APPLICATION_CREDENTIALS=./sa-key.json
 # FIRESTORE_EMULATOR_HOST=localhost:8081  # uncomment for local dev
 NARRATOR_MODEL=gemini-2.5-flash-native-audio-latest
 TRAITOR_MODEL=gemini-3-flash-preview
-NARRATOR_VOICE=Charon
+NARRATOR_VOICE=Gacrux
 # ALLOWED_ORIGINS=https://your-app.run.app  # production CORS
 # EXTRA_ORIGIN=https://your-frontend.run.app
 PORT=8080
@@ -4593,6 +4917,6 @@ PORT=8080
 ---
 
 *Document created: February 21, 2026*
-*Last updated: March 12, 2026 — v5.1: Ghost Council dead-player chat (ghost_message WS type, GhostRealmPanel), Séance phase (conditional ghost testimony), haunt actions (dead player night accusations), concurrency guards (_resolving_nights + alive check), AI auto-reply system (_maybe_trigger_ai_reply), discussion timer enforcement, simplified win condition (parity), responsive roster (RosterPanel), phase change data sync (full roster in phase_change + connected messages)*
+*Last updated: March 15, 2026 — v5.3: modular ws/ package (8-module split from ws_router.py), constants.py centralization, utils/tasks.py safe task management, utils/game_utils.py shared helpers, state machine phase validation, Firestore transactions (try_set_resolving, start_game_transactional, eliminate_character_transactional), batch Firestore writes, slowapi rate limiting + WS chat rate limiting, CORS validation on WebSocket upgrade, narrator watchdog auto-restart (15s), narrator game state caching (5s TTL), per-player reliable delivery (seq/lastSeq replay), frontend state consolidation (window events → GameContext dispatch), scene image cache (30-min TTL sweep, lobby pre-generation), Gemini model upgrades (gemini-3-flash-preview, gemini-3.1-flash-image-preview), narrator voice updates (Gacrux/Sulafat/Enceladus/Zubenelgenubi)*
 *Companion PRD: PRD.md v2.0*
 *Hackathon deadline: March 16, 2026*

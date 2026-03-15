@@ -80,6 +80,7 @@ pip install -r requirements.txt
 - `python-dotenv==1.0.0` — Environment variable loading
 - `pydantic==2.5.3` + `pydantic-settings==2.1.0` — Settings management
 - `httpx==0.26.0` — Async HTTP client
+- `slowapi` — Rate limiting for REST endpoints
 
 ### 1.3 Environment Variables
 
@@ -267,12 +268,14 @@ gcloud run services update fireside-betrayal --region us-central1 \
 
 ### 2.5 Post-Deploy: Set CORS Origin
 
-After deployment, Cloud Run gives you a URL like `https://fireside-betrayal-abc123-uc.a.run.app`. Update the env var:
+After deployment, Cloud Run gives you a URL like `https://fireside-betrayal-abc123-uc.a.run.app`. Set `EXTRA_ORIGIN` so the backend allows both HTTP CORS and WebSocket Origin validation from the production URL:
 
 ```bash
-gcloud run services update fireside-betrayal \
-  --set-env-vars="EXTRA_ORIGIN=https://fireside-betrayal-abc123-uc.a.run.app"
+gcloud run services update fireside-betrayal --region=us-central1 \
+  --update-env-vars="EXTRA_ORIGIN=https://fireside-betrayal-seimyaykpa-uc.a.run.app"
 ```
+
+> **Current production URL:** `https://fireside-betrayal-seimyaykpa-uc.a.run.app` — this URL MUST NOT change. Always deploy via `cloudbuild.yaml` to update the existing service in-place.
 
 ### 2.6 Custom Domain (Optional)
 
@@ -300,7 +303,7 @@ Follow the DNS verification steps in the output.
 | `TRAITOR_MODEL` | No | `gemini-3-flash-preview` | Traitor strategy model |
 | `NARRATOR_VOICE` | No | `Charon` | Default narrator voice name |
 | `ALLOWED_ORIGINS` | No | `localhost:5173,localhost:3000` | CORS origins (comma-separated) |
-| `EXTRA_ORIGIN` | No | `""` | Production Cloud Run URL for CORS (set automatically by `deploy.sh`) |
+| `EXTRA_ORIGIN` | Prod | `""` | Production Cloud Run URL — required for HTTP CORS and WebSocket Origin validation |
 | `DEBUG` | No | `false` | Enable debug logging |
 
 ---
@@ -473,6 +476,7 @@ terraform destroy   # Removes all provisioned resources
 |-------|-------|-----|
 | `CORS error` in browser | Backend doesn't recognize frontend origin | Add origin to `ALLOWED_ORIGINS` or set `EXTRA_ORIGIN` |
 | `WebSocket disconnected` on Cloud Run | No session affinity | Redeploy with `--session-affinity` flag |
+| WebSocket rejects with `403` in production | `EXTRA_ORIGIN` not set or wrong | Set `EXTRA_ORIGIN` to the exact Cloud Run URL (see §2.5) |
 | `Could not pre-load intelligence brief` on startup | No prior games in Firestore (expected on first run) | Ignore — strategy logger populates after first completed game |
 | `FIRESTORE_EMULATOR_HOST` set but emulator not running | Emulator not started | Run `gcloud emulators firestore start` first |
 | `403 Forbidden` from Gemini API | API key invalid or project not enabled | Verify key at [AI Studio](https://aistudio.google.com/apikey), enable Generative AI API |
@@ -489,6 +493,7 @@ terraform destroy   # Removes all provisioned resources
 
 | Date | Change |
 |------|--------|
+| 2026-03-15 | Added `slowapi` dependency, documented production URL as permanent, clarified `EXTRA_ORIGIN` is required for WebSocket CORS in production |
 | 2026-03-12 | Updated deployment docs: manual deploy now uses Artifact Registry (not GCR), added `--no-cpu-throttling` and `--timeout 3600` flags, added `GCP_REGION` to env var reference |
 | 2026-03-12 | Unified AI architecture refactor: narrator and traitor agents consolidated into a single AI pipeline. No deployment changes required — same env vars, same Docker image, same Cloud Run config |
 | 2026-03-09 | Added Cloud Build pipeline (`cloudbuild.yaml`) and one-command deploy script (`deploy.sh`) |

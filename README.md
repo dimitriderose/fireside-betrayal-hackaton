@@ -45,23 +45,27 @@ Fireside: Betrayal combines the narrative immersion of tabletop RPGs with the so
 | **Haunt Actions** | Dead players accuse one living character per night round. The narrator raises suspicion during discussion. AI ghosts auto-accuse based on game events |
 | **AI Auto-Reply to Voice** | AI characters auto-respond when players mention them by name during voice discussion (30s cooldown per character) |
 | **Character Roster** | Desktop: persistent 160px sidebar showing all characters with alive/dead status. Mobile: horizontal icon strip. Dead players shown with 💀 and strikethrough |
-| **Narrator Voice Presets** | Classic (stern village elder), Campfire (mischievous friend), Horror (unsettling observer), Comedy (sports announcer) |
+| **Narrator Voice Presets** | Classic (stern village elder, Gacrux), Campfire (mischievous friend, Sulafat), Horror (unsettling observer, Enceladus), Comedy (sports announcer, Zubenelgenubi) — each with a distinct Gemini voice |
 | **Procedural Characters** | LLM-generated unique character cast every game — no two games feel the same |
 | **Random AI Alignment** | On Normal/Hard, AI characters can be randomly assigned any role — a human might end up as the Shapeshifter |
 | **Human Shapeshifter** | When Random AI Alignment gives a human the shapeshifter, they perform night kills through the game UI — or choose "No Kill Tonight" to bluff and sow confusion |
 | **In-Person Camera Voting** | Host's camera counts raised hands via Gemini Vision for physical gatherings |
-| **Scene Illustrations** | Atmospheric images generated on phase transitions |
+| **Scene Backgrounds** | AI-generated scene images displayed as atmospheric 18% opacity backgrounds, crossfading on phase transitions. Pre-generated during lobby for instant start. Cached by phase |
 | **Audio Highlights** | Post-game reel of the narrator's most dramatic moments |
-| **Interactive Tutorial** | 5-step guided walkthrough for first-timers |
-| **Session Persistence** | Refresh mid-game? WebSocket reconnects automatically |
+| **Three-Tab Interface** | Story \| Journal \| Records — Investigation Journal tracks Seer/Drunk results, Vote Records shows per-round vote breakdown with full history |
+| **Phase Transition Animations** | Dark/dawn/judgment/dusk color overlays with smooth transitions between game phases |
+| **Interactive Tutorial** | 11-step guided walkthrough for first-timers with spotlight overlay and tab auto-switching |
+| **Session Persistence** | Refresh mid-game? WebSocket reconnects automatically. Visibility API reconnect for mobile browsers. Per-player send queues with reliable delivery and message replay |
 | **Spectator Clues** | Dead players send one-word clues per round that the narrator weaves into narration |
-| **Adaptive Pacing** | Narrator reads the room — speeds up stale debates, lets heated arguments breathe |
+| **Adaptive Pacing** | Narrator reads the room — speeds up stale debates, lets heated arguments breathe. PACE_HOT signal keeps narrator quiet during rapid debate |
+| **Narrator Watchdog** | Auto-restarts dead narrator sessions to prevent silent games |
+| **Drunk Role Disguise** | Drunk players see themselves as Seer with full investigation UI — true role revealed only post-game |
 | **AI Strategy Learning** | After 20+ games, the AI learns from past mistakes (cross-game intelligence) |
 
 ## Tech Stack
 
 - **AI Engine:** Google Gemini Live API (real-time bidirectional voice)
-- **AI Models:** gemini-2.5-flash-native-audio-latest (narrator), gemini-3-flash-preview (traitor strategy, camera vision), gemini-3.1-flash-image-preview (scene illustrations)
+- **AI Models:** gemini-2.5-flash-native-audio-latest (narrator voice), gemini-3-flash-preview (traitor strategy, camera vision), gemini-3.1-flash-image-preview (scene backgrounds)
 - **Backend:** FastAPI + Python on Cloud Run
 - **Real-time State:** Cloud Firestore
 - **Frontend:** React (mobile web, Vite)
@@ -72,6 +76,11 @@ Fireside: Betrayal combines the narrative immersion of tabletop RPGs with the so
 
 ```
 Player Phones (2-8) ←WebSocket→ Cloud Run (FastAPI)
+    │                               ├── Modular ws/ architecture (conn, send, game, narrator, actions)
+    │                               │   ├── Per-player send queues with reliable delivery + replay
+    │                               │   ├── Rate limiting + CORS origin validation
+    │                               │   ├── Safe task management (cancellation-safe flush)
+    │                               │   └── Visibility API reconnect for mobile browsers
     │                               ├── Narrator Agent (Gemini Live API voice)
     │                               │   ├── Session resumption + context compression
     │                               │   ├── Player mic audio → speaker identification → Gemini
@@ -79,7 +88,8 @@ Player Phones (2-8) ←WebSocket→ Cloud Run (FastAPI)
     │                               │   ├── Active moderator (relay/react/stir/redirect)
     │                               │   ├── Intro mentions every character by name
     │                               │   ├── Séance moderator (ghost testimony)
-    │                               │   └── 4 narrator presets (Classic/Campfire/Horror/Comedy)
+    │                               │   ├── Watchdog auto-restart for dead sessions
+    │                               │   └── 4 narrator presets with distinct voices
     │                               ├── AI Character Agent(s) (gemini-3-flash-preview, text-only)
     │                               │   ├── 1–2 AI characters (unified handler per character)
     │                               │   ├── Difficulty-calibrated deception (Easy/Normal/Hard)
@@ -88,10 +98,11 @@ Player Phones (2-8) ←WebSocket→ Cloud Run (FastAPI)
     │                               │   └── Cross-game strategy learning
     │                               ├── Game Master (deterministic Python logic)
     │                               │   ├── Role assignment + character generation
-    │                               │   ├── Phase transitions + dynamic discussion timer
+    │                               │   ├── Phase state machine + dynamic discussion timer
     │                               │   ├── Vote resolution (polling-based auto-advance)
     │                               │   ├── Night action processing (concurrency guard, defense-in-depth)
     │                               │   ├── Séance trigger (auto at 50% dead)
+    │                               │   ├── Firestore transactions (atomic state updates)
     │                               │   └── Ghost Council + Haunt Actions
     ├── 🎤 Mic (16kHz PCM16)       ├── Scene Agent (image generation)
     ├── 💬 Text chat / Ghost Council ├── Camera Vote Agent (vision hand-counting)

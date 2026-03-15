@@ -5,7 +5,7 @@
 **Tagline:** The AI is one of you. Trust no one.
 **Core Technology:** Gemini Live API (real-time bidirectional voice)
 
-Version 4.2 | March 12, 2026 *(updated to reflect Ghost Council, Séance phase, Haunt actions, responsive character roster, AI auto-reply to voice mentions, discussion timer enforcement, night resolution concurrency guard, and win condition simplification)*
+Version 4.3 | March 15, 2026 *(updated to reflect three-tab interface, investigation journal, vote records, scene background imagery, phase transition animations, pre-generated scene images, narrator voice preset upgrades, PACE_HOT pacing signal, Drunk disguise mechanic, rate limiting, game access authorization, and input validation)*
 Hackathon Deadline: **March 16, 2026 at 5:00 PM PDT**
 Prize Target: $10K (category) + $25K (grand prize)
 
@@ -24,7 +24,7 @@ The game combines the narrative immersion of tabletop RPGs with the social tensi
 | **Session Length** | 15–30 minutes per game |
 | **Core Mechanic** | AI narrates + secretly plays as 1–2 characters (any role, including loyal allies — players don't know which characters are AI) |
 | **Input** | Voice via phone microphone with push-to-talk (primary — streamed to narrator with speaker identification; one speaker holds the floor at a time), text (fallback), camera (in-person hand-counting) |
-| **Output** | Voice narration (4 narrator presets), scene images, private role cards, audio highlights |
+| **Output** | Voice narration (4 narrator presets: Gacrux, Sulafat, Enceladus, Zubenelgenubi voices), scene images (atmospheric background), private role cards, audio highlights |
 
 ---
 
@@ -59,7 +59,7 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 - **Seer** — can investigate one character each night to learn their true nature
 - **Healer** — can protect one character from elimination each night
 - **Hunter** — when eliminated, immediately kills one other character of their choice (dramatic reversal moment)
-- **Drunk** — told they are the Seer, but receives false investigation results (creates hilarious misinformation)
+- **Drunk** — told they are the Seer and sees "Seer" on their role card throughout the game; receives false investigation results. True identity is only revealed post-game (creates hilarious misinformation and genuine surprise)
 - **Bodyguard** — each night, protect one character; if the Shapeshifter targets them, the Bodyguard absorbs the kill instead
 - **Tanner** — solo win condition: wins only if voted out by the village (must act suspicious without being obvious)
 - **Shapeshifter** — the traitor, trying to avoid detection while sabotaging the group. Can intentionally skip their night kill ("No Kill Tonight") to avoid appearing "too clean" and deflect suspicion. With Random Alignment, any character — human or AI — may draw this role
@@ -72,10 +72,10 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 |---|---|---|
 | 1. Lobby | Host creates game, selects difficulty (Easy/Normal/Hard), selects narrator preset (Classic/Campfire/Horror/Comedy), shares 6-character alphanumeric join code (`THRNX5`). Players connect on their phones. Max 7 humans + 1–2 AI characters (2 AI when only 2 humans join, 1 AI otherwise). | Simple join screen — enter name, select difficulty + narrator voice, see other players arriving. Lobby summary shows role distribution and min-player warning if < 4 players. |
 | 2. Role Assignment | AI assigns each player a secret role (Villager, Seer, Healer, Hunter, Drunk, Bodyguard, Tanner — based on player count) AND a unique LLM-generated story character identity. AI characters draw from the same role pool as humans — any AI character can be the Shapeshifter, or a loyal Seer, Healer, etc. All players see only character names from this point forward — real names are hidden. AI characters are indistinguishable from human players. | Private role card: "You are **Tinker Orin** (Healer). Each night, choose one character to protect." Expandable role strip shows ability reminder. Players know their own character name but not which character belongs to which friend. |
-| 3. Story Begins | AI narrator sets the scene with dramatic voice narration. "The village of Thornwood sleeps beneath a pale moon..." Introduces all characters by name. | Players listen together. Each character is introduced with a brief personality hook. "Brother Aldric tends the chapel garden. Mira the Huntress returns from the forest with an uneasy look." |
+| 3. Story Begins | AI narrator sets the scene with dramatic voice narration. "The village of Thornwood sleeps beneath a pale moon..." Introduces all characters by name. Opening scene image is pre-generated during lobby and displayed immediately as an atmospheric background (18% opacity behind content). | Players listen together. Each character is introduced with a brief personality hook. "Brother Aldric tends the chapel garden. Mira the Huntress returns from the forest with an uneasy look." Scene image appears as immersive backdrop with smooth crossfade. |
 | 4. Night Phase | AI privately contacts special-role holders. Seer investigates (Drunk gets false results). Healer protects. Hunter has no night action. If the shapeshifter is an AI character, it picks a target from all other characters (human or AI). AI characters with special roles (Seer, Bodyguard, Healer) use their abilities automatically with correct game logic. | Private text on individual phones. Other players see "Night has fallen..." with atmospheric narration. |
-| 5. Day Discussion | AI narrates what happened overnight. The discussion timer starts only after the narrator finishes speaking — players always get the full window. A minimum 45-second floor ensures discussion cannot be skipped past by a fast narrator. Timer scales by player count (3–4 players: 2 min, 5–6: 3 min, 7–8: 4 min). Players debate by holding the **"Speak" push-to-talk button** on their phone — one player holds the floor at a time, with a 30-second auto-release. OR text input OR quick-reaction buttons. Eliminated players cannot use the mic. Narrator acts as **active moderator/game show host**: relays player speech for the village, reacts with provocative one-liners, stirs debate by challenging weak arguments, and redirects when discussion loops. AI participates as its character. 30-second narrator warning before timer expires. | Visible M:SS countdown in sticky header with color transitions (gray → amber at 30s → red pulse at 15s). Hold the Speak button to take the floor — it glows to show who is active. Quick-reaction buttons for fast text participation. Narrator engages actively as moderator, not passive observer. |
-| 6. Voting | Players vote to eliminate a suspect character using buttons on their phones. AI tallies votes and handles ties. Vote window is 60 seconds (timer begins after the narrator's voting prompt finishes). | Character portrait buttons to vote. Timer countdown. AI announces results with dramatic narration. |
+| 5. Day Discussion | AI narrates what happened overnight with a dawn phase transition animation. The discussion timer starts only after the narrator finishes speaking — players always get the full window. A minimum 45-second floor ensures discussion cannot be skipped past by a fast narrator. Timer scales by player count (3–4 players: 2 min, 5–6: 3 min, 7–8: 4 min). Players debate by holding the **"Speak" push-to-talk button** on their phone — one player holds the floor at a time, with a 30-second auto-release. OR text input OR quick-reaction buttons. Eliminated players cannot use the mic. Narrator acts as **active moderator/game show host**: relays player speech for the village, reacts with provocative one-liners, stirs debate by challenging weak arguments, and redirects when discussion loops. AI participates as its character. When debate is rapid (PACE_HOT), the narrator withholds interruptions to avoid breaking flow. 30-second narrator warning before timer expires. Three-tab interface (Story | Journal | Records) provides organized access to narrative, investigation history, and vote records. | Visible M:SS countdown in sticky header with color transitions (gray → amber at 30s → red pulse at 15s). Hold the Speak button to take the floor — it glows to show who is active. Quick-reaction buttons for fast text participation. Narrator engages actively as moderator, not passive observer. Phase transition overlay (dawn) animates between night and day. |
+| 6. Voting | Players vote to eliminate a suspect character using buttons on their phones. AI tallies votes and handles ties. Vote window is 60 seconds (timer begins after the narrator's voting prompt finishes). A judgment phase transition overlay marks the shift to voting. | Character portrait buttons to vote. Timer countdown. AI announces results with dramatic narration. Vote results recorded in the Records tab with per-round breakdown showing individual voter names. |
 | 7. Elimination | AI narrates the elimination with story consequences. If the eliminated player was the Hunter, they immediately choose someone to take with them. Reveals whether the eliminated character was the traitor or innocent. Eliminated players join the Ghost Council (private dead-player chat channel) and can use Haunt actions (accuse one living character per round during night). | Dramatic reveal moment. Hunter's revenge kill creates unexpected second elimination. Eliminated players enter the Ghost Realm — they can chat with other dead players and influence the game through haunt accusations. |
 | 7b. Séance *(conditional)* | Triggered when dead_count >= 2 AND dead_count >= total/2. Dead players get push-to-talk re-enabled for 45 seconds. Narrator moderates, calling on each dead character by name. Rule: "speak in feelings, not facts." | Dead players briefly return to address the living. Ghost Realm panel dims. Atmospheric, high-tension moment. |
 | 8. Resolution | Repeat Night/Day cycles until villagers correctly identify the shapeshifter OR the shapeshifter reaches parity (non_shapeshifter_alive ≤ 1) OR the Tanner gets voted out (solo win). | Win/lose screen with **post-game reveal timeline**: round-by-round interactive view showing every hidden action, the AI's strategy reasoning, audio highlight reel, and key turning points. All character-to-player mappings revealed. Share results with a copy-to-clipboard summary. Direct URL navigation to `/gameover/:gameId` works via REST fallback. |
@@ -101,7 +101,7 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 
 | Agent | Type | Model | Responsibilities |
 |---|---|---|---|
-| **Narrator Agent** | LLM Agent (Primary) | gemini-2.5-flash-native-audio-latest | Story narration, scene setting, NPC voices, dramatic reveals. Voice: "Charon" (deep, dramatic). Affective dialog enabled. Tools: `get_game_state`, `advance_phase`, `describe_scene`. |
+| **Narrator Agent** | LLM Agent (Primary) | gemini-2.5-flash-native-audio-latest | Story narration, scene setting, NPC voices, dramatic reveals. Voice presets: Gacrux (Classic), Sulafat (Campfire), Enceladus (Horror), Zubenelgenubi (Comedy). Affective dialog enabled. Tools: `get_game_state`, `advance_phase`, `describe_scene`. |
 | **Game Master Agent** | Workflow Agent (Deterministic) | N/A — pure logic | Phase transitions (SETUP→NIGHT→DAY→VOTE→ELIMINATION→repeat), rule enforcement, vote counting, win condition checks. Tools: `assign_roles`, `count_votes`, `eliminate_player`, `check_win_condition`. |
 | **AI Character Agent(s)** | LLM Sub-agent(s) | Same Gemini model, separate system prompt per character | AI's hidden player persona(s). 1–2 instances per game, each with a unique character identity and role drawn from the full role pool. Unified architecture: no special-casing between AI characters regardless of role assignment. Generates dialog, votes, and night actions concurrently via parallel execution. Tools: `plan_deflection`, `generate_alibi`, `accuse_player`. |
 
@@ -188,17 +188,21 @@ games/{gameId}/
 /game/{gameCode}  → Game screen
   ├── Audio player (narrator voice stream)
   ├── Microphone input (AudioWorklet, 16kHz PCM16 mono → streamed to narrator)
-  ├── Scene image (generated per phase, optional)
+  ├── Scene background (18% opacity atmospheric image behind content, cached, crossfade transitions)
+  ├── Phase transition overlays (dark/dawn/judgment/dusk animations between phases)
   ├── Role reveal overlay (dramatic role assignment at game start)
-  ├── Role card (private, only visible to this player)
+  ├── Role card (private, only visible to this player; Drunk sees "Seer" until post-game)
   ├── Character roster (responsive: 160px sticky sidebar on desktop, horizontal icon strip on mobile; dead players with 💀/dashed/strikethrough; "X of Y alive" counter)
   ├── Discussion timer (sticky header, M:SS countdown with color transitions)
+  ├── Three-tab content interface:
+  │   ├── Story tab — scrollable narrative history (chat + narrator messages)
+  │   ├── Journal tab — persistent Seer/Drunk investigation results across rounds
+  │   └── Records tab — per-round vote breakdown with individual voter names
   ├── Chat input (text + quick reactions, fallback to mic)
   ├── Ghost Council panel (dead-player private chat; dims during séance)
   ├── Vote buttons (appear during voting phase only)
   ├── Night kill UI (for human shapeshifters via Random AI Alignment)
-  ├── Haunt UI (dead players accuse one living character per round during night)
-  └── Story log (scrollable narrative history)
+  └── Haunt UI (dead players accuse one living character per round during night)
 ```
 
 ---
@@ -252,12 +256,12 @@ games/{gameId}/
 | Narrator quiet-player engagement | **P1** | ✅ Shipped | Narrator tracks `characters_not_yet_spoken` and prompts after 60s silence. Max one prompt per silent player per round. |
 | Spectator actions for eliminated players | **P1** | ✅ Shipped | One-word whisper clue per game, delivered during day discussion. Narrator narrates eerie in-story delivery. Superseded by Ghost Council, Séance, and Haunt actions in Sprint 11. |
 | Camera vote counting | **P2** | ✅ Shipped | Host enables "In-Person Mode" in lobby. Gemini Vision counts raised hands from camera frame. Hand count capped at alive player count. Phone voting remains fallback. |
-| Scene image generation | **P2** | ✅ Shipped | Atmospheric illustrations on phase transitions (game start, night, dawn, elimination, game over). Gemini generates images with 1.5 MB guard. Fire-and-forget async. |
+| Scene image generation | **P2** | ✅ Shipped | Atmospheric illustrations on phase transitions (game start, night, dawn, elimination, game over). Gemini generates images with 1.5 MB guard. Opening scene pre-generated during lobby (45s timeout with 30s fallback wait). Images displayed as full-screen background at 18% opacity with crossfade transitions. Cached per scene to avoid re-fetching. |
 | Tutorial mode | **P2** | ✅ Shipped | 5-step interactive walkthrough: role reveal, night action, day discussion, voting, game over. Mock cast and timeline. No backend required — fully client-side. |
 | In-game role reminder | **P2** | ✅ Shipped | Expandable `RoleStrip` with ability description, icon, and label for all 8 roles. One-tap expand/collapse. |
 | Minimum player count design | **P2** | ✅ Shipped | Difficulty auto-adjusts for small games. Role distribution adapts (no Healer at 4 players). When only 2 humans join, 2 AI characters are spawned (4 total players) to ensure a full game experience. With 3+ humans, 1 AI character joins. Lobby shows warning "Games work best with 4+ players" when < 4 humans. |
 | Narrator vote neutrality | **P2** | ✅ Shipped | `generate_vote_context` tool uses only public events log. Narrator prompt firewalled from traitor state. |
-| Narrator pacing intelligence | **P2** | ✅ Shipped | `ConversationTracker` monitors message flow (PACE_HOT/NORMAL/NUDGE/PUSH/CIRCULAR). Day discussion transitions organically. Dynamic countdown timer scales by player count (2–4 min) with 30s narrator warning. `end_of_turn=False` parity for text messages in heated discussions (PACE_HOT) prevents narrator from responding to every message. |
+| Narrator pacing intelligence | **P2** | ✅ Shipped | `ConversationTracker` monitors message flow (PACE_HOT/NORMAL/NUDGE/PUSH/CIRCULAR). Day discussion transitions organically. Dynamic countdown timer scales by player count (2–4 min) with 30s narrator warning. `end_of_turn=False` parity for text messages in heated discussions (PACE_HOT) prevents narrator from responding to every message. PACE_HOT signal specifically prevents the narrator from interrupting rapid-fire debate, preserving natural player momentum. |
 | Affective dialog input signals | **P2** | ✅ Shipped | `AffectiveSignals` computes vote_tension, debate_intensity, late_game, endgame_imminent, ai_heat. Injected into narrator context for tone adjustment. |
 | Conversation structure for large groups | **P2** | ✅ Shipped | `HandRaiseQueue` for 7+ players. Narrator calls on 2–3 characters first, then opens floor. "Raise hand" quick reaction added. |
 | Minimum satisfying game length | **P2** | ✅ Shipped | Minimum rounds enforced: 3–4 players = 3 rounds, 5–6 = 3, 7 = 4, 8 = 5. Expected duration displayed in lobby. |
@@ -265,7 +269,7 @@ games/{gameId}/
 | Additional roles (Bodyguard, Tanner) | **P2** | ✅ Shipped | Bodyguard (absorbs Shapeshifter kill for protected player, available at 7+ players) and Tanner (solo win: get voted out, available at 8 players). Full night action handling, win conditions, and role reminders. |
 | Random AI alignment | **P2** | ✅ Shipped | On Normal/Hard, AI characters draw from the full role pool. Any AI character may be the Shapeshifter (hostile) or any village role (loyal). Humans can also be assigned the Shapeshifter role. AI Shapeshifters can target other AI characters at night (not limited to human targets). AI Seer investigations are computed and logged. AI Bodyguard sacrifice works correctly. AI Healer events use proper character names. Post-game reveals alignment. Derived from difficulty — no separate toggle needed. |
 | Post-game timeline interactive UX | **P2** | ✅ Shipped | Round-by-round interactive timeline with public vs. secret split. "Key Round" highlight for closest vote. AI strategy teaser pull-quote above character reveals. Audio highlight reel with play buttons. |
-| Narrator style presets | **P2** | ✅ Shipped | 4 presets: Classic (Charon voice, dramatic), Campfire (Puck voice, folksy), Horror (Charon voice, dread), Comedy (Kore voice, wry humor). Selection in lobby. Each preset: system prompt prefix + voice config override. |
+| Narrator style presets | **P2** | ✅ Shipped | 4 presets: Classic (Gacrux voice, dramatic), Campfire (Sulafat voice, folksy), Horror (Enceladus voice, dread), Comedy (Zubenelgenubi voice, wry humor). Selection in lobby. Each preset: system prompt prefix + voice config override. |
 | Competitor intelligence for AI | **P2** | ✅ Shipped | Post-game strategy logs in Firestore. After 20+ completed games, Gemini aggregates patterns into "meta-strategy brief" injected into Traitor Agent prompt. Respects difficulty constraints. |
 | **New: Hide AI identity** | **P0** | ✅ Shipped | AI character never exposed via HTTP. No AI label in character grid. WebSocket sends AI identity only in private `connected` message at game start. AI appears as a normal player throughout gameplay. |
 | **New: Audio recording + highlights** | **P2** | ✅ Shipped | Narrator PCM audio recorded in segments by phase. Top-5 highlights ranked by priority. Base64 WAV encoded for post-game reel. In-memory only (max 10 segments × 10s). |
@@ -293,6 +297,17 @@ games/{gameId}/
 | **New: Deployment Guide** | **P2** | ✅ Shipped | `docs/DEPLOYMENT.md` with complete local development setup and Cloud Run production deployment instructions. |
 | **New: Multi-Stage Docker Build** | **P2** | ✅ Shipped | Single Dockerfile at repo root with multi-stage build (frontend build + backend) for streamlined container image creation. |
 | **New: Python 3.14 Compatibility** | **P2** | ✅ Shipped | Dependencies upgraded and pinned for Python 3.14 compatibility. |
+| **New: Three-Tab Content Interface** | **P1** | ✅ Shipped | Story | Journal | Records tab layout replaces the single story log. Story tab shows the scrollable narrative. Journal tab persists Seer/Drunk investigation results across rounds. Records tab displays per-round vote breakdowns with individual voter names. Tabs are accessible throughout gameplay. |
+| **New: Investigation Journal** | **P1** | ✅ Shipped | Persistent panel tracking Seer and Drunk investigation results round by round. Players assigned the Seer (or Drunk-as-Seer) can review all past investigations without scrolling through chat history. Persists across the entire game session. |
+| **New: Vote Records** | **P1** | ✅ Shipped | Per-round vote breakdown showing which player voted for whom. Provides transparent vote history so players can track patterns, spot alliances, and catch inconsistencies across rounds. |
+| **New: Scene Background Imagery** | **P2** | ✅ Shipped | Scene images rendered as full-screen atmospheric backgrounds at 18% opacity behind game content instead of inline images. Cached per scene. Crossfade transitions between scene changes. Uses `inset:0` + `display:block` sizing for consistent coverage across devices. |
+| **New: Phase Transition Animations** | **P2** | ✅ Shipped | Visual overlays marking phase boundaries: dark (night), dawn (day discussion), judgment (voting), dusk (elimination). Provides clear atmospheric signaling of game phase changes without relying solely on narrator audio. |
+| **New: Pre-Generated Scene Images** | **P2** | ✅ Shipped | Opening scene image generated during lobby phase (at game creation) with a 45-second timeout and 30-second fallback wait. Scene is ready immediately when the game starts, eliminating the delay players previously experienced waiting for the first image. |
+| **New: Drunk Role Disguise** | **P1** | ✅ Shipped | Players assigned the Drunk role see "Seer" on their role card and in all UI elements throughout the game. The deception is maintained until the post-game reveal, when their true Drunk identity is disclosed. This ensures the Drunk player genuinely believes they are the Seer, creating authentic misinformation during discussions. |
+| **New: Rate Limiting** | **P0** | ✅ Shipped | Server-side rate limits on key endpoints: game creation (5/min), game join (10/min), game start (3/min), chat messages (10 per 10s). Prevents abuse, spam, and accidental rapid-fire requests. |
+| **New: Game Access Authorization** | **P0** | ✅ Shipped | Player ID verification on game endpoints. Players can only perform actions in games they have joined. Prevents unauthorized access to game state and actions by non-participants. |
+| **New: Input Validation** | **P0** | ✅ Shipped | Server-side validation for player names, chat text content, and game code format. Rejects malformed, empty, or excessively long inputs before they reach game logic. |
+| **New: Narrator Voice Preset Upgrade** | **P2** | ✅ Shipped | Narrator voice presets upgraded from legacy voices (Charon, Puck, Kore) to new Gemini voice models: Classic (Gacrux), Campfire (Sulafat), Horror (Enceladus), Comedy (Zubenelgenubi). Improved vocal quality and character across all four narrator personalities. |
 | Multiple story genres | **P3 — Future** | ⬜ | Fantasy, mystery, sci-fi, horror story templates with different character sets, win conditions, atmosphere. |
 | Persistent player profiles | **P3 — Future** | Track win/loss records, roles played, times they correctly identified the AI. Leaderboards across friend groups. Unlockable story genres. |
 | Cross-device shared screen mode | **P3 — Future** | Dedicated "campfire screen" (TV/tablet) showing the shared narrative, scene images, and character status while phones remain private. Full second-screen experience. |
@@ -317,7 +332,7 @@ games/{gameId}/
 5. Character identity masking — all players AND the AI have LLM-generated story character names, making the AI unidentifiable
 6. Active narrator moderation — narrator acts as game show host during discussions: relaying, reacting, stirring debate, and redirecting loops
 7. 8 unique roles — Hunter's revenge kill, Drunk's false info, Bodyguard's sacrifice, Tanner's inversion create unpredictable moments
-8. 4 narrator personalities — Classic, Campfire, Horror, Comedy with distinct voices and discussion-specific behaviors
+8. 4 narrator personalities — Classic (Gacrux), Campfire (Sulafat), Horror (Enceladus), Comedy (Zubenelgenubi) with distinct voices and discussion-specific behaviors
 9. Narrator-paced timers — phase timers start after the narrator finishes speaking (not on phase entry), a 45-second minimum discussion floor, tightened phase windows, and player-count-aware countdowns with visual urgency
 10. Post-game reveal timeline — interactive round-by-round view with AI reasoning + audio highlights + share button
 11. In-person camera voting — Gemini Vision counts raised hands for physical gatherings
@@ -325,6 +340,9 @@ games/{gameId}/
 13. Built on Gemini Live API — native voice, not bolted-on text-to-speech
 14. Dead player agency — Ghost Council chat, Séance phase (dead players regain voice), and Haunt actions (dead players accuse from beyond the grave)
 15. AI auto-reply to voice mentions — AI characters respond naturally when named aloud during discussion
+16. Three-tab information architecture — Story | Journal | Records tabs organize narrative, investigation history, and vote records into distinct panels, giving players structured access to game intelligence
+17. Atmospheric scene backgrounds — AI-generated scene images displayed at 18% opacity behind content with crossfade transitions, creating cinematic immersion without obscuring gameplay
+18. Phase transition animations — dark/dawn/judgment/dusk overlays provide clear visual markers between game phases
 
 ---
 
@@ -377,7 +395,7 @@ games/{gameId}/
 
 ## Post-Hackathon P2 Roadmap
 
-> **Status Update (Mar 12, 2026):** All features from Sprints 4–11 have been implemented and shipped ahead of the hackathon deadline. Sprint 11 delivered dead player agency (Ghost Council chat, Séance phase, Haunt actions), responsive character roster, AI auto-reply to voice mentions, discussion timer enforcement, night resolution concurrency guard, and win condition simplification. The roadmap below is preserved for historical context — all items marked ✅.
+> **Status Update (Mar 15, 2026):** All features from Sprints 4–12 have been implemented and shipped ahead of the hackathon deadline. Sprint 12 delivered the three-tab content interface (Story/Journal/Records), atmospheric scene backgrounds, phase transition animations, pre-generated scene images, Drunk role disguise, narrator voice preset upgrades, rate limiting, game access authorization, input validation, and modular backend architecture. The roadmap below is preserved for historical context — all items marked ✅.
 
 ### Sprint 4: Narrator Intelligence — ✅ ALL SHIPPED
 
@@ -410,10 +428,10 @@ games/{gameId}/
 
 | Feature | Status | Implementation Notes |
 |---|---|---|
-| Scene image generation | ✅ | Gemini generates illustrations on phase transitions. 1.5 MB guard, async fire-and-forget. |
+| Scene image generation | ✅ | Gemini generates illustrations on phase transitions. 1.5 MB guard, async fire-and-forget. Opening scene pre-generated during lobby (Sprint 12). Displayed as atmospheric background at 18% opacity (Sprint 12). |
 | Audio recording/playback | ✅ | PCM recording by segment, top-5 highlight reel ranked by priority. In-memory, base64 WAV. |
 | Camera vote counting | ✅ | Gemini Vision hand-counting from host camera frame. Hand count capped at alive players. |
-| Narrator style presets | ✅ | 4 presets (Classic/Campfire/Horror/Comedy) with distinct voices + system prompt prefixes. |
+| Narrator style presets | ✅ | 4 presets (Classic/Campfire/Horror/Comedy) with distinct voices + system prompt prefixes. Voices upgraded to Gacrux/Sulafat/Enceladus/Zubenelgenubi in Sprint 12. |
 | Competitor intelligence for AI | ✅ | Post-game strategy logs → meta-strategy brief after 20+ games → Traitor Agent prompt augmentation. |
 
 ### Sprint 8: Voice Engagement & Infrastructure — ✅ ALL SHIPPED
@@ -474,6 +492,24 @@ games/{gameId}/
 | Night Resolution Concurrency Guard | ✅ | `_resolving_nights` guard prevents double-kill race condition. Defense-in-depth alive verification before applying kill. |
 | Win Condition Simplification | ✅ | Shapeshifter wins at parity (non_shapeshifter_alive ≤ 1). No round guard. Removes old ≤4 player round 2 requirement. |
 
+### Sprint 12: Immersive UI, Security Hardening & Narrator Polish — ✅ ALL SHIPPED
+
+| Feature | Status | Notes |
+|---|---|---|
+| Three-Tab Content Interface | ✅ | Story | Journal | Records tabs replace the single story log. Organized access to narrative history, investigation results, and vote records. |
+| Investigation Journal | ✅ | Persistent Seer/Drunk investigation results across rounds. Survives tab switches and page scrolls. |
+| Vote Records | ✅ | Per-round vote breakdown with individual voter names. Full vote history accessible at any point during the game. |
+| Scene Background Imagery | ✅ | Scene images rendered at 18% opacity as atmospheric full-screen backgrounds. Cached per scene with crossfade transitions. `inset:0` + `display:block` sizing. |
+| Phase Transition Animations | ✅ | Dark/dawn/judgment/dusk overlays animate between game phases. Clear visual signaling of phase changes. |
+| Pre-Generated Scene Images | ✅ | Opening scene generated at game creation (45s timeout, 30s fallback). Ready on game start with no player-facing delay. |
+| Drunk Role Disguise | ✅ | Drunk sees "Seer" identity on role card and all UI until post-game reveal. Authentic deception maintained throughout gameplay. |
+| Rate Limiting | ✅ | Game creation (5/min), join (10/min), start (3/min), chat (10/10s). Server-side abuse prevention. |
+| Game Access Authorization | ✅ | Player ID verification on game endpoints. Non-participants blocked from game actions. |
+| Input Validation | ✅ | Player names, chat text, game code format validated server-side. Malformed inputs rejected before reaching game logic. |
+| Narrator Voice Preset Upgrade | ✅ | Voices upgraded from Charon/Puck/Kore to Gacrux (Classic), Sulafat (Campfire), Enceladus (Horror), Zubenelgenubi (Comedy). |
+| PACE_HOT Narrator Signal | ✅ | Narrator withholds interruptions during rapid-fire debate. Prevents AI from breaking natural player momentum in heated discussions. |
+| Modular Backend Architecture | ✅ | 22-issue reliability refactor: game logic split into focused modules, Firestore transactions for atomic state updates, structured error handling. |
+
 ### Remaining (Post-Hackathon)
 
 | Feature | Priority | Notes |
@@ -523,5 +559,5 @@ games/{gameId}/
 ---
 
 *Document created: February 21, 2026*
-*Last updated: March 12, 2026 — multi-AI characters in small games, unified AI architecture, parallel AI execution, AI role abilities, vote reliability fixes*
+*Last updated: March 15, 2026 — three-tab UI (Story/Journal/Records), scene background imagery, phase transition animations, pre-generated scenes, Drunk role disguise, narrator voice upgrades (Gacrux/Sulafat/Enceladus/Zubenelgenubi), PACE_HOT pacing, rate limiting, game access authorization, input validation, modular backend architecture*
 *Hackathon deadline: March 16, 2026*

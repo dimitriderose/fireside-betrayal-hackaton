@@ -6,46 +6,73 @@ graph TB
         FE_STATE["Frontend State<br/>aiCharacters: [] array<br/>lastVoteResult: individualVotes + isTie<br/>(variable-count AI chars)"]
         PTT["Push-to-Talk<br/>Speaker Lock<br/>(one active speaker at a time)"]
 
-        subgraph AudioCapture["Audio Capture (v5.2: Separated Lifecycles)"]
+        subgraph AudioCapture["Audio Capture (Separated Lifecycles)"]
             MIC["Mic Layer (Persistent)<br/>MediaStream + AudioContext<br/>+ AudioWorkletNode<br/>Survives WS reconnects"]
             AUDIOWS_CLIENT["Audio WS Layer (Reconnectable)<br/>Exponential backoff:<br/>500/1000/2000/4000/8000ms<br/>Max 10 attempts"]
             VISAPI_AUDIO["Page Visibility API<br/>Hidden: close WS proactively<br/>Visible: reconnect + resume AudioContext<br/>connectingRef guard"]
         end
 
-        subgraph GameWSClient["Game WS Client (v5.2: Mobile Resilient)"]
+        subgraph GameWSClient["Game WS Client (Mobile Resilient)"]
             GWSC["Game WS Connection<br/>CONNECTING state guard<br/>(prevents duplicate connections)"]
             VISAPI_GAME["Page Visibility API<br/>Visible: immediate reconnect<br/>(bypass backoff)"]
             SYNC_HB["Sync Heartbeat (2s)<br/>Phase mismatch detection<br/>Force reconnect on drift"]
         end
 
-        VTO["VoteTallyOverlay (v5.2)<br/>Shows individualVotes<br/>during elimination phase"]
+        subgraph FrontendTabs["Three-Tab UI"]
+            TAB_STORY["Story Panel<br/>Live narration + chat log"]
+            TAB_JOURNAL["Journal Panel<br/>Player notes + clues"]
+            TAB_RECORDS["Records Panel<br/>Vote history + investigations"]
+        end
+
+        VTO["VoteTallyOverlay<br/>Shows individualVotes<br/>during elimination phase"]
     end
 
     subgraph CloudRun["Google Cloud Run"]
-        subgraph SPA["SPA Routing (v5.2)"]
+        subgraph SPA["SPA Routing"]
             API["FastAPI Backend<br/>Port 8000<br/>API + WS routes registered first"]
             SPAPATH["SPAStaticFiles<br/>Catches 404 → serves index.html<br/>Enables React Router deep links<br/>(e.g., /join/C1E7F362)"]
+            RATELIMIT["Rate Limiter (slowapi)<br/>game_router endpoints<br/>Middleware on FastAPI app"]
         end
-        DT["Discussion Timer<br/>Dynamic Timeout<br/>120s / 180s / 240s<br/>30s Warning Task"]
+
+        subgraph WSPackage["ws/ Package (8 Modules)"]
+            WS_CONN["connection_manager.py<br/>Per-player send queues<br/>Dual-queue: audio + control<br/>ConnectionManager singleton"]
+            WS_MSG["message_handlers.py<br/>WS message dispatch<br/>Speaker lock + timeout<br/>Ghost broadcast"]
+            WS_CONV["conversation.py<br/>ConversationTracker<br/>AffectiveSignals<br/>HandRaiseQueue"]
+            WS_STATE["state_machine.py<br/>ALLOWED_TRANSITIONS map<br/>Phase transition validation"]
+            WS_PHASE["phase_timers.py<br/>Timer scheduling<br/>Narrator timeouts<br/>Night action fallbacks"]
+            WS_VOTE["vote_manager.py<br/>Vote casting + tally<br/>Camera votes<br/>_resolving_votes guard"]
+            WS_NIGHT["night_resolver.py<br/>Night actions + seer results<br/>Hunter revenge<br/>_resolving_nights guard"]
+            WS_LIFE["game_lifecycle.py<br/>End game + timeline builder<br/>Seance trigger + timeout<br/>Narrator stop + scene cache cleanup"]
+        end
+
+        subgraph Utilities["Utility Modules"]
+            CONST["constants.py<br/>WSInbound / WSOutbound types<br/>Error codes, timeouts<br/>Centralized magic strings"]
+            UTIL_TASKS["utils/tasks.py<br/>safe_create_task()<br/>cancel_game_tasks()<br/>cancel_player_tasks()"]
+            UTIL_GAME["utils/game_utils.py<br/>Shared helpers"]
+        end
+
+        subgraph SceneCache["Scene Cache"]
+            SCACHE["_scene_cache dict<br/>Pre-generated during lobby<br/>TTL sweep on access<br/>Popped on game end"]
+        end
 
         subgraph Agents["AI Agents"]
-            NA["Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy<br/>Dual-Mode: Theatrical + Moderator<br/>v5.2: Log cleanup (voice_activity,<br/>session_resumption handled)"]
+            NA["Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy<br/>Dual-Mode: Theatrical + Moderator<br/>Watchdog: auto-restart dead sessions"]
             subgraph AIFuncs["traitor_agent.py — Unified AI Functions"]
                 TRIGGER["Trigger Functions<br/>trigger_all_night_actions()<br/>trigger_all_votes()<br/>trigger_all_dialogs()<br/>asyncio.gather parallel exec"]
                 INDIV["Individual AI Functions<br/>generate_dialog()<br/>select_night_target()<br/>select_vote()<br/>select_loyal_night_action()<br/>Loops via _ai_chars_with_fields()"]
             end
             GM["Game Master<br/>Deterministic Python<br/>Role Assignment + Phase Transitions<br/>Win Conditions (parity) + Vote Resolution<br/>Human Shapeshifter Support<br/>_resolving_nights guard"]
-            SA["Scene Agent<br/>Image Generation<br/>Phase Transition Illustrations<br/>v5.2: Flat vector style,<br/>5-6 color palette (<500KB)"]
+            SA["Scene Agent<br/>Image Generation<br/>Phase Transition Illustrations<br/>Flat vector style,<br/>5-6 color palette (<500KB)"]
             CV["Camera Vote Agent<br/>Gemini Vision<br/>Hand-Counting (In-Person)"]
             AR["Audio Recorder<br/>Highlight Reel<br/>Post-Game Playback"]
             SL["Strategy Logger<br/>Cross-Game Learning<br/>Intelligence Brief"]
-        subgraph GhostSystem["Ghost Council / Séance (v5.1)"]
+            subgraph GhostSystem["Ghost Council / Seance"]
                 GC["Ghost Council<br/>Dead Player Chat<br/>ghost_message WS type<br/>2s rate limit per player"]
-                SEANCE["Séance Phase<br/>Triggered: dead >= 2 AND<br/>dead >= total/2<br/>45s ghost push-to-talk"]
+                SEANCE["Seance Phase<br/>Triggered: dead >= 2 AND<br/>dead >= total/2<br/>45s ghost push-to-talk"]
                 HAUNT["Haunt Actions<br/>Dead player night accusation<br/>AI ghost auto-accuse<br/>Narrator incorporates"]
             end
 
-            AIREPLY["AI Auto-Reply<br/>_maybe_trigger_ai_reply()<br/>Name-match regex (≥3 chars)<br/>30s cooldown per character"]
+            AIREPLY["AI Auto-Reply<br/>_maybe_trigger_ai_reply()<br/>Name-match regex (>=3 chars)<br/>30s cooldown per character"]
         end
 
         subgraph VoicePipeline["Player Voice Input Pipeline (Audio WS only)"]
@@ -55,7 +82,7 @@ graph TB
             TBUF["Transcript Buffer<br/>0.8s Debounce Flush"]
         end
 
-        subgraph VoteCapture["Vote Data Capture (v5.2)"]
+        subgraph VoteCapture["Vote Data Capture"]
             VCAP["Individual Vote Snapshot<br/>Captures {voter: votedFor}<br/>BEFORE tally_votes() clears<br/>AI voted_for fields"]
             VELIM["broadcast_elimination<br/>+ individualVotes<br/>+ isTie"]
         end
@@ -73,7 +100,7 @@ graph TB
 
     subgraph Infra["Infrastructure"]
         TF["Terraform IaC<br/>Cloud Run + Firestore<br/>Artifact Registry + IAM"]
-        DOCK["Multi-Stage Dockerfile<br/>node:18-slim -> python:3.11-slim<br/>v5.2: --ws-ping-interval=15<br/>--ws-ping-timeout=20"]
+        DOCK["Multi-Stage Dockerfile<br/>node:18-slim -> python:3.11-slim<br/>--ws-ping-interval=15<br/>--ws-ping-timeout=20"]
     end
 
     %% Player connections — two separate WebSocket paths per player
@@ -84,16 +111,24 @@ graph TB
     %% SPA routing
     API -.->|"non-API 404s"| SPAPATH
 
-    %% Audio WS — separated mic/WS lifecycle (v5.2)
+    %% Rate limiting
+    RATELIMIT -.->|"decorates"| API
+
+    %% Audio WS — separated mic/WS lifecycle
     MIC -->|"PCM frames"| AUDIOWS_CLIENT
     AUDIOWS_CLIENT -.->|"WS /ws/audio/{game_id}<br/>binary PCM16 16kHz frames<br/>(reconnectable, backoff)"| AWS
     VISAPI_AUDIO -.->|"close/reconnect<br/>WS on visibility change"| AUDIOWS_CLIENT
     PTT -.->|"grants / revokes<br/>speaker lock"| AWS
 
-    %% Game WS client resilience (v5.2)
+    %% Game WS client resilience
     GWSC <-->|"game WS connection"| API
     VISAPI_GAME -.->|"immediate reconnect<br/>on tab visible"| GWSC
     SYNC_HB -.->|"phase mismatch?<br/>force reconnect"| GWSC
+
+    %% Frontend tabs feed from API
+    TAB_STORY -.->|"narration + chat events"| GWSC
+    TAB_JOURNAL -.->|"clue events"| GWSC
+    TAB_RECORDS -.->|"vote + investigation data"| GWSC
 
     %% Voice input flow: Audio WS -> Decode -> Speaker ID -> Narrator only
     AWS -->|"raw PCM bytes + player_id"| DECODE
@@ -104,6 +139,23 @@ graph TB
     GLive -.->|"input_audio_transcription<br/>partial fragments"| TBUF
     TBUF -.->|"input_transcript broadcast<br/>speaker + buffered sentence"| API
 
+    %% WS package internal wiring
+    API -->|"WS connect/message"| WS_MSG
+    WS_MSG -->|"dispatches to"| WS_VOTE
+    WS_MSG -->|"dispatches to"| WS_NIGHT
+    WS_MSG -->|"dispatches to"| WS_CONV
+    WS_CONN -->|"per-player queues"| API
+    WS_STATE -.->|"validates transitions"| GM
+    WS_PHASE -->|"timer events"| NA
+    WS_PHASE -->|"timer_seconds in phase_change"| API
+    WS_LIFE -->|"end game + timeline"| FS
+
+    %% Utility module connections
+    UTIL_TASKS -.->|"task lifecycle mgmt"| WS_PHASE
+    UTIL_TASKS -.->|"task lifecycle mgmt"| WS_LIFE
+    UTIL_TASKS -.->|"task lifecycle mgmt"| NA
+    CONST -.->|"message types + timeouts"| WS_MSG
+
     %% Agent connections
     API --> NA
     API --> GM
@@ -111,11 +163,15 @@ graph TB
     API --> CV
     API --> AR
     API --> SL
-    API --> DT
+
+    %% Scene cache flow
+    SA -->|"pre-generate in lobby"| SCACHE
+    SCACHE -->|"serve cached image<br/>on game start"| API
+    WS_LIFE -->|"pop cache on game end"| SCACHE
 
     %% Unified AI function flow
     GM -->|"night/vote/discussion phases"| TRIGGER
-    API -->|"ws_router calls"| TRIGGER
+    WS_MSG -->|"ws dispatches"| TRIGGER
     NA -->|"narrator triggers"| TRIGGER
     TRIGGER -->|"asyncio.gather<br/>parallel per AI char"| INDIV
 
@@ -131,29 +187,25 @@ graph TB
     API --> FS
     DECODE -.->|"character_name lookup"| FS
 
-    %% Vote capture flow (v5.2)
-    GM -->|"tally_votes()"| VCAP
+    %% Vote capture flow
+    WS_VOTE -->|"tally_votes()"| VCAP
     VCAP -->|"individualVotes + isTie"| VELIM
     VELIM -->|"broadcast to all players"| API
     API -.->|"ELIMINATION msg<br/>with vote data"| VTO
 
-    %% Ghost Council / Séance connections
+    %% Ghost Council / Seance connections
     GC -->|"ghost_message broadcast"| API
     GC -->|"stored in chat collection"| FS
     SEANCE -->|"re-enables dead player PTT"| PTT
     SEANCE -->|"narrator moderates testimony"| NA
     HAUNT -->|"haunt_action events"| FS
     HAUNT -->|"narrator incorporates in discussion"| NA
-    GM -->|"séance trigger check<br/>dead >= 2 AND dead >= total/2"| SEANCE
+    WS_LIFE -->|"seance trigger check<br/>dead >= 2 AND dead >= total/2"| SEANCE
 
     %% AI Auto-Reply connections
     TBUF -->|"transcript flush triggers"| AIREPLY
     AIREPLY -->|"generate dialog"| GFlash
     AIREPLY -->|"broadcast as source=player"| API
-
-    %% Discussion timer connections
-    DT -->|"wrap-up prompt at T-30s"| NA
-    DT -->|"timer_seconds in phase_change"| API
 
     %% Infrastructure provisions Cloud Run
     TF -.->|"provisions"| CloudRun
@@ -167,21 +219,27 @@ graph TB
     classDef gemini fill:#1e88e5,stroke:#1565c0,color:#fff
     classDef voice fill:#2d6a4f,stroke:#40916c,color:#fff
     classDef infra fill:#374151,stroke:#6b7280,color:#fff
-    classDef timer fill:#92400e,stroke:#d97706,color:#fff
     classDef ghost fill:#4a1942,stroke:#9b59b6,color:#fff
     classDef reconnect fill:#1b4332,stroke:#2d6a4f,color:#fff
     classDef vote fill:#7c2d12,stroke:#ea580c,color:#fff
     classDef spa fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    classDef wsmod fill:#1a3636,stroke:#40916c,color:#fff
+    classDef util fill:#2c2c54,stroke:#706fd3,color:#fff
+    classDef cache fill:#78350f,stroke:#f59e0b,color:#fff
+    classDef tabs fill:#312e81,stroke:#818cf8,color:#fff
 
     class P1,P2,P3,FE_STATE,PTT player
     class API cloud
     class NA,TRIGGER,INDIV,GM,SA,CV,AR,SL,AIREPLY agent
     class FS gcp
-    class GLive,GFlash,GTTS gemini
+    class GLive,GFlash,GImage gemini
     class AWS,DECODE,SPKR,TBUF voice
     class TF,DOCK infra
-    class DT timer
     class GC,SEANCE,HAUNT ghost
     class MIC,AUDIOWS_CLIENT,VISAPI_AUDIO,GWSC,VISAPI_GAME,SYNC_HB reconnect
     class VCAP,VELIM,VTO vote
-    class SPAPATH spa
+    class SPAPATH,RATELIMIT spa
+    class WS_CONN,WS_MSG,WS_CONV,WS_STATE,WS_PHASE,WS_VOTE,WS_NIGHT,WS_LIFE wsmod
+    class CONST,UTIL_TASKS,UTIL_GAME util
+    class SCACHE cache
+    class TAB_STORY,TAB_JOURNAL,TAB_RECORDS tabs
