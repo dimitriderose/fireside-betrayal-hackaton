@@ -233,11 +233,12 @@ class ConnectionManager:
     # ── High-level game event helpers ──────────────────────────────────────────
 
     async def broadcast_game_start(
-        self, game_id: str, assignments: list
+        self, game_id: str, assignments: list, opening_scene_b64: str = None
     ) -> None:
         """
         Called by game_router after role assignment.
         Broadcasts phase_change -> NIGHT, then sends private role cards.
+        If opening_scene_b64 is provided, sends it immediately (pre-generated).
         All messages are reliable (sequenced + buffered for replay).
         """
         pids = list(self._games.get(game_id, {}).keys())
@@ -274,13 +275,18 @@ class ConnectionManager:
         # Schedule safety fallback for initial NIGHT
         _schedule_timer_fallback(game_id)
 
-        # Fire scene image for opening night
-        from agents.scene_agent import trigger_scene_image
-        safe_create_task(
-            trigger_scene_image(game_id, "game_started"),
-            name=f"scene-game_started-{game_id}",
-            game_id=game_id,
-        )
+        # Send pre-generated opening scene image if available;
+        # otherwise fire-and-forget generation (fallback for timeout case)
+        if opening_scene_b64:
+            await self.broadcast_scene_image(game_id, opening_scene_b64, "game_started")
+            logger.info(f"[{game_id}] Pre-generated scene image sent with game start")
+        else:
+            from agents.scene_agent import trigger_scene_image
+            safe_create_task(
+                trigger_scene_image(game_id, "game_started"),
+                name=f"scene-game_started-{game_id}",
+                game_id=game_id,
+            )
 
     async def broadcast_phase_change(
         self, game_id: str, phase: Phase, round: Optional[int] = None,

@@ -202,7 +202,7 @@ function LobbyPanel({ gameId, playerCount, lobbySummary, isHost, onStart, startL
             onClick={onStart}
             disabled={!canStart || startLoading}
           >
-            {startLoading ? 'Starting…' : '🔥 Start Game'}
+            {startLoading ? 'Preparing the village…' : 'Start Game'}
           </button>
           {!canStart && (
             <p style={{ fontSize: '0.8125rem', textAlign: 'center', marginTop: 10 }}>

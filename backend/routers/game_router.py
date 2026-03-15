@@ -166,6 +166,19 @@ async def start_game(
     if not started:
         raise HTTPException(status_code=409, detail="Game is not in lobby state")
 
+    # Pre-generate the opening scene image (up to 15s timeout) so players see it immediately.
+    # This runs BEFORE role assignment to overlap image generation with setup work.
+    from agents.scene_agent import generate_scene_image
+    opening_scene_b64 = None
+    try:
+        opening_scene_b64 = await asyncio.wait_for(
+            generate_scene_image("game_started"), timeout=15.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[%s] Opening scene image timed out after 15s — starting without it", game_id)
+    except Exception:
+        logger.warning("[%s] Opening scene image failed — starting without it", game_id, exc_info=True)
+
     try:
         assignment = await role_assigner.assign_roles(game_id)
     except ValueError as exc:
@@ -179,7 +192,7 @@ async def start_game(
     safe_create_task(trigger_all_night_actions(game_id), name=f"night-actions-r1-{game_id[:8]}", game_id=game_id)
 
     # Broadcast phase_change → NIGHT and send private role cards via WebSocket
-    await ws_manager.broadcast_game_start(game_id, assignment["assignments"])
+    await ws_manager.broadcast_game_start(game_id, assignment["assignments"], opening_scene_b64=opening_scene_b64)
 
     # Start narrator session and kick off Round 1 opening narration
     await narrator_manager.start_game(
