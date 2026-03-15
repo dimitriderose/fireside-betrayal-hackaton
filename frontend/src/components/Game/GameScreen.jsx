@@ -8,6 +8,8 @@ import VotePanel from '../Voting/VotePanel.jsx'
 import VoteTallyOverlay from '../Voting/VoteTallyOverlay.jsx'
 import RoleStrip from './RoleStrip.jsx'
 import { RosterIconStrip, RosterSidebar } from './RosterPanel.jsx'
+import JournalPanel from './JournalPanel.jsx'
+import RecordsPanel from './RecordsPanel.jsx'
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -1111,6 +1113,7 @@ export default function GameScreen() {
     nightActionSubmitted, hunterRevengeNeeded, clueSent, hauntUsed,
     ghostMessages, showRoleReveal, nightTargets, voteCandidates,
     timerSeconds, currentSpeaker, currentSpeakerId, lastVoteResult,
+    investigations, voteHistory, activeTab, transitionOverlay,
   } = state
 
   const { connectionStatus, sendMessage } = useWebSocket(gameId, playerId)
@@ -1123,8 +1126,8 @@ export default function GameScreen() {
   const [startError, setStartError] = useState(null)
   const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
   const [lobbySummary, setLobbySummary] = useState(null)
-  // Issue 18: sceneImage now comes from context state
-  const sceneImage = state.sceneImage
+  // Issue 18: scene image cache + current key from context state
+  const { sceneImageCache, currentSceneKey } = state
   const [nightPanelReady, setNightPanelReady] = useState(false)
   const [dayHintDismissed, setDayHintDismissed] = useState(
     () => localStorage.getItem('dayHintSeen') === '1'
@@ -1199,10 +1202,8 @@ export default function GameScreen() {
     return () => clearInterval(id)
   }, [phase, gameId])
 
-  // Issue 18: scene image now read from context state (state.sceneImage) — no window event listener needed
-
-  // Fade out scene image on phase transition (new image replaces it when it arrives)
-  // Removed instant clear — scene image now persists until replaced by a new one
+  // Issue 18: scene image now read from context state (sceneImageCache + currentSceneKey) — no window event listener needed
+  // Scene images are cached per key and crossfade via CSS transition on the background layer
 
   // Delay showing the night action panel so the narrator can speak first
   useEffect(() => {
@@ -1373,7 +1374,25 @@ export default function GameScreen() {
       </aside>
     ) : null}
 
-    <div className="page">
+    <div className="page" style={{ position: 'relative', zIndex: 1 }}>
+
+      {/* ── Scene image background layer (§12.3.14) — crossfade cached scene images ── */}
+      {currentSceneKey && sceneImageCache[currentSceneKey] && phase !== 'setup' && (
+        <div key={currentSceneKey} className="fade-in" style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          overflow: 'hidden',
+          opacity: 0.18,
+          pointerEvents: 'none',
+          zIndex: 0,
+        }}>
+          <img
+            src={`data:image/png;base64,${sceneImageCache[currentSceneKey]}`}
+            alt=""
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        </div>
+      )}
 
       {/* ── Role reveal overlay (shown briefly at game start) ── */}
       {showRoleReveal && role && (
@@ -1384,6 +1403,32 @@ export default function GameScreen() {
         />
       )}
 
+
+      {/* ── Phase transition overlay ── */}
+      {transitionOverlay && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background:
+              transitionOverlay === 'dark' ? 'rgba(10,10,30,0.7)' :
+              transitionOverlay === 'dawn' ? 'rgba(255,200,100,0.15)' :
+              transitionOverlay === 'judgment' ? 'rgba(40,40,80,0.35)' :
+              'rgba(80,20,20,0.4)',
+            zIndex: 100,
+            pointerEvents: 'none',
+            animation: 'phase-transition 1.2s ease forwards',
+          }}
+          onAnimationEnd={() => dispatch({ type: 'SET_TRANSITION', overlay: null })}
+          ref={el => {
+            // Fallback: clear overlay after 1.5s if onAnimationEnd doesn't fire
+            if (el) setTimeout(() => dispatch({ type: 'SET_TRANSITION', overlay: null }), 1500)
+          }}
+        />
+      )}
 
       {/* ── Sticky phase header ── */}
       <div
@@ -1532,27 +1577,51 @@ export default function GameScreen() {
           />
         )}
 
-        {/* Scene image (§12.3.14) — atmospheric illustration sent on phase transitions */}
-        {sceneImage && phase !== 'setup' && (
-          <div
-            className="fade-in"
-            style={{ margin: '0 16px 8px', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}
-          >
-            <img
-              src={`data:image/png;base64,${sceneImage}`}
-              alt=""
-              style={{ width: '100%', display: 'block', opacity: 0.85 }}
-            />
+        {/* Scene image removed — now rendered as fixed background layer at top of .page */}
+
+        {/* Tab bar — only shown during active game phases */}
+        {showStoryLog && (
+          <div role="tablist" style={{ display: 'flex', gap: 4, padding: '8px 16px', justifyContent: 'center' }}>
+            {['story', ...(role === 'seer' || role === 'drunk' ? ['journal'] : []), 'records'].map(tab => (
+              <button
+                key={tab}
+                role="tab"
+                aria-selected={activeTab === tab}
+                aria-controls={`tabpanel-${tab}`}
+                onClick={() => dispatch({ type: 'SET_ACTIVE_TAB', tab })}
+                style={{
+                  padding: '10px 16px',
+                  minHeight: 44,
+                  borderRadius: 20,
+                  border: 'none',
+                  background: activeTab === tab ? 'var(--accent)' : 'rgba(255,255,255,0.1)',
+                  color: activeTab === tab ? '#000' : 'var(--text-secondary, var(--text-muted))',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  textTransform: 'capitalize',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                }}
+              >
+                {tab}
+              </button>
+            ))}
           </div>
         )}
 
-        {/* Story log */}
-        {showStoryLog && (
+        {/* Story log / Journal / Records — conditional on activeTab */}
+        {showStoryLog && activeTab === 'story' && (
           <StoryLogPanel
             logRef={logRef}
             storyLog={storyLog}
             myCharacterName={characterName}
           />
+        )}
+        {showStoryLog && activeTab === 'journal' && (
+          <JournalPanel investigations={investigations} />
+        )}
+        {showStoryLog && activeTab === 'records' && (
+          <RecordsPanel voteHistory={voteHistory} />
         )}
 
         {/* Day vote */}

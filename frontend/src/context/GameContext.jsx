@@ -51,9 +51,13 @@ function createInitialState() {
     lastVoteResult: null,        // { tally, individualVotes, eliminated, wasTraitor, role, isTie }
     latestAudioChunk: null,      // Issue 18: latest base64 PCM audio chunk from narrator
     audioChunkCounter: 0,        // monotonic counter so consumers can detect new chunks
-    sceneImage: null,            // Issue 18: base64 PNG scene image
-    sceneKey: null,              // Issue 18: scene key identifier
+    sceneImageCache: {},         // Issue 18: { sceneKey: base64PNG } cache
+    currentSceneKey: null,       // Issue 18: active scene key identifier
     cameraVoteResult: null,      // Issue 18: { characterName, handCount, confidence } or { fallback, characterName, reason }
+    investigations: [],          // [{ round, target, result, isShapeshifter }] — Seer investigation journal
+    voteHistory: [],             // [{ round, tally, individualVotes, eliminated, wasTraitor, role, isTie }]
+    activeTab: 'story',          // 'story' | 'journal' | 'records'
+    transitionOverlay: null,     // 'dark' | 'dawn' | 'dusk' | null — phase transition fade
     error: null,
   }
 }
@@ -146,6 +150,9 @@ function gameReducer(state, action) {
             ? true
             : state.hunterRevengeNeeded,
         lastVoteResult: action.voteResult ?? state.lastVoteResult,
+        voteHistory: action.voteResult && !state.voteHistory.some(v => v.round === state.round)
+          ? [...state.voteHistory, { round: state.round, ...action.voteResult }]
+          : state.voteHistory,
       }
     }
     case 'HUNTER_REVENGE_DONE':
@@ -170,17 +177,22 @@ function gameReducer(state, action) {
       return { ...state, nightTargets: action.candidates }
     case 'SET_VOTE_CANDIDATES':
       return { ...state, voteCandidates: action.candidates }
-    case 'PHASE_CHANGE':
+    case 'PHASE_CHANGE': {
+      const phaseToScene = { night: 'night', day_discussion: 'day_discussion', elimination: 'elimination' }
+      const transitionMap = { night: 'dark', seance: 'dark', day_discussion: 'dawn', day_vote: 'judgment', elimination: 'dusk' }
       return {
         ...state,
         phase: action.phase,
         round: action.round ?? state.round,
+        currentSceneKey: phaseToScene[action.phase] ?? state.currentSceneKey,
+        transitionOverlay: transitionMap[action.phase] ?? null,
         timerSeconds: action.timerSeconds ?? null,  // discussion countdown (null = no timer)
         nightActionSubmitted: false,
         hunterRevengeNeeded: false,
         clueSent: false,  // reset each phase so new day_discussion in a new round allows a new clue
         hauntUsed: false, // reset each phase so new night allows a new haunt
         showRoleReveal: false, // dismiss role reveal on phase transition
+        activeTab: 'story', // auto-switch to story on phase change so players don't miss narration
         // Reset per-round vote state on every phase transition
         votes: {},
         voteMap: {},
@@ -198,6 +210,7 @@ function gameReducer(state, action) {
         nightTargets: state.nightTargets,
         voteCandidates: state.voteCandidates,
       }
+    }
     case 'GAME_OVER': {
       // Don't clear session yet — result page needs gameId/playerId for the API call.
       // Session is cleared when the user navigates away from the result page.
@@ -216,6 +229,10 @@ function gameReducer(state, action) {
         myVote: null,
         aiCharacters: [],
         ghostMessages: [],
+        investigations: [],
+        voteHistory: [],
+        activeTab: 'story',
+        transitionOverlay: null,
       }
     }
     case 'SET_TIMER':
@@ -242,9 +259,26 @@ function gameReducer(state, action) {
         audioChunkCounter: state.audioChunkCounter + 1,
       }
     case 'SET_SCENE_IMAGE':
-      return { ...state, sceneImage: action.data, sceneKey: action.sceneKey }
+      return {
+        ...state,
+        sceneImageCache: { ...state.sceneImageCache, [action.sceneKey]: action.data },
+        currentSceneKey: action.sceneKey,
+      }
     case 'SET_CAMERA_VOTE_RESULT':
       return { ...state, cameraVoteResult: action }
+    case 'ADD_INVESTIGATION':
+      if (state.investigations.some(i => i.round === action.round && i.target === action.target)) return state
+      return {
+        ...state,
+        investigations: [
+          ...state.investigations,
+          { round: action.round, target: action.target, result: action.result, isShapeshifter: action.isShapeshifter },
+        ],
+      }
+    case 'SET_ACTIVE_TAB':
+      return { ...state, activeTab: action.tab }
+    case 'SET_TRANSITION':
+      return { ...state, transitionOverlay: action.overlay }
     case 'RESET': {
       clearSession()
       return createInitialState()

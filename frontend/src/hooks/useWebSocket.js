@@ -201,6 +201,13 @@ export function useWebSocket(gameId, playerId) {
         // msg: { type, character, isShapeshifter, text }
         // Private message to the Seer/Drunk player
         dispatch({
+          type: 'ADD_INVESTIGATION',
+          round: msg.round ?? 0,
+          target: msg.character,
+          result: msg.text,
+          isShapeshifter: msg.isShapeshifter,
+        })
+        dispatch({
           type: 'ADD_MESSAGE',
           message: {
             speaker: 'Oracle',

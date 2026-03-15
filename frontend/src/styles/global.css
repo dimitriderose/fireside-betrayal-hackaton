@@ -266,6 +266,12 @@ a:hover { text-decoration: underline; }
 }
 .slide-up { animation: slide-up 400ms ease forwards; }
 
+@keyframes phase-transition {
+  0%  { opacity: 1; }
+  60% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* ===== Accessibility: respect reduced-motion preference ===== */
 @media (prefers-reduced-motion: reduce) {
   .fire-flicker,
@@ -273,6 +279,10 @@ a:hover { text-decoration: underline; }
   .fade-in,
   .slide-up {
     animation: none;
+  }
+  [style*="phase-transition"] {
+    animation: none !important;
+    opacity: 0 !important;
   }
 }
 

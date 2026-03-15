@@ -258,7 +258,7 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
         from utils.game_utils import all_ai_chars as _all_ai
 
         # Poll for AI votes (they're set asynchronously via Gemini calls)
-        for _ in range(5):  # up to 10s max
+        for _ in range(5):  # up to 5s max
             game_vote_check = await fs.get_game(game_id)
             if not game_vote_check:
                 break
@@ -268,7 +268,7 @@ async def _resolve_vote_and_advance(game_id: str, fs) -> None:
             )
             if all_ai_voted:
                 break
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
         individual_votes = await _capture_individual_votes(game_id, fs)
         tally_result = await game_master.tally_votes(game_id)
