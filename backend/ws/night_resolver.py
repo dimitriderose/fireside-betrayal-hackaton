@@ -189,11 +189,12 @@ async def _resolve_night_and_notify_narrator(game_id: str, fs) -> None:
                     if is_shapeshifter
                     else f"{target_char} is NOT the Shapeshifter."
                 )
+                current_game = await fs.get_game(game_id)
                 await manager.send_to_reliable(game_id, investigating_player_id, {
                     "type": "seer_result",
                     "character": target_char,
                     "isShapeshifter": is_shapeshifter,
-                    "round": game.round if game else 1,
+                    "round": current_game.round if current_game else 1,
                     "text": result_text,
                 })
 
