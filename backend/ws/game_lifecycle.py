@@ -217,6 +217,10 @@ async def _end_game(
         "reason": reason,
     })
 
+    # Clean up scene cache to prevent memory leak
+    from routers.game_router import _scene_cache
+    _scene_cache.pop(game_id, None)
+
     # Clean up per-game state (but NOT sender tasks — they need to flush game_over to clients)
     remove_tracker(game_id)
     remove_hand_queue(game_id)

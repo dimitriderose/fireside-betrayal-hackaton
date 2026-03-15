@@ -187,8 +187,7 @@ async def _on_chat(
     while dq and dq[0] <= now - _CHAT_MSG_WINDOW:
         dq.popleft()
     if len(dq) >= _CHAT_MSG_MAX:
-        from ws.connection_manager import manager as _mgr
-        await _mgr.send_to(game_id, player_id, {
+        await manager.send_to(game_id, player_id, {
             "type": "error",
             "message": "You are sending messages too quickly. Please slow down.",
             "code": "RATE_LIMITED",

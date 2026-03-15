@@ -36,7 +36,7 @@ const ROLE_INFO = {
   seer:         { icon: '🔮', label: 'Seer',          action: 'investigate', actionLabel: 'Investigate' },
   healer:       { icon: '💚', label: 'Healer',        action: 'protect',     actionLabel: 'Protect' },
   hunter:       { icon: '🏹', label: 'Hunter',        action: null,        actionLabel: null },
-  drunk:        { icon: '🍺', label: 'Seer',          action: 'investigate', actionLabel: 'Investigate' },
+  drunk:        { icon: '🔮', label: 'Seer',          action: 'investigate', actionLabel: 'Investigate' },
   shapeshifter: { icon: '🐺', label: 'Shapeshifter',  action: 'kill',      actionLabel: 'Eliminate' },
   bodyguard:    { icon: '🛡️', label: 'Bodyguard',     action: 'protect',     actionLabel: 'Protect' },
   tanner:       { icon: '🪓', label: 'Tanner',        action: null,        actionLabel: null },
@@ -47,7 +47,7 @@ const ROLE_DESC = {
   seer:         'Each night you may investigate one character to learn if they are the Shapeshifter.',
   healer:       'Each night you may protect one character from elimination.',
   hunter:       'If you are eliminated, you may take one character with you as your dying act.',
-  drunk:        'You believe you are the Seer — but fate has twisted your gift.',
+  drunk:        'Each night you may investigate one character to learn if they are the Shapeshifter.',
   shapeshifter: 'You are the hidden evil. Deceive the village and survive.',
   bodyguard:    'Each night protect one character. If the Shapeshifter targets them, you die instead.',
   tanner:       'Your goal is to be voted out by the village. Convince them you are the Shapeshifter.',
@@ -315,19 +315,12 @@ function NightActionPanel({ role, candidates, onAction }) {
       <div className="card">
         <div style={{ marginBottom: 12 }}>
           <span className="phase-indicator phase-night">🌙 Night Action</span>
-          {isDrunk && (
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
-              You wake as the Seer. Choose a character to investigate.
-            </div>
-          )}
-          {!isDrunk && (
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
-              {role === 'seer' && 'Investigate one character — are they the Shapeshifter?'}
-              {role === 'healer' && 'Protect one character from elimination tonight.'}
-              {role === 'bodyguard' && 'Protect one character. If the Shapeshifter targets them, you die instead.'}
-              {role === 'shapeshifter' && 'Choose one character to eliminate tonight.'}
-            </div>
-          )}
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: 6 }}>
+            {(role === 'seer' || isDrunk) && 'Investigate one character — are they the Shapeshifter?'}
+            {role === 'healer' && 'Protect one character from elimination tonight.'}
+            {role === 'bodyguard' && 'Protect one character. If the Shapeshifter targets them, you die instead.'}
+            {role === 'shapeshifter' && 'Choose one character to eliminate tonight.'}
+          </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {candidates.map((name) => (

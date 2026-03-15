@@ -10,6 +10,7 @@ Routes:
   GET  /api/games/{game_id}/result        — Post-game result (winner, reveals, timeline)
 """
 import asyncio
+import time
 import uuid
 import logging
 import re
@@ -37,17 +38,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["games"])
 limiter = Limiter(key_func=get_remote_address)
 
-# Cache for pre-generated scene images: game_id -> base64 string
-_scene_cache: dict[str, str] = {}
+# Cache for pre-generated scene images: game_id -> (base64 string, timestamp)
+_scene_cache: dict[str, tuple[str, float]] = {}
+_SCENE_CACHE_TTL = 30 * 60  # 30 minutes
+
+
+def _sweep_scene_cache() -> None:
+    """Remove stale entries from the scene cache (abandoned lobbies)."""
+    now = time.time()
+    stale = [gid for gid, (_, ts) in _scene_cache.items() if now - ts > _SCENE_CACHE_TTL]
+    for gid in stale:
+        _scene_cache.pop(gid, None)
 
 
 async def _pregenerate_scene(game_id: str) -> None:
     """Generate the opening scene image in the background during lobby."""
     from agents.scene_agent import generate_scene_image
+    _sweep_scene_cache()  # opportunistic cleanup
     try:
         image_b64 = await generate_scene_image("game_started")
         if image_b64:
-            _scene_cache[game_id] = image_b64
+            _scene_cache[game_id] = (image_b64, time.time())
             logger.info("[%s] Opening scene pre-generated and cached", game_id)
     except Exception:
         logger.warning("[%s] Scene pre-generation failed", game_id, exc_info=True)
@@ -193,7 +204,8 @@ async def start_game(
 
     # Retrieve pre-generated scene image from cache (generated at game creation time).
     # If not ready yet, wait up to 30s for it to finish generating.
-    opening_scene_b64 = _scene_cache.pop(game_id, None)
+    cached = _scene_cache.pop(game_id, None)
+    opening_scene_b64 = cached[0] if cached else None
     if opening_scene_b64:
         logger.info("[%s] Using cached opening scene image", game_id)
     else:
@@ -224,11 +236,21 @@ async def start_game(
     await ws_manager.broadcast_game_start(game_id, assignment["assignments"], opening_scene_b64=opening_scene_b64)
 
     # Start narrator session and kick off Round 1 opening narration
+    # Re-fetch game to get AI character data populated by role assignment
+    game_fresh = await fs.get_game(game_id)
+    ai_characters_data = []
+    if game_fresh:
+        for ai in [game_fresh.ai_character, game_fresh.ai_character_2]:
+            if ai:
+                ai_characters_data.append({"name": ai.name, "backstory": ai.backstory})
     await narrator_manager.start_game(
         game_id,
         initial_prompt=build_phase_prompt(
             "game_started",
-            {"character_cast": assignment["character_cast"]},
+            {
+                "character_cast": assignment["character_cast"],
+                "ai_characters": ai_characters_data,
+            },
         ),
     )
 

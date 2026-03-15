@@ -71,7 +71,7 @@ class ConversationTracker:
 
     def reset_round(self) -> None:
         self.messages.clear()
-        self.last_message_time = 0.0  # must reset so silence_duration starts from 0 for new round
+        self.last_message_time = time.time()  # anchor to now so we don't trigger immediate PACE_PUSH
         self.silence_prompted.clear()
         self.repeated_accusations.clear()
         # alive_characters is refreshed from add_message on the first message of the round

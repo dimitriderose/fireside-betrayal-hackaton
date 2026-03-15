@@ -235,8 +235,6 @@ function gameReducer(state, action) {
         myVote: null,
         aiCharacters: [],
         ghostMessages: [],
-        investigations: [],
-        voteHistory: [],
         activeTab: 'story',
         transitionOverlay: null,
       }

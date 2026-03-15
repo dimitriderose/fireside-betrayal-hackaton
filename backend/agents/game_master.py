@@ -694,16 +694,17 @@ class GameMaster:
             "difficulty_notice"   – Non-empty warning string when an adjustment is made,
                                     empty string otherwise.
         """
-        n_ai = 2 if n <= 3 else 1  # 2 humans → 2 AIs, 3+ humans → 1 AI
-        n_human = n - n_ai
-        distribution = ROLE_DISTRIBUTION.get(n, [])
+        n_human = n - 1  # n includes exactly 1 AI slot baked in by the caller
+        n_ai = 2 if n_human <= 2 else 1  # 1-2 humans → 2 AIs, 3+ humans → 1 AI
+        n_total = n_human + n_ai  # actual total characters in play
+        distribution = ROLE_DISTRIBUTION.get(n_total, [])
         role_counts: Dict[str, int] = {}
         for role in distribution:
             role_counts[role] = role_counts.get(role, 0) + 1
 
         specials = sum(v for k, v in role_counts.items() if k != Role.VILLAGER.value)
         villagers = role_counts.get(Role.VILLAGER.value, 0)
-        duration = self.EXPECTED_DURATION_DISPLAY.get(n, "20–30 minutes")
+        duration = self.EXPECTED_DURATION_DISPLAY.get(n_total, "20–30 minutes")
 
         ai_label = f"{n_ai} mystery character{'s' if n_ai > 1 else ''} hidden among you"
         summary = (

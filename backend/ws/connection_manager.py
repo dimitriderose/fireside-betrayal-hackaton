@@ -53,6 +53,14 @@ ROLE_DESCRIPTIONS: Dict[str, str] = {
         "You are the Shapeshifter. Blend in, sow suspicion, and eliminate the "
         "villagers one by one before they unmask you."
     ),
+    "bodyguard": (
+        "You are the Bodyguard. Choose a player to protect each night. "
+        "If they are targeted by the Shapeshifter, you die in their place."
+    ),
+    "tanner": (
+        "You are the Tanner. You win if the village votes to eliminate you. "
+        "Act suspicious — but not too suspicious. You have no night action."
+    ),
 }
 
 

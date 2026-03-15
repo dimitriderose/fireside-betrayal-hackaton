@@ -1247,7 +1247,7 @@ class NarratorManager:
             prefix = "\n".join(context_parts)
             # Hot-paced text: don't force a narrator response (matches voice VAD behavior).
             # Nudge/push/circular: force a response so the narrator re-engages.
-            force_response = not pacing or pacing not in ("PACE_HOT",)
+            force_response = not pacing or not pacing.startswith("PACE_HOT")
             msg = f'[PLAYER] {safe_speaker} says: "{safe_text}"'
             if prefix:
                 msg = f"{prefix}\n{msg}"
@@ -1356,7 +1356,7 @@ class NarratorManager:
         char = data.get("character", "Unknown")
         was_traitor = data.get("was_traitor", False)
         if was_traitor:
-            return f"The village votes to eliminate {char}. They WAS the Shapeshifter! The village breathes a sigh of relief."
+            return f"The village votes to eliminate {char}. They WERE the Shapeshifter! The village breathes a sigh of relief."
         return f"The village votes to eliminate {char}. An innocent has fallen... The Shapeshifter still walks among you."
 
     @staticmethod
@@ -1416,9 +1416,19 @@ def build_phase_prompt(event_type: str, data: Dict[str, Any]) -> str:
 
     if event_type == "game_started":
         cast_str = ", ".join(data.get("character_cast", [])) or "the villagers"
+        # Include AI character backstories so the narrator knows their personalities
+        ai_chars_block = ""
+        for ai_info in data.get("ai_characters", []):
+            name = ai_info.get("name", "")
+            backstory = ai_info.get("backstory", "")
+            if name and backstory:
+                ai_chars_block += f"\nAI CHARACTER — {name}: {backstory}"
+            elif name:
+                ai_chars_block += f"\nAI CHARACTER — {name}: a mysterious villager."
         return (
             f"[GAME START — NIGHT PHASE — Round 1] "
             f"The characters of Thornwood tonight are: {cast_str}. "
+            f"{ai_chars_block}\n"
             "Open the game with a foreboding 2–3 sentence monologue that establishes "
             "the dark, tense atmosphere of the village under the threat of a Shapeshifter. "
             "Mention EVERY character by name, giving 2–3 of them a brief atmospheric detail. "

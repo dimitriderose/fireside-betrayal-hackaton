@@ -147,9 +147,12 @@ class FirestoreService:
 
     async def clear_votes(self, game_id: str):
         players = await self.get_all_players(game_id)
-        for p in players:
-            if p.voted_for:
-                await self.update_player(game_id, p.id, {"voted_for": None})
+        refs = [self._players_ref(game_id).document(p.id) for p in players if p.voted_for]
+        if refs:
+            batch = self.db.batch()
+            for ref in refs:
+                batch.update(ref, {"voted_for": None})
+            await self._run(lambda: batch.commit())
 
     # ── Night actions ─────────────────────────────────────────────────────────
 
@@ -164,9 +167,12 @@ class FirestoreService:
 
     async def clear_night_actions(self, game_id: str):
         players = await self.get_all_players(game_id)
-        for p in players:
-            if p.night_action:
-                await self.update_player(game_id, p.id, {"night_action": None})
+        refs = [self._players_ref(game_id).document(p.id) for p in players if p.night_action]
+        if refs:
+            batch = self.db.batch()
+            for ref in refs:
+                batch.update(ref, {"night_action": None})
+            await self._run(lambda: batch.commit())
 
     # ── AI character ──────────────────────────────────────────────────────────
 
