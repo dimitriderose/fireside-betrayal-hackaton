@@ -23,6 +23,7 @@ from typing import Optional, Any
 
 from config import settings
 from services.firestore_service import get_firestore_service
+from utils.tasks import safe_create_task
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +147,7 @@ async def log_game_strategy(
         )
 
         # Trigger meta-strategy refresh after each game (replaces daily Cloud Function)
-        asyncio.create_task(_refresh_meta_strategy(fs))
+        safe_create_task(_refresh_meta_strategy(fs), name="meta-strategy-refresh")
 
     except Exception:
         logger.warning("[%s] Strategy logging failed", game_id, exc_info=True)

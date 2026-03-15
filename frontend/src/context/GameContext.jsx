@@ -7,7 +7,10 @@ function safeGet(key) {
 }
 
 function clearSession() {
-  try { SESSION_KEYS.forEach(k => sessionStorage.removeItem(k)) } catch { /* ignore */ }
+  try {
+    SESSION_KEYS.forEach(k => sessionStorage.removeItem(k))
+    sessionStorage.removeItem('roleRevealShown')  // Issue 19
+  } catch { /* ignore */ }
 }
 
 function createInitialState() {
@@ -46,6 +49,11 @@ function createInitialState() {
     nightTargets: null,          // string[] | null — backend-filtered night action targets (excludes self)
     voteCandidates: null,        // string[] | null — backend-filtered vote candidates (excludes self)
     lastVoteResult: null,        // { tally, individualVotes, eliminated, wasTraitor, role, isTie }
+    latestAudioChunk: null,      // Issue 18: latest base64 PCM audio chunk from narrator
+    audioChunkCounter: 0,        // monotonic counter so consumers can detect new chunks
+    sceneImage: null,            // Issue 18: base64 PNG scene image
+    sceneKey: null,              // Issue 18: scene key identifier
+    cameraVoteResult: null,      // Issue 18: { characterName, handCount, confidence } or { fallback, characterName, reason }
     error: null,
   }
 }
@@ -68,15 +76,22 @@ function gameReducer(state, action) {
         gameId: action.gameId,
         difficulty: action.difficulty ?? state.difficulty,
       }
-    case 'SET_ROLE':
+    case 'SET_ROLE': {
+      // Issue 19: check sessionStorage to make role reveal idempotent across reconnects
+      const alreadyRevealed = (() => {
+        try { return sessionStorage.getItem('roleRevealShown') === 'true' } catch { return false }
+      })()
       return {
         ...state,
         characterName: action.characterName ?? state.characterName,
         role: action.role ?? state.role,
         abilities: action.abilities ?? [],
-        showRoleReveal: !state.role,  // only show on first assignment, not reconnect
+        showRoleReveal: !state.role && !alreadyRevealed,  // only show on first assignment, not reconnect
       }
+    }
     case 'ROLE_REVEAL_DISMISSED':
+      // Issue 19: persist dismissal so reconnects don't re-show the overlay
+      try { sessionStorage.setItem('roleRevealShown', 'true') } catch { /* ignore */ }
       return { ...state, showRoleReveal: false }
     case 'SET_AI_CHARACTERS':
       return { ...state, aiCharacters: action.aiCharacters }
@@ -170,8 +185,11 @@ function gameReducer(state, action) {
         votes: {},
         voteMap: {},
         myVote: null,
-        // Keep vote results visible during elimination phase, clear on next transition
-        lastVoteResult: action.phase === 'elimination' ? state.lastVoteResult : null,
+        // Issue 20: clear lastVoteResult on night and day_discussion (start of new round cycle).
+        // Keep it during elimination and day_vote phases so tally overlay can show.
+        lastVoteResult: (action.phase === 'night' || action.phase === 'day_discussion')
+          ? null
+          : state.lastVoteResult,
         // Clear push-to-talk speaker on phase transition
         currentSpeaker: null,
         currentSpeakerId: null,
@@ -181,12 +199,10 @@ function gameReducer(state, action) {
         voteCandidates: state.voteCandidates,
       }
     case 'GAME_OVER': {
-      clearSession()
+      // Don't clear session yet — result page needs gameId/playerId for the API call.
+      // Session is cleared when the user navigates away from the result page.
       return {
         ...state,
-        playerId: null,
-        playerName: null,
-        gameId: null,
         isHost: false,
         winner: action.winner,
         reveals: action.reveals ?? [],
@@ -218,6 +234,17 @@ function gameReducer(state, action) {
       return { ...state, connected: action.connected }
     case 'SET_ERROR':
       return { ...state, error: action.error }
+    // Issue 18: new reducer actions for state consolidation
+    case 'ADD_AUDIO_CHUNK':
+      return {
+        ...state,
+        latestAudioChunk: action.data,
+        audioChunkCounter: state.audioChunkCounter + 1,
+      }
+    case 'SET_SCENE_IMAGE':
+      return { ...state, sceneImage: action.data, sceneKey: action.sceneKey }
+    case 'SET_CAMERA_VOTE_RESULT':
+      return { ...state, cameraVoteResult: action }
     case 'RESET': {
       clearSession()
       return createInitialState()

@@ -70,23 +70,20 @@ export default function VotePanel({ sendMessage }) {
     }
   }, [inPersonMode, isHost, phase, round])
 
-  // Listen for camera vote results and fallbacks from server
+  // Issue 18: read camera vote results from context instead of window events
+  const prevCameraVoteRef = useRef(null)
   useEffect(() => {
-    const onResult = (e) => {
-      setCameraResults(prev => ({ ...prev, [e.detail.characterName]: e.detail.handCount }))
-      setCaptureLoading(null)
-    }
-    const onFallback = () => {
+    const result = state.cameraVoteResult
+    if (!result || result === prevCameraVoteRef.current) return
+    prevCameraVoteRef.current = result
+    if (result.fallback) {
       setFallbackMode(true)
       setCaptureLoading(null)
+    } else if (result.characterName && result.handCount !== undefined) {
+      setCameraResults(prev => ({ ...prev, [result.characterName]: result.handCount }))
+      setCaptureLoading(null)
     }
-    window.addEventListener('camera-vote-result', onResult)
-    window.addEventListener('camera-vote-fallback', onFallback)
-    return () => {
-      window.removeEventListener('camera-vote-result', onResult)
-      window.removeEventListener('camera-vote-fallback', onFallback)
-    }
-  }, [])
+  }, [state.cameraVoteResult])
 
   const handleCameraCapture = (charName) => {
     if (!videoRef.current || captureLoading) return

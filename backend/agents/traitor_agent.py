@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import settings
 from models.game import ChatMessage, Difficulty, GameEvent, Phase
 from services.firestore_service import get_firestore_service
+from utils.game_utils import all_ai_chars, alive_ai_names, get_alive_character_names, build_candidate_pool
 
 logger = logging.getLogger(__name__)
 
@@ -143,15 +144,9 @@ async def _fetch_context(game_id: str) -> Optional[Dict[str, Any]]:
 def _format_state(ctx: Dict[str, Any]) -> str:
     game = ctx["game"]
     alive = ctx["alive_players"]
-    ai = ctx["ai_char"]
-    ai2 = ctx.get("ai_char_2")
     chat = ctx["recent_chat"]
 
-    alive_names = [p.character_name for p in alive]
-    if ai and ai.alive and ai.name not in alive_names:
-        alive_names.append(ai.name)
-    if ai2 and ai2.alive and ai2.name not in alive_names:
-        alive_names.append(ai2.name)
+    alive_names = get_alive_character_names(game, alive)
 
     lines = "\n".join(
         f'  {m.speaker}: "{m.text}"'
@@ -395,13 +390,7 @@ async def select_night_target(game_id: str, ai_char, fs_field: str) -> Optional[
 
     system, temperature = _build_system_for(ai_char, ctx, game_id)
 
-    alive_names = [p.character_name for p in alive_players]
-    # Include alive AI characters (excluding self) as valid night targets
-    ai1 = ctx["ai_char"]
-    ai2 = ctx.get("ai_char_2")
-    for ai in [ai1, ai2]:
-        if ai and ai.alive and ai.name != ai_char.name and ai.name not in alive_names:
-            alive_names.append(ai.name)
+    alive_names = build_candidate_pool(game, alive_players, exclude=ai_char.name)
     prompt = (
         f"NIGHT PHASE — you must choose one villager to eliminate.\n"
         f"Alive villagers (potential targets): {', '.join(alive_names)}\n\n"
@@ -451,14 +440,7 @@ async def select_vote(game_id: str, ai_char, fs_field: str) -> Optional[str]:
     system, temperature = _build_system_for(ai_char, ctx, game_id)
 
     # Build candidate list: all alive characters except self
-    alive_names = [p.character_name for p in alive_players]
-    ai1 = ctx["ai_char"]
-    ai2 = ctx.get("ai_char_2")
-    if ai1 and ai1.alive and ai1.name not in alive_names:
-        alive_names.append(ai1.name)
-    if ai2 and ai2.alive and ai2.name not in alive_names:
-        alive_names.append(ai2.name)
-    vote_candidates = [n for n in alive_names if n != ai_char.name]
+    vote_candidates = build_candidate_pool(game, alive_players, exclude=ai_char.name)
 
     if not vote_candidates:
         return None
@@ -521,14 +503,7 @@ async def select_loyal_night_action(game_id: str, ai_char, fs_field: str) -> Non
 
     # Build candidate list: all alive characters excluding self
     alive_players = ctx["alive_players"]
-    candidates = [p.character_name for p in alive_players]
-    ai1 = ctx["ai_char"]
-    ai2 = ctx.get("ai_char_2")
-    if ai1 and ai1.alive and ai1.name not in candidates:
-        candidates.append(ai1.name)
-    if ai2 and ai2.alive and ai2.name not in candidates:
-        candidates.append(ai2.name)
-    candidates = [n for n in candidates if n != ai_char.name]
+    candidates = build_candidate_pool(game, alive_players, exclude=ai_char.name)
 
     if not candidates:
         logger.warning("[%s] AI night: no valid targets for %s", game_id, role.value)
@@ -576,13 +551,7 @@ async def select_ghost_accuse(game_id: str, ai_char) -> Optional[str]:
     alive_players = ctx["alive_players"]
 
     # Build alive candidate list
-    alive_names = [p.character_name for p in alive_players]
-    ai1 = ctx["ai_char"]
-    ai2 = ctx.get("ai_char_2")
-    if ai1 and ai1.alive and ai1.name not in alive_names:
-        alive_names.append(ai1.name)
-    if ai2 and ai2.alive and ai2.name not in alive_names:
-        alive_names.append(ai2.name)
+    alive_names = get_alive_character_names(game, alive_players)
 
     if not alive_names:
         return None

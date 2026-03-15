@@ -1,12 +1,15 @@
 import asyncio
+import logging
 import os
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from models.game import (
-    GameState, PlayerState, AICharacter, GameEvent, ChatMessage, Phase
+    GameState, PlayerState, AICharacter, GameEvent, ChatMessage, Phase, GameStatus
 )
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class FirestoreService:
@@ -206,6 +209,123 @@ class FirestoreService:
             lambda: self._chat_ref(game_id).order_by("timestamp").limit_to_last(limit).get()
         )
         return [ChatMessage(**d.to_dict()) for d in docs]
+
+    # ── Atomic resolution guards ────────────────────────────────────────────
+
+    async def try_set_resolving(self, game_id: str, field: str) -> bool:
+        """Atomically check+set a boolean resolving flag on the game document.
+
+        Uses a Firestore transaction so that only one caller wins when
+        concurrent requests race (e.g. two simultaneous last-votes).
+
+        Args:
+            game_id: The game document ID.
+            field: The boolean field name, e.g. 'vote_resolving' or 'night_resolving'.
+
+        Returns:
+            True if this caller acquired the lock (field was False/missing and is now True).
+            False if another caller already holds it.
+        """
+        from google.cloud import firestore as _firestore
+
+        @_firestore.transactional
+        def _txn(transaction):
+            ref = self._game_ref(game_id)
+            snapshot = ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return False
+            data = snapshot.to_dict()
+            if data.get(field, False):
+                return False  # Already resolving
+            transaction.update(ref, {field: True})
+            return True
+
+        transaction = self.db.transaction()
+        return await self._run(lambda: _txn(transaction))
+
+    async def clear_resolving(self, game_id: str, field: str) -> None:
+        """Clear a resolving flag back to False."""
+        await self.update_game(game_id, {field: False})
+
+    # ── Transactional critical paths ──────────────────────────────────────────
+
+    async def start_game_transactional(self, game_id: str) -> bool:
+        """Atomically check status==LOBBY and set IN_PROGRESS.
+
+        Returns True if the transition succeeded, False if the game was
+        not in LOBBY state (already started or finished).
+        """
+        from google.cloud import firestore as _firestore
+
+        @_firestore.transactional
+        def _txn(transaction):
+            ref = self._game_ref(game_id)
+            snapshot = ref.get(transaction=transaction)
+            if not snapshot.exists:
+                return False
+            data = snapshot.to_dict()
+            if data.get("status") != GameStatus.LOBBY.value:
+                return False
+            transaction.update(ref, {"status": GameStatus.IN_PROGRESS.value})
+            return True
+
+        transaction = self.db.transaction()
+        return await self._run(lambda: _txn(transaction))
+
+    async def eliminate_character_transactional(self, game_id: str, character_name: str) -> bool:
+        """Atomically verify a character is alive and mark them as dead.
+
+        Handles both human players (subcollection) and AI characters
+        (fields on game document).
+
+        Returns True if the character was found alive and eliminated.
+        """
+        from google.cloud import firestore as _firestore
+
+        # First try human players
+        players = await self.get_all_players(game_id)
+        for p in players:
+            if p.character_name == character_name:
+                @_firestore.transactional
+                def _txn_player(transaction, pid=p.id):
+                    ref = self._players_ref(game_id).document(pid)
+                    snapshot = ref.get(transaction=transaction)
+                    if not snapshot.exists:
+                        return False
+                    data = snapshot.to_dict()
+                    if not data.get("alive", False):
+                        return False  # Already dead
+                    transaction.update(ref, {"alive": False})
+                    return True
+
+                transaction = self.db.transaction()
+                return await self._run(lambda: _txn_player(transaction))
+
+        # Try AI characters
+        game = await self.get_game(game_id)
+        if not game:
+            return False
+
+        for ai_field in ["ai_character", "ai_character_2"]:
+            ai = getattr(game, ai_field, None)
+            if ai and ai.name == character_name:
+                @_firestore.transactional
+                def _txn_ai(transaction, field=ai_field):
+                    ref = self._game_ref(game_id)
+                    snapshot = ref.get(transaction=transaction)
+                    if not snapshot.exists:
+                        return False
+                    data = snapshot.to_dict()
+                    ai_data = data.get(field)
+                    if not ai_data or not ai_data.get("alive", False):
+                        return False
+                    transaction.update(ref, {f"{field}.alive": False})
+                    return True
+
+                transaction = self.db.transaction()
+                return await self._run(lambda: _txn_ai(transaction))
+
+        return False
 
     # ── Ghost messages (Ghost Council — dead players only) ─────────────────
 

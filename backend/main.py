@@ -6,6 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from config import settings
 
 logging.basicConfig(level=logging.INFO)
@@ -25,12 +28,17 @@ async def lifespan(app: FastAPI):
     logger.info("Backend shutting down.")
 
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="Fireside: Betrayal",
     version="0.1.0",
     description="Real-time multiplayer AI social deduction game — powered by Gemini Live API",
     lifespan=lifespan,
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _origins = list(settings.allowed_origins)
 if settings.extra_origin:

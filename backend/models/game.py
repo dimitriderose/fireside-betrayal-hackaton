@@ -1,8 +1,10 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any, Literal
-from enum import Enum
-from datetime import datetime, timezone
+import re
 import uuid
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional, List, Dict, Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
 
 
 def _utcnow() -> datetime:
@@ -159,12 +161,27 @@ class WSMessage(BaseModel):
 
 # ── HTTP request/response models ──────────────────────────────────────────────
 
+_PLAYER_NAME_RE = re.compile(r"^[a-zA-Z0-9 \-]+$")
+
+
 class CreateGameRequest(BaseModel):
     difficulty: Difficulty = Difficulty.NORMAL
-    host_name: str = "Host"
+    host_name: str = Field(default="Host", min_length=1, max_length=30)
     random_alignment: bool = False  # §12.3.10: AI may draw any role (including village)
     narrator_preset: NarratorPreset = NarratorPreset.CLASSIC  # §12.3.17
     in_person_mode: bool = False  # §12.3.16: camera counts raised hands during vote
+
+    @field_validator("host_name")
+    @classmethod
+    def validate_host_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Host name cannot be empty")
+        if len(v) > 30:
+            raise ValueError("Host name must be 30 characters or fewer")
+        if not _PLAYER_NAME_RE.fullmatch(v):
+            raise ValueError("Host name may only contain letters, numbers, spaces, and hyphens")
+        return v
 
 
 class CreateGameResponse(BaseModel):
@@ -173,7 +190,19 @@ class CreateGameResponse(BaseModel):
 
 
 class JoinGameRequest(BaseModel):
-    player_name: str
+    player_name: str = Field(..., min_length=1, max_length=30)
+
+    @field_validator("player_name")
+    @classmethod
+    def validate_player_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Player name cannot be empty")
+        if len(v) > 30:
+            raise ValueError("Player name must be 30 characters or fewer")
+        if not _PLAYER_NAME_RE.fullmatch(v):
+            raise ValueError("Player name may only contain letters, numbers, spaces, and hyphens")
+        return v
 
 
 class JoinGameResponse(BaseModel):

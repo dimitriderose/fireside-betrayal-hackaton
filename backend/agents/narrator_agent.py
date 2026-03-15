@@ -19,6 +19,7 @@ from config import settings
 from services.firestore_service import get_firestore_service
 from models.game import Phase, Role, ChatMessage
 from utils.audio import pcm_to_base64
+from utils.tasks import safe_create_task
 
 logger = logging.getLogger(__name__)
 
@@ -510,7 +511,7 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
             # Fire AI discussion participation (all AI characters)
             try:
                 from agents.traitor_agent import trigger_all_dialogs
-                asyncio.create_task(trigger_all_dialogs(game_id, context="The day discussion has just begun."))
+                safe_create_task(trigger_all_dialogs(game_id, context="The day discussion has just begun."), name=f"ai-dialogs-{game_id[:8]}", game_id=game_id)
             except Exception:
                 logger.warning("[%s] Could not trigger AI dialogs", game_id, exc_info=True)
 
@@ -533,7 +534,7 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
         # When entering NIGHT: fire traitor night selection + inform narrator about role-players
         if next_phase == Phase.NIGHT:
             from agents.traitor_agent import trigger_all_night_actions
-            asyncio.create_task(trigger_all_night_actions(game_id))
+            safe_create_task(trigger_all_night_actions(game_id), name=f"night-actions-{game_id[:8]}", game_id=game_id)
 
             game_after = await fs.get_game(game_id)
             result["round"] = game_after.round if game_after else game.round
@@ -556,7 +557,7 @@ async def handle_advance_phase(game_id: str) -> Dict[str, Any]:
         # public events only — no reliance on the model calling the tool itself.
         elif next_phase == Phase.DAY_VOTE:
             from agents.traitor_agent import trigger_all_votes
-            asyncio.create_task(trigger_all_votes(game_id))
+            safe_create_task(trigger_all_votes(game_id), name=f"ai-votes-{game_id[:8]}", game_id=game_id)
             try:
                 vote_ctx = await handle_generate_vote_context(game_id)
                 result["vote_context"] = vote_ctx
@@ -703,6 +704,9 @@ class NarratorSession:
         self._current_voice_speaker: Optional[str] = None
         # AI auto-reply cooldown: character_name → last_reply_timestamp
         self._ai_reply_cooldown: Dict[str, float] = {}
+        # Game state cache — avoid redundant Firestore reads (Issue 16)
+        self._cached_state: Optional[Dict[str, Any]] = None
+        self._cache_timestamp: float = 0
 
     async def start(self) -> None:
         self._running = True
@@ -1137,7 +1141,14 @@ class NarratorSession:
         for fc in tool_call.function_calls:
             try:
                 if fc.name == "get_game_state":
-                    result = await handle_get_game_state(self.game_id)
+                    # Issue 16: return cached state if less than 5 seconds old
+                    now = time.monotonic()
+                    if self._cached_state and (now - self._cache_timestamp) < 5.0:
+                        result = self._cached_state
+                    else:
+                        result = await handle_get_game_state(self.game_id)
+                        self._cached_state = result
+                        self._cache_timestamp = now
                 elif fc.name == "advance_phase":
                     result = await handle_advance_phase(self.game_id)
                 elif fc.name == "inject_traitor_dialog":
@@ -1179,6 +1190,7 @@ class NarratorManager:
 
     def __init__(self):
         self._sessions: Dict[str, NarratorSession] = {}
+        self._watchdog_tasks: Dict[str, asyncio.Task] = {}
 
     async def start_game(self, game_id: str, initial_prompt: str = "") -> None:
         """Create and start a narrator session for a new game."""
@@ -1196,6 +1208,9 @@ class NarratorManager:
 
         if initial_prompt:
             await session.send(initial_prompt)
+
+        # Start watchdog to auto-restart dead session tasks
+        self._start_watchdog(game_id)
 
         logger.info("[%s] Narrator manager: session started (preset=%s)", game_id, preset)
 
@@ -1264,6 +1279,9 @@ class NarratorManager:
             # Fallback: send text narration via transcript when narrator is dead
             await self._send_fallback_transcript(game_id, event_type, data)
             return
+
+        # Issue 16: invalidate game state cache on phase events
+        session._cache_timestamp = 0
 
         payload = dict(data or {})
 
@@ -1349,8 +1367,41 @@ class NarratorManager:
             return f"The villagers have won! {reason}"
         return f"The Shapeshifter has won... {reason}"
 
+    def _start_watchdog(self, game_id: str) -> None:
+        """Start a watchdog coroutine that checks if the narrator task died unexpectedly."""
+        # Cancel any existing watchdog for this game
+        old = self._watchdog_tasks.pop(game_id, None)
+        if old and not old.done():
+            old.cancel()
+        self._watchdog_tasks[game_id] = safe_create_task(
+            self._watchdog_loop(game_id),
+            name=f"narrator-watchdog-{game_id}",
+            game_id=game_id,
+        )
+
+    async def _watchdog_loop(self, game_id: str) -> None:
+        """Every 15 seconds, check if the narrator session's _task died while _running is True."""
+        while True:
+            await asyncio.sleep(15)
+            session = self._sessions.get(game_id)
+            if session is None:
+                # Session removed — watchdog no longer needed
+                return
+            if session._task and session._task.done() and session._running:
+                logger.warning(
+                    "[%s] Narrator watchdog: session task died unexpectedly — restarting session loop",
+                    game_id,
+                )
+                session._task = asyncio.create_task(
+                    session._session_loop(), name=f"narrator-{game_id}"
+                )
+
     async def stop_game(self, game_id: str) -> None:
         """Stop and clean up the narrator session for a finished game."""
+        # Stop watchdog first
+        watchdog = self._watchdog_tasks.pop(game_id, None)
+        if watchdog and not watchdog.done():
+            watchdog.cancel()
         session = self._sessions.pop(game_id, None)
         if session:
             await session.stop()

@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any, List, Set
 
 from models.game import Phase, Role, GameStatus, GameEvent, ROLE_DISTRIBUTION
 from services.firestore_service import get_firestore_service
+from ws.state_machine import validate_transition
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +86,164 @@ class GameMaster:
             next_phase = self.PHASE_CYCLE[next_idx]
             new_round = game.round + 1 if next_phase == Phase.NIGHT else game.round
 
+        if not validate_transition(current, next_phase, actor=f"GameMaster.advance_phase({game_id})"):
+            raise ValueError(f"Invalid phase transition: {current} → {next_phase}")
+
         await fs.set_phase(game_id, next_phase, new_round if next_phase == Phase.NIGHT else None)
         display_round = new_round if next_phase == Phase.NIGHT else game.round
         logger.info(f"[{game_id}] Phase: {current} → {next_phase} (round {display_round})")
         return next_phase
 
     # ── Night action resolution ────────────────────────────────────────────────
+
+    def _resolve_shapeshifter_target(
+        self,
+        game_id: str,
+        game,
+        players: List,
+        ai_char,
+        ai_char_2,
+        all_alive_names: Set[str],
+        events: list,
+    ) -> tuple:
+        """Determine the shapeshifter's kill target from night events.
+
+        Returns (shapeshifter_target, ai_traitor, human_shapeshifter).
+        """
+        shapeshifter_target: Optional[str] = None
+        ai_traitor = None
+        human_shapeshifter = None
+
+        for ai in [ai_char, ai_char_2]:
+            if ai and ai.alive and ai.is_traitor:
+                ai_traitor = ai
+                break
+
+        if ai_traitor:
+            for ev in events:
+                if ev.type == "night_target" and ev.actor == ai_traitor.name:
+                    if ev.target in all_alive_names and ev.target != ai_traitor.name:
+                        shapeshifter_target = ev.target
+                    break
+            if not shapeshifter_target:
+                if players:
+                    shapeshifter_target = random.choice(players).character_name
+                    logger.warning(f"[{game_id}] Shapeshifter had no target set — random: {shapeshifter_target}")
+                else:
+                    logger.warning(f"[{game_id}] Shapeshifter had no target and no alive players — skipping kill")
+        else:
+            human_shapeshifter = next(
+                (p for p in players if p.role == Role.SHAPESHIFTER), None
+            )
+            if human_shapeshifter:
+                for ev in events:
+                    if ev.type == "night_target" and ev.actor == human_shapeshifter.character_name:
+                        if ev.target in all_alive_names:
+                            shapeshifter_target = ev.target
+                        break
+                if shapeshifter_target:
+                    logger.info(f"[{game_id}] Human shapeshifter {human_shapeshifter.character_name} targets {shapeshifter_target}")
+
+        return shapeshifter_target, ai_traitor, human_shapeshifter
+
+    def _resolve_healer_protection(
+        self,
+        role_map: Dict[str, str],
+        night_actions: Dict,
+        ai_night_events: Dict,
+    ) -> tuple:
+        """Resolve healer protection target.
+
+        Returns (healer_id, protected_target, ai_healer_name).
+        """
+        healer_id = role_map.get(Role.HEALER.value)
+        protected_target: Optional[str] = None
+        ai_healer_name: Optional[str] = None
+        if healer_id and healer_id in night_actions:
+            protected_target = night_actions[healer_id]
+        else:
+            for key, ev in ai_night_events.items():
+                if key.endswith("_night_heal"):
+                    protected_target = ev.target
+                    ai_healer_name = ev.actor
+                    break
+        return healer_id, protected_target, ai_healer_name
+
+    def _resolve_bodyguard(
+        self,
+        role_map: Dict[str, str],
+        night_actions: Dict,
+        ai_night_events: Dict,
+    ) -> tuple:
+        """Resolve bodyguard protection target.
+
+        Returns (bodyguard_id, bodyguard_target, ai_bodyguard_name).
+        """
+        bodyguard_id = role_map.get(Role.BODYGUARD.value)
+        bodyguard_target: Optional[str] = None
+        ai_bodyguard_name: Optional[str] = None
+        if bodyguard_id and bodyguard_id in night_actions:
+            bodyguard_target = night_actions[bodyguard_id]
+        else:
+            for key, ev in ai_night_events.items():
+                if key.endswith("_night_protect"):
+                    bodyguard_target = ev.target
+                    ai_bodyguard_name = ev.actor
+                    break
+        return bodyguard_id, bodyguard_target, ai_bodyguard_name
+
+    def _resolve_seer_investigation(
+        self,
+        game_id: str,
+        role_map: Dict[str, str],
+        night_actions: Dict,
+        char_to_player: Dict,
+        ai_char,
+        ai_char_2,
+    ) -> tuple:
+        """Resolve seer/drunk investigation.
+
+        Returns (seer_result_dict_or_None, investigating_id, drunk_id).
+        """
+        seer_id = role_map.get(Role.SEER.value)
+        drunk_id = role_map.get(Role.DRUNK.value)
+
+        investigating_id: Optional[str] = None
+        investigation_target: Optional[str] = None
+
+        if seer_id and seer_id in night_actions:
+            investigating_id = seer_id
+            investigation_target = night_actions[seer_id]
+        elif drunk_id and drunk_id in night_actions:
+            investigating_id = drunk_id
+            investigation_target = night_actions[drunk_id]
+
+        if not (investigating_id and investigation_target):
+            return None, investigating_id, drunk_id
+
+        target_player = char_to_player.get(investigation_target)
+
+        true_result = False
+        for ai in [ai_char, ai_char_2]:
+            if ai and ai.name == investigation_target:
+                true_result = ai.is_traitor
+                break
+        else:
+            if target_player:
+                true_result = target_player.role == Role.SHAPESHIFTER
+
+        if investigating_id == drunk_id:
+            reported_result = not true_result
+            logger.info(f"[{game_id}] Drunk investigated {investigation_target} — given WRONG result")
+        else:
+            reported_result = true_result
+
+        seer_result = {
+            "character": investigation_target,
+            "is_shapeshifter": reported_result,
+            "investigating_player_id": investigating_id,
+        }
+        return seer_result, investigating_id, drunk_id
 
     async def resolve_night(self, game_id: str) -> Dict[str, Any]:
         """
@@ -117,8 +270,8 @@ class GameMaster:
         ai_char = await fs.get_ai_character(game_id)
         ai_char_2 = game.ai_character_2  # May be None
 
-        # Build role→player_id lookup for alive players
-        role_map: Dict[str, str] = {}  # role_value → player_id
+        # Build role->player_id lookup for alive players
+        role_map: Dict[str, str] = {}  # role_value -> player_id
         id_to_player = {p.id: p for p in players}
         char_to_player = {p.character_name: p for p in players}
 
@@ -131,14 +284,8 @@ class GameMaster:
             "protected": None,
             "seer_result": None,
             "hunter_triggered": False,
-            "bodyguard_sacrifice": False,  # True when bodyguard absorbed the kill
+            "bodyguard_sacrifice": False,
         }
-
-        # ── Step 1: Shapeshifter kill target ─────────────────────────────────
-        # Path A: AI is the traitor → look for AI-authored night_target event
-        # Path B: Human shapeshifter (random_alignment) → look for human-authored event
-        shapeshifter_target: Optional[str] = None
-        events = None  # Lazy-loaded; shared across steps to avoid redundant Firestore reads
 
         # Build a set of ALL valid alive target names (humans + AIs)
         all_alive_names: Set[str] = set(char_to_player.keys())
@@ -147,53 +294,19 @@ class GameMaster:
         if ai_char_2 and ai_char_2.alive:
             all_alive_names.add(ai_char_2.name)
 
-        # Determine which AI (if any) is the traitor shapeshifter
-        ai_traitor = None
-        human_shapeshifter = None
-        for ai in [ai_char, ai_char_2]:
-            if ai and ai.alive and ai.is_traitor:
-                ai_traitor = ai
-                break
+        # Load events once (shared across steps)
+        events = await fs.get_events(game_id, round=game.round, visible_only=False)
 
-        if ai_traitor:
-            # The shapeshifter AI sets the target via a game event of type "night_target".
-            # visible_only=False is explicit: night_target events are hidden (visible_in_game=False).
-            events = await fs.get_events(game_id, round=game.round, visible_only=False)
-            for ev in events:
-                if ev.type == "night_target" and ev.actor == ai_traitor.name:
-                    # Validate target is still alive (could be human or ai_char_2)
-                    if ev.target in all_alive_names and ev.target != ai_traitor.name:
-                        shapeshifter_target = ev.target
-                    break
-            if not shapeshifter_target:
-                if players:
-                    # Default: kill a random alive player (fallback)
-                    shapeshifter_target = random.choice(players).character_name
-                    logger.warning(f"[{game_id}] Shapeshifter had no target set — random: {shapeshifter_target}")
-                else:
-                    logger.warning(f"[{game_id}] Shapeshifter had no target and no alive players — skipping kill")
-        else:
-            # Human shapeshifter (AI is loyal) — look for human-authored night_target
-            human_shapeshifter = next(
-                (p for p in players if p.role == Role.SHAPESHIFTER), None
+        # ── Step 1: Shapeshifter kill target ─────────────────────────────────
+        shapeshifter_target, ai_traitor, human_shapeshifter = (
+            self._resolve_shapeshifter_target(
+                game_id, game, players, ai_char, ai_char_2,
+                all_alive_names, events,
             )
-            if human_shapeshifter:
-                events = await fs.get_events(game_id, round=game.round, visible_only=False)
-                for ev in events:
-                    if ev.type == "night_target" and ev.actor == human_shapeshifter.character_name:
-                        if ev.target in all_alive_names:
-                            shapeshifter_target = ev.target
-                        break
-                if shapeshifter_target:
-                    logger.info(f"[{game_id}] Human shapeshifter {human_shapeshifter.character_name} targets {shapeshifter_target}")
+        )
 
         # ── Step 1b: Resolve AI night actions from events ──────────────────
-        # Loyal AI characters' seer/healer/bodyguard actions are stored as
-        # GameEvents (not in the human night_actions dict). Event types use the
-        # pattern "{fs_field}_night_{role}" e.g. "ai_character_2_night_heal".
         ai_night_events = {}
-        if events is None:
-            events = await fs.get_events(game_id, round=game.round, visible_only=False)
         for ai, field in [(ai_char, "ai_character"), (ai_char_2, "ai_character_2")]:
             if ai and ai.alive and not ai.is_traitor:
                 for ev in events:
@@ -201,62 +314,31 @@ class GameMaster:
                         ai_night_events[ev.type] = ev
 
         # ── Step 2: Healer protection ─────────────────────────────────────────
-        healer_id = role_map.get(Role.HEALER.value)
-        protected_target: Optional[str] = None
-        ai_healer_name: Optional[str] = None
-        if healer_id and healer_id in night_actions:
-            protected_target = night_actions[healer_id]
+        healer_id, protected_target, ai_healer_name = self._resolve_healer_protection(
+            role_map, night_actions, ai_night_events,
+        )
+        if protected_target:
             result["protected"] = protected_target
-        else:
-            # Check AI healer protection (any AI character)
-            for key, ev in ai_night_events.items():
-                if key.endswith("_night_heal"):
-                    protected_target = ev.target
-                    ai_healer_name = ev.actor
-                    result["protected"] = protected_target
-                    break
 
         # ── Step 2b: Bodyguard protection ────────────────────────────────────
-        # Bodyguard absorbs a shapeshifter kill targeting their protected player;
-        # the bodyguard dies in their place. Healer cannot prevent bodyguard sacrifice.
-        # Priority: Healer block takes precedence when both protect the same target.
-        bodyguard_id = role_map.get(Role.BODYGUARD.value)
-        bodyguard_target: Optional[str] = None
-        ai_bodyguard_name: Optional[str] = None
-        if bodyguard_id and bodyguard_id in night_actions:
-            bodyguard_target = night_actions[bodyguard_id]
-        else:
-            # Check AI bodyguard protection (any AI character)
-            for key, ev in ai_night_events.items():
-                if key.endswith("_night_protect"):
-                    bodyguard_target = ev.target
-                    ai_bodyguard_name = ev.actor  # track AI bodyguard for sacrifice
-                    break
+        bodyguard_id, bodyguard_target, ai_bodyguard_name = self._resolve_bodyguard(
+            role_map, night_actions, ai_night_events,
+        )
 
-        # ── Step 3: Apply kill (healer → bodyguard → direct hit) ──────────────
-        # Priority: Healer block takes precedence when both Healer and Bodyguard
-        # protect the same target (target lives, bodyguard is spared).
-        # Bodyguard only sacrifices when Healer is NOT also protecting that target.
-        # Actual DB elimination is deferred to the caller via eliminate_character().
-        #
-        # Defense in depth: re-verify target is still alive.  In the unlikely event
-        # of a race condition this prevents a double-kill.
+        # ── Step 3: Apply kill (healer -> bodyguard -> direct hit) ──────────
         if shapeshifter_target and shapeshifter_target not in all_alive_names:
             logger.warning(f"[{game_id}] Kill target {shapeshifter_target} no longer alive — aborting kill")
             shapeshifter_target = None
         if shapeshifter_target:
             if shapeshifter_target == protected_target:
-                # Healer blocks: nobody dies
                 logger.info(f"[{game_id}] Kill on {shapeshifter_target} blocked by Healer")
             elif shapeshifter_target == bodyguard_target:
-                # Bodyguard absorbs: target lives, bodyguard dies (DB write by caller)
                 bodyguard_player = id_to_player.get(bodyguard_id)
                 if bodyguard_player:
                     result["killed"] = bodyguard_player.character_name
                     result["bodyguard_sacrifice"] = True
                     logger.info(f"[{game_id}] Bodyguard {bodyguard_player.character_name} died protecting {shapeshifter_target}")
                 elif ai_bodyguard_name:
-                    # AI bodyguard sacrifices itself
                     result["killed"] = ai_bodyguard_name
                     result["bodyguard_sacrifice"] = True
                     logger.info(f"[{game_id}] AI Bodyguard {ai_bodyguard_name} died protecting {shapeshifter_target}")
@@ -265,57 +347,18 @@ class GameMaster:
             else:
                 result["killed"] = shapeshifter_target
                 victim = char_to_player.get(shapeshifter_target)
-                if victim:
-                    if victim.role == Role.HUNTER:
-                        result["hunter_triggered"] = True
-                        logger.info(f"[{game_id}] Hunter {shapeshifter_target} was killed — revenge triggered")
+                if victim and victim.role == Role.HUNTER:
+                    result["hunter_triggered"] = True
+                    logger.info(f"[{game_id}] Hunter {shapeshifter_target} was killed — revenge triggered")
 
         # ── Step 4: Seer investigation ────────────────────────────────────────
-        seer_id = role_map.get(Role.SEER.value)
-        drunk_id = role_map.get(Role.DRUNK.value)
-
-        # Determine who is the investigating player
-        # (Drunk believes they are the Seer and submits an investigation)
-        investigating_id: Optional[str] = None
-        investigation_target: Optional[str] = None
-
-        if seer_id and seer_id in night_actions:
-            investigating_id = seer_id
-            investigation_target = night_actions[seer_id]
-        elif drunk_id and drunk_id in night_actions:
-            # Drunk submitted an investigation — treat them as the "seer" for this
-            investigating_id = drunk_id
-            investigation_target = night_actions[drunk_id]
-
-        if investigating_id and investigation_target:
-            target_player = char_to_player.get(investigation_target)
-
-            # Determine true alignment of investigation target
-            true_result = False
-            for ai in [ai_char, ai_char_2]:
-                if ai and ai.name == investigation_target:
-                    true_result = ai.is_traitor
-                    break
-            else:
-                if target_player:
-                    true_result = target_player.role == Role.SHAPESHIFTER
-
-            # Drunk gets the wrong answer
-            if investigating_id == drunk_id:
-                reported_result = not true_result
-                logger.info(f"[{game_id}] Drunk investigated {investigation_target} — given WRONG result")
-            else:
-                reported_result = true_result
-
-            result["seer_result"] = {
-                "character": investigation_target,
-                "is_shapeshifter": reported_result,
-                "investigating_player_id": investigating_id,
-            }
+        seer_result, investigating_id, drunk_id = self._resolve_seer_investigation(
+            game_id, role_map, night_actions, char_to_player, ai_char, ai_char_2,
+        )
+        if seer_result:
+            result["seer_result"] = seer_result
 
         # ── Step 4b: AI Seer investigation ──────────────────────────────────
-        # If an AI character has the Seer role and submitted an investigation,
-        # compute the result and store it on the AI character for future dialog/voting.
         for key, ev in ai_night_events.items():
             if key.endswith("_night_investigate") and ev.target:
                 ai_investigation_target = ev.target
@@ -328,8 +371,6 @@ class GameMaster:
                     tp = char_to_player.get(ai_investigation_target)
                     if tp:
                         ai_true_result = tp.role == Role.SHAPESHIFTER
-                # Store result as a hidden event for AI context in future rounds
-                # Determine which AI field this event belongs to
                 ai_seer_field = key.rsplit("_night_investigate", 1)[0]
                 await fs.log_event(game_id, GameEvent(
                     id=str(uuid.uuid4()),
@@ -510,7 +551,7 @@ class GameMaster:
                         hunter_character = character_name
                     break
             if found:
-                await fs.eliminate_by_character(game_id, character_name)
+                await fs.eliminate_character_transactional(game_id, character_name)
             else:
                 logger.warning(f"[{game_id}] eliminate_character: '{character_name}' not found — skipping")
 

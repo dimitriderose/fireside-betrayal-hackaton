@@ -8,7 +8,7 @@ export function useWebSocket(gameId, playerId) {
   const wsRef = useRef(null)
   const attemptRef = useRef(0)
   const timerRef = useRef(null)
-  const syncRef = useRef(null)   // sync heartbeat interval
+  const syncRef = useRef(null)   // unused — kept for cleanup compat
   const mountedRef = useRef(true)
   const lastSeqRef = useRef(0)   // reliable delivery: track highest received seq
   const phaseRef = useRef(state.phase)  // track current phase for sync comparison
@@ -64,6 +64,10 @@ export function useWebSocket(gameId, playerId) {
             dispatch({ type: 'SET_IN_PERSON_MODE', inPersonMode: msg.gameState.inPersonMode })
           }
         }
+        // Issue 22: send sync on reconnect (after connected message) instead of polling
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'sync' }))
+        }
         break
 
       case 'role':
@@ -89,8 +93,8 @@ export function useWebSocket(gameId, playerId) {
 
       case 'audio':
         // msg: { type, data: base64pcm, sampleRate }
-        // Relay audio chunks to useAudioPlayer via a DOM event to avoid prop drilling
-        window.dispatchEvent(new CustomEvent('narrator-audio', { detail: msg.data }))
+        // Issue 18: dispatch through context instead of window events
+        dispatch({ type: 'ADD_AUDIO_CHUNK', data: msg.data })
         break
 
       case 'narrator_status':
@@ -100,7 +104,8 @@ export function useWebSocket(gameId, playerId) {
 
       case 'scene_image':
         // msg: { type, data: base64png, sceneKey } — §12.3.14
-        window.dispatchEvent(new CustomEvent('narrator-scene', { detail: { data: msg.data, sceneKey: msg.sceneKey } }))
+        // Issue 18: dispatch through context instead of window events
+        dispatch({ type: 'SET_SCENE_IMAGE', data: msg.data, sceneKey: msg.sceneKey })
         break
 
       case 'transcript':
@@ -120,8 +125,8 @@ export function useWebSocket(gameId, playerId) {
         })
         break
 
-      case 'phase_change':
-        // msg: { type, phase, [round], [timer_seconds], [players], [aiCharacter], [aiCharacter2], [seq] }
+      case 'phase_change': {
+        // msg: { type, phase, [round], [timer_seconds], [players], [aiCharacters], [aiCharacter], [aiCharacter2], [seq] }
         dispatch({ type: 'PHASE_CHANGE', phase: msg.phase, round: msg.round, timerSeconds: msg.timer_seconds })
         if (msg.players) {
           dispatch({
@@ -135,13 +140,12 @@ export function useWebSocket(gameId, playerId) {
             })),
           })
         }
-        if (msg.aiCharacter || msg.aiCharacter2) {
-          const aiChars = [msg.aiCharacter, msg.aiCharacter2].filter(Boolean)
-          if (aiChars.length > 0) {
-            dispatch({ type: 'SET_AI_CHARACTERS', aiCharacters: aiChars })
-          }
-        }
+        // Issue 10: always dispatch SET_AI_CHARACTERS with the full list from the message
+        const aiCharsFromPhase = msg.aiCharacters
+          ?? [msg.aiCharacter, msg.aiCharacter2].filter(Boolean)
+        dispatch({ type: 'SET_AI_CHARACTERS', aiCharacters: aiCharsFromPhase })
         break
+      }
 
       case 'timer_start':
         // msg: { type, phase, timer_seconds } — update timer for the current phase
@@ -250,17 +254,24 @@ export function useWebSocket(gameId, playerId) {
 
       case 'camera_vote_result':
         // msg: { type, characterName, handCount, confidence } — §12.3.16
-        // Relay to VotePanel via DOM event to avoid prop drilling
-        window.dispatchEvent(new CustomEvent('camera-vote-result', {
-          detail: { characterName: msg.characterName, handCount: msg.handCount, confidence: msg.confidence },
-        }))
+        // Issue 18: dispatch through context instead of window events
+        dispatch({
+          type: 'SET_CAMERA_VOTE_RESULT',
+          characterName: msg.characterName,
+          handCount: msg.handCount,
+          confidence: msg.confidence,
+        })
         break
 
       case 'camera_vote_fallback':
         // msg: { type, characterName, reason } — vision failed, fallback to phone voting
-        window.dispatchEvent(new CustomEvent('camera-vote-fallback', {
-          detail: { characterName: msg.characterName, reason: msg.reason },
-        }))
+        // Issue 18: dispatch through context instead of window events
+        dispatch({
+          type: 'SET_CAMERA_VOTE_RESULT',
+          fallback: true,
+          characterName: msg.characterName,
+          reason: msg.reason,
+        })
         break
 
       case 'highlight_reel':
@@ -353,10 +364,15 @@ export function useWebSocket(gameId, playerId) {
     }
   }, [gameId, playerId, connect])
 
-  // Page Visibility API: when tab becomes visible, reconnect immediately if WS is dead
+  // Page Visibility API: when tab becomes visible, reconnect if WS is dead or send sync if open
   useEffect(() => {
     const handleVisibility = () => {
-      if (!document.hidden && wsRef.current?.readyState !== WebSocket.OPEN && mountedRef.current && gameId && playerId) {
+      if (document.hidden || !mountedRef.current || !gameId || !playerId) return
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        // Issue 22: send sync when tab becomes visible (WS still open)
+        wsRef.current.send(JSON.stringify({ type: 'sync' }))
+      } else {
+        // WS is dead — reconnect immediately
         clearTimeout(timerRef.current)
         attemptRef.current = 0 // bypass backoff for immediate reconnect
         connect()
@@ -366,20 +382,8 @@ export function useWebSocket(gameId, playerId) {
     return () => document.removeEventListener('visibilitychange', handleVisibility)
   }, [gameId, playerId, connect])
 
-  // Sync heartbeat: every 2s ask the server "what phase are you on?"
-  // If there's a mismatch, force reconnect → reliable delivery replays missed events.
-  useEffect(() => {
-    if (connectionStatus !== 'connected') {
-      clearInterval(syncRef.current)
-      return
-    }
-    syncRef.current = setInterval(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'sync' }))
-      }
-    }, 2000)
-    return () => clearInterval(syncRef.current)
-  }, [connectionStatus])
+  // Issue 22: removed 2s polling sync interval — sync is now sent only on
+  // reconnect (after 'connected' message) and visibilitychange (tab becomes visible).
 
   return { connectionStatus, sendMessage }
 }

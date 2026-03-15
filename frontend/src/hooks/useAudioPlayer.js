@@ -1,15 +1,20 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useGame } from '../context/GameContext.jsx'
 
 /**
  * Plays PCM audio chunks received from the Narrator via WebSocket.
  * Audio spec: 24000 Hz, 16-bit signed int, mono.
  * Chunks arrive as base64-encoded strings and are scheduled seamlessly.
+ *
+ * Issue 18: reads audio chunks from context state instead of window events.
  */
 export function useAudioPlayer() {
+  const { state } = useGame()
   const ctxRef = useRef(null)
   const gainRef = useRef(null)
   const nextTimeRef = useRef(0)
   const volumeRef = useRef(1.0)
+  const lastCounterRef = useRef(0)  // track which audio chunk we've already played
   const [isPlaying, setIsPlaying] = useState(false)
   const [volume, setVolumeState] = useState(1.0)
 
@@ -70,12 +75,13 @@ export function useAudioPlayer() {
     if (gainRef.current) gainRef.current.gain.value = v
   }, [])
 
-  // Listen for audio relayed from useWebSocket
+  // Issue 18: read audio chunks from context instead of window events
   useEffect(() => {
-    const handler = (e) => playChunk(e.detail)
-    window.addEventListener('narrator-audio', handler)
-    return () => window.removeEventListener('narrator-audio', handler)
-  }, [playChunk])
+    if (state.audioChunkCounter > lastCounterRef.current && state.latestAudioChunk) {
+      lastCounterRef.current = state.audioChunkCounter
+      playChunk(state.latestAudioChunk)
+    }
+  }, [state.audioChunkCounter, state.latestAudioChunk, playChunk])
 
   return { playChunk, isPlaying, volume, setVolume }
 }

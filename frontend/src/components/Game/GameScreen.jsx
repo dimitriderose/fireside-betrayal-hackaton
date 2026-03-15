@@ -914,16 +914,24 @@ function RoleCard({ roleInfo, characterName, role }) {
 // ── Role Reveal Overlay (shown briefly at game start) ──────────────────────────
 
 function RoleRevealOverlay({ role, characterName, onDismiss }) {
+  const { state } = useGame()
   const info = ROLE_INFO[role] ?? {}
   const desc = ROLE_DESC[role] ?? 'Your secret role in Thornwood.'
+  const dismissedRef = useRef(false)
 
+  // Auto-dismiss after 10s
   useEffect(() => {
-    // Auto-dismiss after 10s, or when first narrator audio arrives
     const timer = setTimeout(onDismiss, 10000)
-    const onAudio = () => onDismiss()
-    window.addEventListener('narrator-audio', onAudio, { once: true })
-    return () => { clearTimeout(timer); window.removeEventListener('narrator-audio', onAudio) }
+    return () => clearTimeout(timer)
   }, [onDismiss])
+
+  // Issue 18: auto-dismiss when first narrator audio chunk arrives (via context)
+  useEffect(() => {
+    if (state.audioChunkCounter > 0 && !dismissedRef.current) {
+      dismissedRef.current = true
+      onDismiss()
+    }
+  }, [state.audioChunkCounter, onDismiss])
 
   return (
     <div
@@ -1115,7 +1123,8 @@ export default function GameScreen() {
   const [startError, setStartError] = useState(null)
   const [lobbyPlayerCount, setLobbyPlayerCount] = useState(players.length)
   const [lobbySummary, setLobbySummary] = useState(null)
-  const [sceneImage, setSceneImage] = useState(null)
+  // Issue 18: sceneImage now comes from context state
+  const sceneImage = state.sceneImage
   const [nightPanelReady, setNightPanelReady] = useState(false)
   const [dayHintDismissed, setDayHintDismissed] = useState(
     () => localStorage.getItem('dayHintSeen') === '1'
@@ -1190,12 +1199,7 @@ export default function GameScreen() {
     return () => clearInterval(id)
   }, [phase, gameId])
 
-  // Scene image: listen for narrator-scene custom events (§12.3.14)
-  useEffect(() => {
-    const handler = (e) => setSceneImage(e.detail.data)
-    window.addEventListener('narrator-scene', handler)
-    return () => window.removeEventListener('narrator-scene', handler)
-  }, [])
+  // Issue 18: scene image now read from context state (state.sceneImage) — no window event listener needed
 
   // Fade out scene image on phase transition (new image replaces it when it arrives)
   // Removed instant clear — scene image now persists until replaced by a new one

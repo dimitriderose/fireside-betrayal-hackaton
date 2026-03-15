@@ -12,9 +12,10 @@ Routes:
 import asyncio
 import uuid
 import logging
-from typing import Dict
+import re
+from typing import Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from models.game import (
     CreateGameRequest, CreateGameResponse,
@@ -28,12 +29,46 @@ from agents.narrator_agent import narrator_manager, build_phase_prompt
 from agents.traitor_agent import trigger_all_night_actions
 from routers.ws_router import manager as ws_manager
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["games"])
+limiter = Limiter(key_func=get_remote_address)
+
+# Game code format: 8-char uppercase hex (see GameState.id default_factory)
+_GAME_CODE_RE = re.compile(r"^[A-Z0-9]{8}$")
+
+
+async def verify_player_access(game_id: str, player_id: Optional[str]) -> None:
+    """Check that the player_id belongs to this game. Raises 403 if not.
+
+    During LOBBY phase, player_id is not required (allows share-link access).
+    Once the game is in progress or finished, player_id is mandatory.
+    """
+    if not player_id:
+        # Allow unauthenticated access during lobby for share-link join flow
+        fs = get_firestore_service()
+        game = await fs.get_game(game_id)
+        if game and game.status == GameStatus.LOBBY:
+            return
+        raise HTTPException(
+            status_code=403,
+            detail="player_id query parameter is required to access this game",
+        )
+
+    fs = get_firestore_service()
+    player = await fs.get_player(game_id, player_id)
+    if not player:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not a participant in this game",
+        )
 
 @router.post("/games", response_model=CreateGameResponse, status_code=201)
-async def create_game(body: CreateGameRequest):
+@limiter.limit("5/minute")
+async def create_game(request: Request, body: CreateGameRequest):
     """Create a new game and register the host as the first player."""
     fs = get_firestore_service()
     host_player_id = str(uuid.uuid4())
@@ -50,8 +85,12 @@ async def create_game(body: CreateGameRequest):
 
 
 @router.post("/games/{game_id}/join", response_model=JoinGameResponse, status_code=200)
-async def join_game(game_id: str, body: JoinGameRequest):
+@limiter.limit("10/minute")
+async def join_game(request: Request, game_id: str, body: JoinGameRequest):
     """Add a player to the lobby. Rejected if the game has already started."""
+    # Validate game code format
+    if not _GAME_CODE_RE.match(game_id):
+        raise HTTPException(status_code=400, detail="Invalid game code format")
     fs = get_firestore_service()
     game = await fs.get_game(game_id)
     if not game:
@@ -70,11 +109,15 @@ async def join_game(game_id: str, body: JoinGameRequest):
 
 
 @router.get("/games/{game_id}")
-async def get_game(game_id: str):
+async def get_game(
+    game_id: str,
+    player_id: Optional[str] = Query(None, description="Player ID for access verification"),
+):
     """
     Public game state.
     Player roles are NOT included — those are delivered privately via WebSocket.
     """
+    await verify_player_access(game_id, player_id)
     fs = get_firestore_service()
     game = await fs.get_game(game_id)
     if not game:
@@ -104,7 +147,9 @@ async def get_game(game_id: str):
 
 
 @router.post("/games/{game_id}/start", status_code=200)
+@limiter.limit("3/minute")
 async def start_game(
+    request: Request,
     game_id: str,
     host_player_id: str = Query(..., description="Must match the game's host_player_id"),
 ):
@@ -121,13 +166,12 @@ async def start_game(
         raise HTTPException(status_code=404, detail="Game not found")
     if game.host_player_id != host_player_id:
         raise HTTPException(status_code=403, detail="Only the host can start the game")
-    if game.status != GameStatus.LOBBY:
-        raise HTTPException(status_code=409, detail="Game is not in lobby state")
 
-    # Lock against double-start: update status BEFORE assign_roles so a second
-    # concurrent request sees IN_PROGRESS and returns 409 rather than running
-    # a second role assignment that would clobber the first.
-    await fs.set_status(game_id, GameStatus.IN_PROGRESS.value)
+    # Atomically check status==LOBBY and set IN_PROGRESS via Firestore transaction.
+    # Prevents double-start race where two concurrent requests both see LOBBY.
+    started = await fs.start_game_transactional(game_id)
+    if not started:
+        raise HTTPException(status_code=409, detail="Game is not in lobby state")
 
     try:
         assignment = await role_assigner.assign_roles(game_id)
@@ -138,7 +182,8 @@ async def start_game(
     # Persist phase=NIGHT / round=1 to Firestore before broadcasting
     await game_master.advance_phase(game_id)
     # Fire traitor night selection for Round 1 in the background
-    asyncio.create_task(trigger_all_night_actions(game_id))
+    from utils.tasks import safe_create_task
+    safe_create_task(trigger_all_night_actions(game_id), name=f"night-actions-r1-{game_id[:8]}", game_id=game_id)
 
     # Broadcast phase_change → NIGHT and send private role cards via WebSocket
     await ws_manager.broadcast_game_start(game_id, assignment["assignments"])
@@ -167,6 +212,7 @@ async def start_game(
 @router.get("/games/{game_id}/events")
 async def get_events(
     game_id: str,
+    player_id: Optional[str] = Query(None, description="Player ID for access verification"),
     visible_only: bool = Query(
         True, description="True = public events only; False = full log (post-game reveal)"
     ),
@@ -176,6 +222,7 @@ async def get_events(
     During play: only public events (eliminations, hunter revenge).
     After game ends: set visible_only=false for the full hidden-action reveal.
     """
+    await verify_player_access(game_id, player_id)
     fs = get_firestore_service()
     game = await fs.get_game(game_id)
     if not game:
@@ -210,12 +257,16 @@ async def get_events(
 
 
 @router.get("/games/{game_id}/result")
-async def get_result(game_id: str):
+async def get_result(
+    game_id: str,
+    player_id: Optional[str] = Query(None, description="Player ID for access verification"),
+):
     """
     Post-game result: winner, character reveals, and timeline.
     Only available after the game has finished.
     Used by GameOver page when navigating directly via URL (no WS state).
     """
+    await verify_player_access(game_id, player_id)
     fs = get_firestore_service()
     game = await fs.get_game(game_id)
     if not game:
