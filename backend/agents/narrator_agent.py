@@ -211,7 +211,7 @@ NARRATOR_PRESETS: Dict[str, Dict[str, str]] = {
     "campfire": {
         "voice": "Sulafat",
         "prompt_prefix": (
-            "You are a campfire storyteller. Address the players as 'friends' and tell the "
+            "You are a campfire storyteller. Speak at an unhurried pace, like you have all night to tell this story. Address the players as 'friends' and tell the "
             "story like you're sharing a tale around a fire on a cool night. Your tone is warm, "
             "conspiratorial, and intimate. You lean in when the story gets good. You chuckle at "
             "the players' mistakes. You gasp at betrayals. This is a story between friends, not "
