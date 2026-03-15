@@ -67,8 +67,8 @@ graph TB
 
     subgraph Gemini["Google Gemini API"]
         GLive["Gemini Live API<br/>WebSocket<br/>Bidirectional Voice + Transcription"]
-        GFlash["gemini-2.5-flash<br/>Text Strategy"]
-        GTTS["gemini-2.5-flash-preview-tts<br/>Narrator Previews"]
+        GFlash["gemini-3-flash-preview<br/>Text Strategy + Vision"]
+        GImage["gemini-3.1-flash-image-preview<br/>Scene Illustrations"]
     end
 
     subgraph Infra["Infrastructure"]
@@ -122,8 +122,7 @@ graph TB
     %% Gemini connections
     NA <-->|"Bidirectional Voice<br/>+ Speaker Annotations"| GLive
     INDIV -->|"Text Completions<br/>all AI characters"| GFlash
-    NA -->|"Audio Previews"| GTTS
-    SA -->|"Image Gen<br/>flat vector, 5-6 colors"| GFlash
+    SA -->|"Image Gen<br/>flat vector, 5-6 colors"| GImage
     CV -->|"Vision Analysis"| GFlash
 
     %% Data connections

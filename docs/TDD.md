@@ -53,7 +53,6 @@ This Technical Design Document specifies the implementation architecture for Fir
 │  │  /api/games/{id}/start  POST → Start game (host only)       │  │
 │  │  /api/games/{id}/events GET  → Event log (gated post-game)  │  │
 │  │  /api/games/{id}/result GET  → Post-game result + reveals   │  │
-│  │  /api/narrator/preview/{p} GET → Narrator audio sample      │  │
 │  │  /ws/{gameId}           WS   → Player game-state connection  │  │
 │  │  /ws/audio/{gameId}     WS   → Dedicated mic audio stream   │  │
 │  │  /health                GET  → Health check                 │  │
@@ -67,7 +66,7 @@ This Technical Design Document specifies the implementation architecture for Fir
 │  │   │ (LlmAgent)      │  │ (standalone)     │               │  │
 │  │   │                 │  │                  │               │  │
 │  │   │ Model: gemini-  │  │ Model: gemini-   │               │  │
-│  │   │ 2.5-flash-      │  │ 2.5-flash        │               │  │
+│  │   │ 2.5-flash-      │  │ 3-flash-preview  │               │  │
 │  │   │ native-audio-   │  │ (text-only)      │               │  │
 │  │   │ preview-12-2025 │  │                  │               │  │
 │  │   │                 │  │ Functions:       │               │  │
@@ -2044,25 +2043,25 @@ GameScreen.jsx iterate the array for multi-AI support.
 ```
 App (GameProvider wraps all routes)
 ├── Landing (/)
-│   ├── Hero section (tagline, "Hear the narrator" audio preview button)
+│   ├── Hero section (tagline, CTA)
 │   └── CTA → /join (Create or Join a Game)
 │
 ├── TutorialPage (/tutorial)
-│   ├── StepRoleCard (role reveal + narrator audio preview)
+│   ├── StepRoleCard (role reveal)
 │   ├── StepNightAction (mock investigation)
 │   ├── StepDayDiscussion (mock chat)
 │   ├── StepVoting (mock vote)
 │   └── StepGameOver (mock timeline + reveals)
 │
 ├── JoinLobby (/join, /join/:gameCode)
-│   ├── CreateForm (name, difficulty, narrator preset selector with audio preview)
+│   ├── CreateForm (name, difficulty, narrator preset selector)
 │   ├── JoinForm (name, game code)
 │   └── → dispatches SET_PLAYER, SET_GAME → navigates to /game/:gameId
 │
 ├── GameScreen (/game/:gameId)
 │   ├── LobbyPanel (pre-game: player dots, host badge, lobby summary, min-player warning)
 │   │   ├── DifficultySelector (Easy / Normal / Hard)
-│   │   ├── NarratorPresetCards (4 presets with audio preview)
+│   │   ├── NarratorPresetCards (4 presets)
 │   │   └── StartButton (host only, enabled when 2+ players)
 │   │
 │   ├── NarratorBar (floating: phase label, round, narrator "thinking" indicator)
@@ -2383,7 +2382,7 @@ fireside-betrayal/
 │   ├── models/
 │   │   └── game.py                # Pydantic models (GameState, Role, Phase, AICharacter, etc.)
 │   ├── routers/
-│   │   ├── game_router.py         # REST API (create/join/start/events/result/narrator-preview)
+│   │   ├── game_router.py         # REST API (create/join/start/events/result)
 │   │   └── ws_router.py           # WebSocket hub: /ws/{gameId} (game state) + /ws/audio/{gameId} (binary mic PCM)
 │   ├── services/
 │   │   └── firestore_service.py   # Async Firestore wrapper (games, players, events CRUD)
@@ -2407,9 +2406,9 @@ fireside-betrayal/
 │   │   │   └── useAudioCapture.js # Push-to-talk mic capture → /ws/audio/{gameId} binary frames
 │   │   ├── components/
 │   │   │   ├── Landing/
-│   │   │   │   └── Landing.jsx    # Home page with narrator audio preview
+│   │   │   │   └── Landing.jsx    # Home page
 │   │   │   ├── JoinLobby/
-│   │   │   │   └── JoinLobby.jsx  # Create/join game, difficulty, narrator preset selection + preview
+│   │   │   │   └── JoinLobby.jsx  # Create/join game, difficulty, narrator preset selection
 │   │   │   ├── Game/
 │   │   │   │   ├── GameScreen.jsx # Main game UI (LobbyPanel, NarratorBar, CharacterGrid, ChatInput)
 │   │   │   │   └── RoleStrip.jsx  # Expandable role reminder strip (8 roles, icons, descriptions)
@@ -2418,7 +2417,7 @@ fireside-betrayal/
 │   │   │   ├── GameOver/
 │   │   │   │   └── GameOver.jsx   # Post-game results, reveals, timeline, audio highlights, share
 │   │   │   └── Tutorial/
-│   │   │       └── TutorialPage.jsx # 5-step interactive tutorial with narrator audio preview
+│   │   │       └── TutorialPage.jsx # 5-step interactive tutorial
 │   │   └── styles/
 │   │       └── global.css         # Design system, animations, theming
 │   ├── package.json
@@ -3344,7 +3343,7 @@ def generate_scene_image(description: str, phase: str, mood: str) -> str:
     
     client = genai.Client()
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3-flash-preview",
         contents=f"""Generate an atmospheric illustration for a dark fantasy social deduction game.
         
         Scene: {description}
@@ -3929,37 +3928,31 @@ After joining a game, `playerId`, `playerName`, `gameId`, and `isHost` are persi
 
 Direct navigation to `/gameover/:gameId` no longer redirects to home. Instead, a `useEffect` hook fetches the game result from a REST endpoint. The `winner` field is persisted atomically alongside `status: "finished"` in a single Firestore write to avoid race conditions. The endpoint reconstructs reveals (character → player + role mappings) and timeline (events grouped by round) from Firestore data.
 
-## 12.4.4 Narrator Audio Preview
-
-**Files:** `game_router.py` (`GET /api/narrator/preview/{preset}`), `Landing.jsx`, `JoinLobby.jsx`, `TutorialPage.jsx`
-
-Each narrator preset has a short audio sample generated via `gemini-2.5-flash-preview-tts`. Samples are cached in-memory (`_narrator_preview_cache` dict) to avoid repeated API calls. The frontend plays previews via `new Audio()` with cleanup on component unmount. The Landing page shows a "Hear the narrator" button for the Classic preset. The Tutorial shows it on the role reveal step. The Lobby shows preview buttons on each of the 4 preset cards.
-
-## 12.4.5 Server-Side Vote Timeout
+## 12.4.4 Server-Side Vote Timeout
 
 **Files:** `ws_router.py`
 
 A 60-second `asyncio.Task` is scheduled when the `day_vote` phase begins (reduced from 90s in v5.0 — voting is a single tap; 60s is ample). If not all players have voted by expiration, the vote auto-resolves with whatever votes have been cast. The timeout task is cancelled when votes are resolved normally. This prevents games from hanging indefinitely when a player disconnects during voting.
 
-## 12.4.6 WebSocket Error Safety
+## 12.4.5 WebSocket Error Safety
 
 **Files:** `ws_router.py`
 
 The `_handle_message` function wraps the entire dispatch block in try/except. Any unhandled exception (Firestore error, malformed message, etc.) sends an `error` type message to the player instead of crashing the WebSocket connection. This prevents one bad message from disconnecting the player.
 
-## 12.4.7 Readable Join Codes
+## 12.4.6 Readable Join Codes
 
 **Files:** `models/game.py`
 
 Game IDs use a 6-character alphanumeric code from a restricted character set (`ABCDEFGHJKLMNPQRSTUVWXYZ23456789` — no O/I/0/1 to avoid confusion). This replaces the original UUID-based hex code for better readability when sharing verbally.
 
-## 12.4.8 Narrator Silence Fallback
+## 12.4.7 Narrator Silence Fallback
 
 **Files:** `GameScreen.jsx` (NarratorBar component)
 
 A 15-second silence timer detects when the narrator has stopped producing audio. The timer is gated: it only fires when `logLen > 0` (narrator has spoken at least once) and `!isPlaying` (no audio currently playing). When triggered, a "Narrator thinking..." indicator appears. This provides feedback when Gemini Live API has latency or session issues.
 
-## 12.4.9 Min-Player Warning
+## 12.4.8 Min-Player Warning
 
 **Files:** `game_master.py` (`get_lobby_summary`), `GameScreen.jsx` (LobbyPanel)
 
@@ -4489,7 +4482,7 @@ The uvicorn CMD in the Dockerfile now includes `--ws-ping-interval=15 --ws-ping-
 | Landing page (P1) | §8 Frontend Architecture | ✅ Shipped |
 | Session persistence (P1) | (new) | ✅ Shipped — sessionStorage |
 | GameOver REST fallback (P1) | (new) | ✅ Shipped — /api/games/{id}/result |
-| Narrator audio preview (P1) | (new) | ✅ Shipped — /api/narrator/preview/{preset} |
+| Narrator audio preview (P1) | (removed) | ❌ Removed — used deprecated TTS model |
 | Host badge (P1) | (new) | ✅ Shipped |
 | Day-phase hint (P1) | (new) | ✅ Shipped |
 | **P2 Features** | | |
@@ -4576,8 +4569,7 @@ The uvicorn CMD in the Dockerfile now includes `--ws-ping-interval=15 --ws-ping-
 | `GOOGLE_APPLICATION_CREDENTIALS` | | Path to service account JSON (local dev) | `./sa-key.json` |
 | `FIRESTORE_EMULATOR_HOST` | | Firestore emulator address (local dev) | `localhost:8081` |
 | `NARRATOR_MODEL` | | Narrator Gemini model | `gemini-2.5-flash-native-audio-latest` |
-| `TRAITOR_MODEL` | | Traitor strategy model | `gemini-2.5-flash` |
-| `NARRATOR_PREVIEW_MODEL` | | TTS preview model | `gemini-2.5-flash-preview-tts` |
+| `TRAITOR_MODEL` | | Traitor strategy model | `gemini-3-flash-preview` |
 | `NARRATOR_VOICE` | | Default narrator voice | `Charon` |
 | `ALLOWED_ORIGINS` | | CORS allowed origins (comma-separated) | `https://app.example.com` |
 | `EXTRA_ORIGIN` | | Additional CORS origin (e.g., Cloud Run URL) | `https://fireside-xxx.run.app` |
@@ -4591,8 +4583,7 @@ GEMINI_API_KEY=your-api-key-here
 GOOGLE_APPLICATION_CREDENTIALS=./sa-key.json
 # FIRESTORE_EMULATOR_HOST=localhost:8081  # uncomment for local dev
 NARRATOR_MODEL=gemini-2.5-flash-native-audio-latest
-TRAITOR_MODEL=gemini-2.5-flash
-NARRATOR_PREVIEW_MODEL=gemini-2.5-flash-preview-tts
+TRAITOR_MODEL=gemini-3-flash-preview
 NARRATOR_VOICE=Charon
 # ALLOWED_ORIGINS=https://your-app.run.app  # production CORS
 # EXTRA_ORIGIN=https://your-frontend.run.app

@@ -52,7 +52,7 @@ Fireside: Betrayal combines the narrative immersion of tabletop RPGs with the so
 | **In-Person Camera Voting** | Host's camera counts raised hands via Gemini Vision for physical gatherings |
 | **Scene Illustrations** | Atmospheric images generated on phase transitions |
 | **Audio Highlights** | Post-game reel of the narrator's most dramatic moments |
-| **Interactive Tutorial** | 5-step guided walkthrough for first-timers, with narrator audio preview |
+| **Interactive Tutorial** | 5-step guided walkthrough for first-timers |
 | **Session Persistence** | Refresh mid-game? WebSocket reconnects automatically |
 | **Spectator Clues** | Dead players send one-word clues per round that the narrator weaves into narration |
 | **Adaptive Pacing** | Narrator reads the room — speeds up stale debates, lets heated arguments breathe |
@@ -61,7 +61,7 @@ Fireside: Betrayal combines the narrative immersion of tabletop RPGs with the so
 ## Tech Stack
 
 - **AI Engine:** Google Gemini Live API (real-time bidirectional voice)
-- **AI Models:** gemini-2.5-flash-native-audio-latest (narrator), gemini-2.5-flash (traitor strategy), gemini-2.5-flash-preview-tts (audio previews)
+- **AI Models:** gemini-2.5-flash-native-audio-latest (narrator), gemini-3-flash-preview (traitor strategy, camera vision), gemini-3.1-flash-image-preview (scene illustrations)
 - **Backend:** FastAPI + Python on Cloud Run
 - **Real-time State:** Cloud Firestore
 - **Frontend:** React (mobile web, Vite)
@@ -80,7 +80,7 @@ Player Phones (2-8) ←WebSocket→ Cloud Run (FastAPI)
     │                               │   ├── Intro mentions every character by name
     │                               │   ├── Séance moderator (ghost testimony)
     │                               │   └── 4 narrator presets (Classic/Campfire/Horror/Comedy)
-    │                               ├── AI Character Agent(s) (gemini-2.5-flash, text-only)
+    │                               ├── AI Character Agent(s) (gemini-3-flash-preview, text-only)
     │                               │   ├── 1–2 AI characters (unified handler per character)
     │                               │   ├── Difficulty-calibrated deception (Easy/Normal/Hard)
     │                               │   ├── Auto-reply when mentioned by name in voice (30s cooldown)

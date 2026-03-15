@@ -70,7 +70,7 @@ Players gather around a fire (metaphorically — on their phones). The AI narrat
 
 | Phase | What Happens | Player Experience |
 |---|---|---|
-| 1. Lobby | Host creates game, selects difficulty (Easy/Normal/Hard), selects narrator preset (Classic/Campfire/Horror/Comedy — with audio preview), shares 6-character alphanumeric join code (`THRNX5`). Players connect on their phones. Max 7 humans + 1–2 AI characters (2 AI when only 2 humans join, 1 AI otherwise). | Simple join screen — enter name, select difficulty + narrator voice, preview narrator audio, see other players arriving. Lobby summary shows role distribution and min-player warning if < 4 players. |
+| 1. Lobby | Host creates game, selects difficulty (Easy/Normal/Hard), selects narrator preset (Classic/Campfire/Horror/Comedy), shares 6-character alphanumeric join code (`THRNX5`). Players connect on their phones. Max 7 humans + 1–2 AI characters (2 AI when only 2 humans join, 1 AI otherwise). | Simple join screen — enter name, select difficulty + narrator voice, see other players arriving. Lobby summary shows role distribution and min-player warning if < 4 players. |
 | 2. Role Assignment | AI assigns each player a secret role (Villager, Seer, Healer, Hunter, Drunk, Bodyguard, Tanner — based on player count) AND a unique LLM-generated story character identity. AI characters draw from the same role pool as humans — any AI character can be the Shapeshifter, or a loyal Seer, Healer, etc. All players see only character names from this point forward — real names are hidden. AI characters are indistinguishable from human players. | Private role card: "You are **Tinker Orin** (Healer). Each night, choose one character to protect." Expandable role strip shows ability reminder. Players know their own character name but not which character belongs to which friend. |
 | 3. Story Begins | AI narrator sets the scene with dramatic voice narration. "The village of Thornwood sleeps beneath a pale moon..." Introduces all characters by name. | Players listen together. Each character is introduced with a brief personality hook. "Brother Aldric tends the chapel garden. Mira the Huntress returns from the forest with an uneasy look." |
 | 4. Night Phase | AI privately contacts special-role holders. Seer investigates (Drunk gets false results). Healer protects. Hunter has no night action. If the shapeshifter is an AI character, it picks a target from all other characters (human or AI). AI characters with special roles (Seer, Bodyguard, Healer) use their abilities automatically with correct game logic. | Private text on individual phones. Other players see "Night has fallen..." with atmospheric narration. |
@@ -247,13 +247,13 @@ games/{gameId}/
 | Quick-reaction buttons | **P1** | ✅ Shipped | "I suspect [X]", "I trust [X]", "I agree", "I have information" — injected as attributed dialog into narrator context. |
 | Narrator quick-reaction handling | **P1** | ✅ Shipped | Narrator narrativizes reactions as story beats. Prompt engineering in narrator system prompt. |
 | Post-game reveal timeline | **P1** | ✅ Shipped | Interactive round-by-round timeline with night actions, AI reasoning, voting breakdowns. Audio highlight reel. Share button copies formatted game summary to clipboard. REST fallback (`/api/games/{id}/result`) for direct URL navigation. |
-| Landing page | **P1** | ✅ Shipped | Hero with narrator audio preview button, CTA to create/join game. Mobile-first at 420px. |
+| Landing page | **P1** | ✅ Shipped | Hero with CTA to create/join game. Mobile-first at 420px. |
 | Narrator contextual reactivity | **P1** | ✅ Shipped | Scene descriptions reference previous round events. `get_game_state` tool feeds recent events into narrator context. |
 | Narrator quiet-player engagement | **P1** | ✅ Shipped | Narrator tracks `characters_not_yet_spoken` and prompts after 60s silence. Max one prompt per silent player per round. |
 | Spectator actions for eliminated players | **P1** | ✅ Shipped | One-word whisper clue per game, delivered during day discussion. Narrator narrates eerie in-story delivery. Superseded by Ghost Council, Séance, and Haunt actions in Sprint 11. |
 | Camera vote counting | **P2** | ✅ Shipped | Host enables "In-Person Mode" in lobby. Gemini Vision counts raised hands from camera frame. Hand count capped at alive player count. Phone voting remains fallback. |
 | Scene image generation | **P2** | ✅ Shipped | Atmospheric illustrations on phase transitions (game start, night, dawn, elimination, game over). Gemini generates images with 1.5 MB guard. Fire-and-forget async. |
-| Tutorial mode | **P2** | ✅ Shipped | 5-step interactive walkthrough: role reveal, night action, day discussion, voting, game over. Mock cast and timeline. Narrator audio preview on role reveal step. No backend required — fully client-side. |
+| Tutorial mode | **P2** | ✅ Shipped | 5-step interactive walkthrough: role reveal, night action, day discussion, voting, game over. Mock cast and timeline. No backend required — fully client-side. |
 | In-game role reminder | **P2** | ✅ Shipped | Expandable `RoleStrip` with ability description, icon, and label for all 8 roles. One-tap expand/collapse. |
 | Minimum player count design | **P2** | ✅ Shipped | Difficulty auto-adjusts for small games. Role distribution adapts (no Healer at 4 players). When only 2 humans join, 2 AI characters are spawned (4 total players) to ensure a full game experience. With 3+ humans, 1 AI character joins. Lobby shows warning "Games work best with 4+ players" when < 4 humans. |
 | Narrator vote neutrality | **P2** | ✅ Shipped | `generate_vote_context` tool uses only public events log. Narrator prompt firewalled from traitor state. |
@@ -265,13 +265,12 @@ games/{gameId}/
 | Additional roles (Bodyguard, Tanner) | **P2** | ✅ Shipped | Bodyguard (absorbs Shapeshifter kill for protected player, available at 7+ players) and Tanner (solo win: get voted out, available at 8 players). Full night action handling, win conditions, and role reminders. |
 | Random AI alignment | **P2** | ✅ Shipped | On Normal/Hard, AI characters draw from the full role pool. Any AI character may be the Shapeshifter (hostile) or any village role (loyal). Humans can also be assigned the Shapeshifter role. AI Shapeshifters can target other AI characters at night (not limited to human targets). AI Seer investigations are computed and logged. AI Bodyguard sacrifice works correctly. AI Healer events use proper character names. Post-game reveals alignment. Derived from difficulty — no separate toggle needed. |
 | Post-game timeline interactive UX | **P2** | ✅ Shipped | Round-by-round interactive timeline with public vs. secret split. "Key Round" highlight for closest vote. AI strategy teaser pull-quote above character reveals. Audio highlight reel with play buttons. |
-| Narrator style presets | **P2** | ✅ Shipped | 4 presets: Classic (Charon voice, dramatic), Campfire (Puck voice, folksy), Horror (Charon voice, dread), Comedy (Kore voice, wry humor). Selection in lobby with audio preview. Each preset: system prompt prefix + voice config override. |
+| Narrator style presets | **P2** | ✅ Shipped | 4 presets: Classic (Charon voice, dramatic), Campfire (Puck voice, folksy), Horror (Charon voice, dread), Comedy (Kore voice, wry humor). Selection in lobby. Each preset: system prompt prefix + voice config override. |
 | Competitor intelligence for AI | **P2** | ✅ Shipped | Post-game strategy logs in Firestore. After 20+ completed games, Gemini aggregates patterns into "meta-strategy brief" injected into Traitor Agent prompt. Respects difficulty constraints. |
 | **New: Hide AI identity** | **P0** | ✅ Shipped | AI character never exposed via HTTP. No AI label in character grid. WebSocket sends AI identity only in private `connected` message at game start. AI appears as a normal player throughout gameplay. |
 | **New: Audio recording + highlights** | **P2** | ✅ Shipped | Narrator PCM audio recorded in segments by phase. Top-5 highlights ranked by priority. Base64 WAV encoded for post-game reel. In-memory only (max 10 segments × 10s). |
 | **New: Session persistence** | **P1** | ✅ Shipped | `sessionStorage` preserves playerId, playerName, gameId, isHost across page refresh. `GameContext` initializes from storage. Cleared on GAME_OVER/RESET. |
 | **New: GameOver REST fallback** | **P1** | ✅ Shipped | Direct navigation to `/gameover/:gameId` fetches game result from `GET /api/games/{id}/result` when WebSocket state is unavailable. Winner persisted in Firestore on game end (atomic write with status). |
-| **New: Narrator audio preview** | **P1** | ✅ Shipped | Landing page and Tutorial show "Hear the narrator" button. Lobby shows preview per preset card. 3-second TTS samples cached in-memory via `GET /api/narrator/preview/{preset}`. |
 | **New: Host badge** | **P1** | ✅ Shipped | Crown icon next to host name in lobby player grid. |
 | **New: Day-phase hint** | **P1** | ✅ Shipped | One-time dismissible hint for first-timers during day discussion ("Discuss who you think the Shapeshifter is..."). |
 | **New: Join cap** | **P0** | ✅ Shipped | Server returns 409 when 7th human tries to join (max 7 humans + 1–2 AI = 8 total). |
@@ -395,7 +394,7 @@ games/{gameId}/
 | Feature | Status | Implementation Notes |
 |---|---|---|
 | In-game role reminder | ✅ | Expandable `RoleStrip` component with icons, labels, and ability descriptions for all 8 roles. |
-| Tutorial mode | ✅ | 5-step client-side interactive walkthrough with mock cast and timeline. Narrator audio preview on role reveal. |
+| Tutorial mode | ✅ | 5-step client-side interactive walkthrough with mock cast and timeline. |
 | Conversation structure for large groups | ✅ | `HandRaiseQueue` for 7+ players. Narrator moderates speaker order. |
 | Minimum player count design | ✅ | Difficulty auto-adjustment for 3–4 player games. Lobby warning for < 4 players. |
 
@@ -414,7 +413,7 @@ games/{gameId}/
 | Scene image generation | ✅ | Gemini generates illustrations on phase transitions. 1.5 MB guard, async fire-and-forget. |
 | Audio recording/playback | ✅ | PCM recording by segment, top-5 highlight reel ranked by priority. In-memory, base64 WAV. |
 | Camera vote counting | ✅ | Gemini Vision hand-counting from host camera frame. Hand count capped at alive players. |
-| Narrator style presets | ✅ | 4 presets (Classic/Campfire/Horror/Comedy) with distinct voices + system prompt prefixes. Audio preview in lobby. |
+| Narrator style presets | ✅ | 4 presets (Classic/Campfire/Horror/Comedy) with distinct voices + system prompt prefixes. |
 | Competitor intelligence for AI | ✅ | Post-game strategy logs → meta-strategy brief after 20+ games → Traitor Agent prompt augmentation. |
 
 ### Sprint 8: Voice Engagement & Infrastructure — ✅ ALL SHIPPED

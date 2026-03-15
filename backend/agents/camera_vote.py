@@ -62,7 +62,7 @@ async def count_raised_hands(image_b64: str) -> Dict[str, Any]:
 
         def _call() -> Any:
             return client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3-flash-preview",
                 contents=[
                     gtypes.Content(parts=[
                         gtypes.Part(text=_COUNT_PROMPT),

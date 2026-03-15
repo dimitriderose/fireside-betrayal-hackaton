@@ -93,7 +93,7 @@ async def generate_scene_image(scene_key: str) -> Optional[str]:
         response = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: client.models.generate_content(
-                model="gemini-2.5-flash-image",
+                model="gemini-3.1-flash-image-preview",
                 contents=prompt,
                 config=gtypes.GenerateContentConfig(
                     response_modalities=["IMAGE"],
