@@ -314,7 +314,9 @@ a:hover { text-decoration: underline; }
 
 /* ===== Role Strip (§12.3.6) ===== */
 .role-strip {
-  background: #1a1209;
+  background: rgba(26, 18, 9, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border-top: 1px solid rgba(251, 191, 36, 0.35);
   padding: 10px 16px;
   cursor: pointer;
@@ -402,7 +404,9 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: 6px;
   padding: 4px 12px;
-  background: var(--bg-card);
+  background: rgba(45, 18, 0, 0.8);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   position: sticky;

@@ -273,10 +273,12 @@ function StoryLogPanel({ logRef, storyLog, myCharacterName }) {
           <div
             key={msg.id}
             style={{
-              background: isMe ? 'var(--bg-elevated)' : 'var(--bg-card)',
+              background: isMe ? 'rgba(61, 31, 0, 0.85)' : 'rgba(45, 18, 0, 0.8)',
               border: `1px solid ${isMe ? 'var(--border-accent)' : 'var(--border)'}`,
               borderRadius: 'var(--radius-md)',
               padding: '10px 12px',
+              backdropFilter: 'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)',
               ...style,
             }}
           >
@@ -1374,25 +1376,25 @@ export default function GameScreen() {
       </aside>
     ) : null}
 
-    <div className="page" style={{ position: 'relative', zIndex: 1 }}>
+    {/* ── Scene image background layer (§12.3.14) — fixed behind all content ── */}
+    {currentSceneKey && sceneImageCache[currentSceneKey] && phase !== 'setup' && (
+      <div key={currentSceneKey} className="fade-in" style={{
+        position: 'fixed',
+        top: 0, left: 0, right: 0, bottom: 0,
+        overflow: 'hidden',
+        opacity: 0.18,
+        pointerEvents: 'none',
+        zIndex: 0,
+      }}>
+        <img
+          src={`data:image/png;base64,${sceneImageCache[currentSceneKey]}`}
+          alt=""
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+        />
+      </div>
+    )}
 
-      {/* ── Scene image background layer (§12.3.14) — crossfade cached scene images ── */}
-      {currentSceneKey && sceneImageCache[currentSceneKey] && phase !== 'setup' && (
-        <div key={currentSceneKey} className="fade-in" style={{
-          position: 'fixed',
-          top: 0, left: 0, right: 0, bottom: 0,
-          overflow: 'hidden',
-          opacity: 0.18,
-          pointerEvents: 'none',
-          zIndex: 0,
-        }}>
-          <img
-            src={`data:image/png;base64,${sceneImageCache[currentSceneKey]}`}
-            alt=""
-            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-          />
-        </div>
-      )}
+    <div className="page" style={{ position: 'relative', zIndex: 1 }}>
 
       {/* ── Role reveal overlay (shown briefly at game start) ── */}
       {showRoleReveal && role && (
@@ -1433,7 +1435,9 @@ export default function GameScreen() {
       {/* ── Sticky phase header ── */}
       <div
         style={{
-          background: 'var(--bg-card)',
+          background: 'rgba(45, 18, 0, 0.85)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
           borderBottom: '1px solid var(--border)',
           padding: '10px 16px',
           display: 'flex',

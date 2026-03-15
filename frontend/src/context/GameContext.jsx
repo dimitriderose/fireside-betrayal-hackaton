@@ -180,11 +180,17 @@ function gameReducer(state, action) {
     case 'PHASE_CHANGE': {
       const phaseToScene = { night: 'night', day_discussion: 'day_discussion', elimination: 'elimination' }
       const transitionMap = { night: 'dark', seance: 'dark', day_discussion: 'dawn', day_vote: 'judgment', elimination: 'dusk' }
+      // Only switch currentSceneKey if the cache already has an image for the new phase key;
+      // otherwise keep the previous scene (e.g. "game_started" image from backend).
+      const candidateKey = phaseToScene[action.phase]
+      const nextSceneKey = (candidateKey && state.sceneImageCache[candidateKey])
+        ? candidateKey
+        : state.currentSceneKey
       return {
         ...state,
         phase: action.phase,
         round: action.round ?? state.round,
-        currentSceneKey: phaseToScene[action.phase] ?? state.currentSceneKey,
+        currentSceneKey: nextSceneKey,
         transitionOverlay: transitionMap[action.phase] ?? null,
         timerSeconds: action.timerSeconds ?? null,  // discussion countdown (null = no timer)
         nightActionSubmitted: false,

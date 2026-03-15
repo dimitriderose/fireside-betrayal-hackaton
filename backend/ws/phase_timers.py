@@ -181,7 +181,12 @@ async def start_phase_timers(game_id: str) -> Dict[str, Any]:
         return {"error": "Game not found"}
 
     phase = game.phase
-    _phase_timer_start_times[game_id] = time.time()
+    # Only set the discussion start time for DAY_DISCUSSION — prevents stale
+    # timestamps from previous phases allowing early advance.
+    if phase == Phase.DAY_DISCUSSION:
+        _phase_timer_start_times[game_id] = time.time()
+    elif phase != Phase.DAY_DISCUSSION:
+        _phase_timer_start_times.pop(game_id, None)  # clear stale entry
 
     timer_seconds = 0
 
