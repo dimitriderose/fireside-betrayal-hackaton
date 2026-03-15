@@ -730,7 +730,7 @@ class NarratorSession:
         if remaining:
             from routers.ws_router import manager as ws_manager
             await ws_manager.broadcast_transcript(
-                self.game_id, speaker="Player", text=remaining, source="player_voice",
+                self.game_id, speaker=self._current_voice_speaker or "Player", text=remaining, source="player_voice",
             )
         try:
             await asyncio.wait_for(self._queue.join(), timeout=10.0)
@@ -1056,7 +1056,7 @@ class NarratorSession:
                 logger.info("[%s] Player transcript: %s", self.game_id, text)
                 await ws_manager.broadcast_transcript(
                     self.game_id,
-                    speaker="Player",
+                    speaker=self._current_voice_speaker or "Player",
                     text=text,
                     source="player_voice",
                 )

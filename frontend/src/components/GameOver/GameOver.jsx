@@ -450,6 +450,7 @@ export default function GameOver() {
   const handlePlayAgain = () => {
     dispatch({ type: 'RESET' })
     navigate('/')
+    window.scrollTo(0, 0)
   }
 
   const villagersWon = winner === 'villagers'

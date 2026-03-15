@@ -244,10 +244,15 @@ gcloud config set project $PROJECT_ID
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com firestore.googleapis.com aiplatform.googleapis.com
 gcloud artifacts repositories create fireside --repository-format=docker --location=us-central1 2>/dev/null || true
 
-# Create required Firestore composite indexes
+# Create required Firestore composite indexes (both are needed)
 gcloud firestore indexes composite create \
   --collection-group=events \
   --field-config field-path=round,order=ascending \
+  --field-config field-path=timestamp,order=ascending
+
+gcloud firestore indexes composite create \
+  --collection-group=events \
+  --field-config field-path=visible_in_game,order=ascending \
   --field-config field-path=timestamp,order=ascending
 ```
 
