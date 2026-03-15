@@ -132,7 +132,3 @@ Built for the **Gemini Live Agent Challenge** hackathon ($80K prize pool, Google
 - **Category:** 🗣️ Live Agents
 - **Deadline:** March 16, 2026 at 5:00 PM PDT
 - **Prize Target:** $10K (category) + $25K (grand prize)
-
-## License
-
-MIT
