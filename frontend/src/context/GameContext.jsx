@@ -49,8 +49,7 @@ function createInitialState() {
     nightTargets: null,          // string[] | null — backend-filtered night action targets (excludes self)
     voteCandidates: null,        // string[] | null — backend-filtered vote candidates (excludes self)
     lastVoteResult: null,        // { tally, individualVotes, eliminated, wasTraitor, role, isTie }
-    latestAudioChunk: null,      // Issue 18: latest base64 PCM audio chunk from narrator
-    audioChunkCounter: 0,        // monotonic counter so consumers can detect new chunks
+    // Audio chunks now bypass React state via CustomEvent ('narrator-audio')
     sceneImageCache: {},         // Issue 18: { sceneKey: base64PNG } cache
     currentSceneKey: null,       // Issue 18: active scene key identifier
     cameraVoteResult: null,      // Issue 18: { characterName, handCount, confidence } or { fallback, characterName, reason }
@@ -255,13 +254,7 @@ function gameReducer(state, action) {
       return { ...state, connected: action.connected }
     case 'SET_ERROR':
       return { ...state, error: action.error }
-    // Issue 18: new reducer actions for state consolidation
-    case 'ADD_AUDIO_CHUNK':
-      return {
-        ...state,
-        latestAudioChunk: action.data,
-        audioChunkCounter: state.audioChunkCounter + 1,
-      }
+    // ADD_AUDIO_CHUNK removed — audio chunks now bypass React state via CustomEvent
     case 'SET_SCENE_IMAGE':
       return {
         ...state,

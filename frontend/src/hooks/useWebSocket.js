@@ -92,9 +92,9 @@ export function useWebSocket(gameId, playerId) {
         break
 
       case 'audio':
-        // msg: { type, data: base64pcm, sampleRate }
-        // Issue 18: dispatch through context instead of window events
-        dispatch({ type: 'ADD_AUDIO_CHUNK', data: msg.data })
+        // Bypass React state for audio — dispatch directly to audio player
+        // via CustomEvent to avoid re-render overhead on every chunk.
+        window.dispatchEvent(new CustomEvent('narrator-audio', { detail: { audio: msg.data } }))
         break
 
       case 'narrator_status':

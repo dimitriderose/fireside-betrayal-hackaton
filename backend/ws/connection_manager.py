@@ -17,6 +17,16 @@ from utils.tasks import safe_create_task, cancel_player_tasks
 
 logger = logging.getLogger(__name__)
 
+# ── Phase tracking (Fix 4: phase-aware audio suppression) ────────────────────
+# Tracks the current phase per game so narrator_agent can suppress player audio
+# during monologue phases without a Firestore round-trip.
+_current_phase: Dict[str, "Phase"] = {}
+
+
+def get_current_phase(game_id: str) -> Optional["Phase"]:
+    """Return the cached current phase for a game, or None if unknown."""
+    return _current_phase.get(game_id)
+
 
 # ── AI character helpers (supports 1 or 2 AI characters) ─────────────────────
 # Canonical implementations live in utils.game_utils; re-exported here for
@@ -150,7 +160,7 @@ class ConnectionManager:
         self._games.setdefault(game_id, {})[player_id] = ws
         # Set up per-player send queues and start sender task
         self._ctrl_queues.setdefault(game_id, {})[player_id] = asyncio.Queue()
-        self._audio_queues.setdefault(game_id, {})[player_id] = asyncio.Queue(maxsize=256)
+        self._audio_queues.setdefault(game_id, {})[player_id] = asyncio.Queue(maxsize=512)
         self._sender_tasks.setdefault(game_id, {})[player_id] = safe_create_task(
             self._player_sender(game_id, player_id, ws),
             name=f"sender-{game_id[:8]}-{player_id[:8]}",
@@ -180,6 +190,7 @@ class ConnectionManager:
             self._sender_tasks.pop(game_id, None)
             self._ctrl_queues.pop(game_id, None)
             self._audio_queues.pop(game_id, None)
+            _current_phase.pop(game_id, None)
 
     def count(self, game_id: str) -> int:
         return len(self._games.get(game_id, {}))
@@ -258,6 +269,9 @@ class ConnectionManager:
         ai_chars = _all_ai_chars(game) if game else []
         ai_characters_list = [{"name": c.name, "alive": c.alive} for c in ai_chars]
 
+        # Track initial phase for narrator audio suppression
+        _current_phase[game_id] = Phase.NIGHT
+
         await self.broadcast(game_id, {
             "type": "phase_change",
             "phase": Phase.NIGHT.value,
@@ -300,6 +314,9 @@ class ConnectionManager:
         self, game_id: str, phase: Phase, round: Optional[int] = None,
         game=None, alive_players=None,
     ) -> None:
+        # Track current phase for narrator phase-aware audio suppression
+        _current_phase[game_id] = phase
+
         from services.firestore_service import get_firestore_service
         fs = get_firestore_service()
 
@@ -430,6 +447,7 @@ class ConnectionManager:
         character_reveals: list,
         timeline: Optional[list] = None,
     ) -> None:
+        _current_phase.pop(game_id, None)  # clean up phase tracking
         await self.broadcast(game_id, {
             "type": "game_over",
             "winner": winner,
@@ -472,6 +490,7 @@ class ConnectionManager:
                     audio_q.put_nowait(msg)
                 except asyncio.QueueFull:
                     # Drop oldest audio chunk, add new one
+                    logger.debug("Audio queue full for %s, dropping oldest chunk", pid)
                     try:
                         audio_q.get_nowait()
                     except asyncio.QueueEmpty:

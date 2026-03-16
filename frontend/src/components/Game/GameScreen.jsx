@@ -911,7 +911,6 @@ function RoleCard({ roleInfo, characterName, role }) {
 // ── Role Reveal Overlay (shown briefly at game start) ──────────────────────────
 
 function RoleRevealOverlay({ role, characterName, onDismiss }) {
-  const { state } = useGame()
   const info = ROLE_INFO[role] ?? {}
   const desc = ROLE_DESC[role] ?? 'Your secret role in Thornwood.'
   const dismissedRef = useRef(false)
@@ -922,13 +921,17 @@ function RoleRevealOverlay({ role, characterName, onDismiss }) {
     return () => clearTimeout(timer)
   }, [onDismiss])
 
-  // Issue 18: auto-dismiss when first narrator audio chunk arrives (via context)
+  // Auto-dismiss when first narrator audio chunk arrives (via CustomEvent)
   useEffect(() => {
-    if (state.audioChunkCounter > 0 && !dismissedRef.current) {
-      dismissedRef.current = true
-      onDismiss()
+    const handler = () => {
+      if (!dismissedRef.current) {
+        dismissedRef.current = true
+        onDismiss()
+      }
     }
-  }, [state.audioChunkCounter, onDismiss])
+    window.addEventListener('narrator-audio', handler)
+    return () => window.removeEventListener('narrator-audio', handler)
+  }, [onDismiss])
 
   return (
     <div
@@ -1319,6 +1322,17 @@ export default function GameScreen() {
     })
     sendMessage('ghost_message', { text })
   }
+
+  // Track narrator speaking status for monologue phase UI hint
+  const [narratorSpeaking, setNarratorSpeaking] = useState(false)
+  useEffect(() => {
+    const handler = (e) => {
+      const status = e.detail
+      setNarratorSpeaking(status === 'speaking')
+    }
+    window.addEventListener('narrator-status', handler)
+    return () => window.removeEventListener('narrator-status', handler)
+  }, [])
 
   const [handRaised, setHandRaised] = useState(false)
   const handleRaiseHand = () => {
@@ -1745,7 +1759,12 @@ export default function GameScreen() {
           <>
             {/* Push-to-talk */}
             <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '6px 16px' }}>
-              {currentSpeaker && !isSpeaking ? (
+              {narratorSpeaking && (phase === 'night' || phase === 'elimination') ? (
+                <span style={{ fontSize: '0.875rem', color: 'var(--accent)', fontStyle: 'italic' }}>
+                  <span className="pulse-glow" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', marginRight: 6 }} />
+                  Narrator speaking...
+                </span>
+              ) : currentSpeaker && !isSpeaking ? (
                 <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
                   <span className="pulse-glow" style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)', marginRight: 6 }} />
                   {currentSpeaker} is speaking...

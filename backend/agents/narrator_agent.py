@@ -20,6 +20,7 @@ from services.firestore_service import get_firestore_service
 from models.game import Phase, Role, ChatMessage
 from utils.audio import pcm_to_base64
 from utils.tasks import safe_create_task
+from ws.connection_manager import get_current_phase
 
 logger = logging.getLogger(__name__)
 
@@ -635,6 +636,14 @@ async def handle_inject_traitor_dialog(game_id: str, context: str) -> Dict[str, 
         logger.info("[%s] AI dialog: %s said: %.80s…",
                     game_id, result["character_name"], result["dialog"])
 
+        # Fix 6: Feed AI dialog back to narrator session so it stays aware
+        session = narrator_manager._sessions.get(game_id)
+        if session:
+            await session.send(
+                f'[AI CHARACTER] {result["character_name"]} said: "{result["dialog"]}"',
+                end_of_turn=False,
+            )
+
     return first_result or {"character_name": "Unknown", "dialog": "..."}
 
 
@@ -702,6 +711,9 @@ class NarratorSession:
         self._transcript_flush_task: Optional[asyncio.Task] = None
         # Voice speaker tracking — inject text annotation when speaker changes
         self._current_voice_speaker: Optional[str] = None
+        # Phase-aware audio suppression: track when narrator is speaking
+        self._narrator_speaking: bool = False
+        self._narrator_speaking_since: float = 0
         # AI auto-reply cooldown: character_name → last_reply_timestamp
         self._ai_reply_cooldown: Dict[str, float] = {}
         # Game state cache — avoid redundant Firestore reads (Issue 16)
@@ -750,7 +762,28 @@ class NarratorSession:
         await self._queue.put((text, end_of_turn))
 
     async def send_audio(self, pcm_bytes: bytes, speaker: str = None) -> None:
-        """Queue raw PCM audio to be forwarded to the Live API as realtime input."""
+        """Queue raw PCM audio to be forwarded to the Live API as realtime input.
+
+        During monologue phases (NIGHT, ELIMINATION, GAME_OVER) when the narrator
+        is actively speaking, player audio is suppressed to avoid feedback and
+        interruption. During DAY_DISCUSSION and SEANCE, audio is always forwarded
+        (Gemini VAD handles turn-taking).
+        """
+        # Decay narrator_speaking after 1.5s of no audio chunks
+        if self._narrator_speaking and time.time() - self._narrator_speaking_since > 1.5:
+            self._narrator_speaking = False
+            from routers.ws_router import manager as ws_manager
+            await ws_manager.broadcast(self.game_id, {
+                "type": "narrator_status",
+                "status": "idle",
+            })
+
+        # Phase-aware suppression: skip player audio during monologue phases when narrator is speaking
+        if self._narrator_speaking:
+            current_phase = get_current_phase(self.game_id)
+            if current_phase and current_phase in (Phase.NIGHT, Phase.ELIMINATION, Phase.GAME_OVER):
+                return  # suppress player audio during narrator monologue
+
         # Inject a text annotation when the speaker changes so the narrator knows who is talking
         if speaker and speaker != self._current_voice_speaker:
             self._current_voice_speaker = speaker
@@ -969,6 +1002,15 @@ class NarratorSession:
 
                     # PCM audio → broadcast to all players + record for highlight reel (§12.3.15)
                     if response.data:
+                        # Track narrator speaking state for phase-aware audio suppression
+                        was_speaking = self._narrator_speaking
+                        self._narrator_speaking = True
+                        self._narrator_speaking_since = time.time()
+                        if not was_speaking:
+                            await ws_manager.broadcast(self.game_id, {
+                                "type": "narrator_status",
+                                "status": "speaking",
+                            })
                         b64 = pcm_to_base64(response.data)
                         await ws_manager.broadcast_audio(self.game_id, b64)
                         try:
@@ -1116,19 +1158,26 @@ class NarratorSession:
                         context=f"A player just said: \"{transcript_text}\". Respond in character.",
                     )
                     if result and result.get("dialog"):
+                        dialog = result["dialog"]
+                        char_name = result["character_name"]
                         await ws_manager.broadcast_transcript(
                             self.game_id,
-                            speaker=result["character_name"],
-                            text=result["dialog"],
+                            speaker=char_name,
+                            text=dialog,
                             source="player",
                         )
                         await fs.add_chat_message(self.game_id, ChatMessage(
-                            speaker=result["character_name"],
-                            text=result["dialog"],
+                            speaker=char_name,
+                            text=dialog,
                             source="ai_character",
                             phase=game.phase,
                             round=game.round,
                         ))
+                        # Fix 6: Feed AI dialog back to narrator so it stays aware
+                        await self.send(
+                            f'[AI CHARACTER] {char_name} said: "{dialog}"',
+                            end_of_turn=False,
+                        )
                 except Exception:
                     logger.warning("[%s] Failed to auto-trigger AI dialog for %s",
                                    self.game_id, name, exc_info=True)
@@ -1254,7 +1303,10 @@ class NarratorManager:
             await session.send(msg, end_of_turn=force_response)
 
     async def forward_player_audio(self, game_id: str, pcm_bytes: bytes, speaker: str = None) -> None:
-        """Forward raw PCM audio bytes from a player to the narrator's Gemini session."""
+        """Forward raw PCM audio bytes from a player to the narrator's Gemini session.
+
+        Phase-aware suppression is handled inside NarratorSession.send_audio.
+        """
         session = self._sessions.get(game_id)
         if not session:
             return
