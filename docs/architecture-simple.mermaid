@@ -7,13 +7,14 @@ graph TB
         GWS["Game WebSocket<br/>State · Chat · Votes"]
         AUDIOWS["Audio WebSocket<br/>PCM Mic Input · Keepalive"]
         TABS["Three-Tab UI<br/>Story | Journal | Records"]
+        AUDIOPLAY["Audio Playback (v5.4)<br/>CustomEvent → useAudioPlayer<br/>80ms Jitter Buffer · Web Audio API"]
     end
 
     subgraph CloudRun["Google Cloud Run"]
         API["FastAPI Backend<br/>REST + WebSocket + SPA Routing"]
 
         subgraph WSPackage["ws/ Package (8 Modules)"]
-            CONN["Connection Manager<br/>Per-Player Send Queues"]
+            CONN["Connection Manager<br/>Per-Player Send Queues (512)<br/>_current_phase Cache"]
             HANDLERS["Message Handlers<br/>Chat · Speaker · Ghost"]
             TIMERS["Phase Timers<br/>Discussion · Vote · Night"]
             SM["State Machine<br/>Phase Transitions"]
@@ -24,7 +25,7 @@ graph TB
         end
 
         subgraph Agents["6 AI Agents"]
-            NA["Narrator Agent<br/>Gemini Live API<br/>Real-time Voice · 4 Presets<br/>Watchdog Auto-Restart"]
+            NA["Narrator Agent<br/>Gemini Live API<br/>Real-time Voice · 4 Presets<br/>Watchdog Auto-Restart<br/>Phase-Aware PTT Suppression"]
             TA["AI Character Agent<br/>Strategy · Dialog · Votes<br/>Difficulty: Easy/Normal/Hard"]
             SA["Scene Agent<br/>Background Generation<br/>Pre-cached in Lobby"]
             GM["Game Master<br/>Roles · Phases · Win Conditions"]
@@ -53,6 +54,7 @@ graph TB
 
     %% Frontend to Backend
     GWS <-->|"JSON WebSocket"| API
+    GWS -->|"CustomEvent('narrator-audio')"| AUDIOPLAY
     AUDIOWS <-->|"Binary PCM + JSON"| API
 
     %% Backend internal
@@ -71,6 +73,8 @@ graph TB
     API --> SA
     GM --> TA
     NA --> TA
+    TA -->|"AI dialog feedback"| NA
+    NA -->|"narrator_status"| API
 
     %% Gemini connections
     NA <-->|"Voice Stream"| GLive
@@ -96,7 +100,7 @@ graph TB
     classDef gemini fill:#1e88e5,stroke:#1565c0,color:#fff
 
     class P player
-    class GWS,AUDIOWS,TABS frontend
+    class GWS,AUDIOWS,TABS,AUDIOPLAY frontend
     class API cloud
     class CONN,HANDLERS,TIMERS,SM,VOTES,NIGHT,LIFE,CONV wsmod
     class NA,TA,SA,GM,CV,MISC agent

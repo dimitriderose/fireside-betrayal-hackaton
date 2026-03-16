@@ -4,7 +4,7 @@
 **Category:** 🗣️ Live Agents
 **Author:** Software Architecture Team
 **Companion Document:** PRD — Fireside — Betrayal v1.0
-**Version:** 5.3 | March 15, 2026 *(updated to reflect: modular ws/ package (8-module split), constants.py centralization, utils/tasks.py safe task management, utils/game_utils.py shared helpers, state machine phase validation, Firestore transactions for atomic vote/night resolution guards, batch Firestore writes, slowapi rate limiting on HTTP + in-memory chat rate limiting on WS, CORS validation on WebSocket upgrade, narrator watchdog auto-restart, narrator game state caching (5s TTL), per-player reliable delivery with seq/lastSeq replay, frontend state consolidation via GameContext dispatch, scene image cache with TTL sweep (30min) and lobby pre-generation, Gemini model upgrades (gemini-3-flash-preview, gemini-3.1-flash-image-preview), narrator voice updates (Gacrux, Sulafat, Enceladus, Zubenelgenubi), guided tour system)*
+**Version:** 5.4 | March 16, 2026 *(updated to reflect: audio jitter buffer (80ms scheduling offset for first chunk + underrun recovery), CustomEvent audio delivery bypassing React state (useWebSocket dispatches narrator-audio CustomEvent, useAudioPlayer listens via Web Audio API), phase-aware audio suppression (_narrator_speaking flag on NarratorSession, PTT suppressed during NIGHT/ELIMINATION/GAME_OVER, always forwarded during DAY_DISCUSSION/SEANCE, narrator_status WS message for frontend visual feedback), audio queue increased to 512 with drop logging, AI dialog feedback (auto-replies sent back to narrator session as text annotation), _current_phase cache in ConnectionManager for phase-aware suppression; plus all v5.3 changes: modular ws/ package (8-module split), constants.py centralization, utils/tasks.py safe task management, utils/game_utils.py shared helpers, state machine phase validation, Firestore transactions for atomic vote/night resolution guards, batch Firestore writes, slowapi rate limiting on HTTP + in-memory chat rate limiting on WS, CORS validation on WebSocket upgrade, narrator watchdog auto-restart, narrator game state caching (5s TTL), per-player reliable delivery with seq/lastSeq replay, frontend state consolidation via GameContext dispatch, scene image cache with TTL sweep (30min) and lobby pre-generation, Gemini model upgrades (gemini-3-flash-preview, gemini-3.1-flash-image-preview), narrator voice updates (Gacrux, Sulafat, Enceladus, Zubenelgenubi), guided tour system)*
 
 ---
 
@@ -12,7 +12,7 @@
 
 This Technical Design Document specifies the implementation architecture for Fireside — Betrayal, a real-time voice-first multiplayer social deduction game powered by the Gemini Live API, Google ADK, and Google Cloud. It translates the PRD's product requirements into concrete engineering decisions, API contracts, data models, code structure, and deployment specifications.
 
-**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern. **v5.1 additions:** Ghost Council dead-player chat system (`ghost_message` WS type, GhostRealmPanel), Séance phase (conditional ghost testimony when dead >= 2 and dead >= total/2), haunt actions (dead player night accusations), concurrency guards (`_resolving_nights` set, alive check in resolve_night), AI auto-reply system (`_maybe_trigger_ai_reply` with name-match regex and 30s cooldown), discussion timer enforcement (rejects advance_phase without start_phase_timer), simplified win condition (parity: non_shapeshifter_alive <= 1), responsive roster architecture (RosterPanel with RosterSidebar/RosterIconStrip at 768px breakpoint), and phase change data sync (full roster + AI chars in phase_change messages). **v5.2 additions:** SPA catch-all routing (`SPAStaticFiles` subclass serves `index.html` for non-API/non-WS 404s, enabling React Router deep links in production), audio WebSocket reconnection architecture (mic stream lifecycle separated from WS lifecycle — MediaStream/AudioContext/AudioWorkletNode persist across WS reconnects; exponential backoff [500,1000,2000,4000,8000]ms with max 10 attempts; Page Visibility API proactive disconnect/reconnect), game WebSocket mobile resilience (CONNECTING state guard, Page Visibility API immediate reconnect on tab visible, 2s sync heartbeat with phase mismatch detection), vote tally data flow (individual votes captured before `tally_votes()` clears AI voted_for, `broadcast_elimination` includes `individualVotes` and `isTie`, new `VoteTallyOverlay` component), production WebSocket keep-alive tuning (`--ws-ping-interval=15 --ws-ping-timeout=20` in Dockerfile CMD), scene image prompt optimization (flat vector illustration with 5-6 color palette replacing dark painterly style for smaller file sizes), and Gemini Live API log cleanup (proper `continue` for `session_resumption_update`/`voice_activity` handlers, NON-STANDARD log demoted to `logger.debug`). **v5.3 additions:** Modular `ws/` package (8-module split from monolithic `ws_router.py`: `connection_manager`, `conversation`, `game_lifecycle`, `message_handlers`, `night_resolver`, `phase_timers`, `state_machine`, `vote_manager`), centralized `constants.py` (WSInbound/WSOutbound/ErrorCode/FSField classes, timeout constants, role sets), `utils/tasks.py` (safe_create_task with per-game/per-player tracking, cancel_game_tasks, cancel_player_tasks), `utils/game_utils.py` (shared helpers: all_ai_chars, alive_ai_names, get_alive_character_names, build_candidate_pool), phase transition state machine (`state_machine.py` with ALLOWED_TRANSITIONS dict and validate_transition enforcement), Firestore transactions for atomic resolution guards (`try_set_resolving`, `start_game_transactional`, `eliminate_character_transactional`), batch Firestore writes (`clear_votes` and `clear_night_actions` via `batch.commit()`), slowapi rate limiting on HTTP endpoints + in-memory chat rate limiting on WebSocket (10 msg/10s sliding window), CORS validation on WebSocket upgrade (Origin header check, code 4403 rejection), narrator watchdog (`_watchdog_loop` auto-restarts dead Gemini session tasks every 15s), narrator game state caching (5s TTL via `_cached_state`, invalidated on phase change events), per-player reliable delivery with seq/lastSeq replay (100-event buffer, `get_events_since` for reconnection), frontend state consolidation (window CustomEvents replaced with GameContext dispatch for audio, scene images, camera votes), scene image cache on backend (`_scene_cache` dict in `game_router.py`, 30-min TTL sweep, pre-generated during lobby via `_pregenerate_scene`), Gemini model upgrades (gemini-3-flash-preview for traitor/camera, gemini-3.1-flash-image-preview for scene), narrator voice updates (Gacrux for Classic, Sulafat for Campfire, Enceladus for Horror, Zubenelgenubi for Comedy), and 11-step guided tour with spotlight overlay and tab auto-switching.
+**Scope:** All P0, P1, and P2 features from the PRD are now implemented, plus additional live-play enhancements. This includes the core game loop (P0), session resumption, Hunter/Drunk roles, difficulty levels, quick reactions, post-game timeline (P1), and all 18 P2 features: procedural characters, narrator presets, random AI alignment, Bodyguard/Tanner roles, camera voting, scene images, tutorial mode, audio recording, competitor intelligence, and more. Post-P2 additions include: player voice input pipeline (AudioWorklet mic capture through Gemini), speaker identification annotations, dynamic discussion timers scaled to alive player count, narrator dual-mode engagement (theatrical narration + fast-paced discussion moderator), human shapeshifter night kill (via Random AI Alignment), multi-stage Dockerfile, Terraform IaC for Google Cloud Run, and a deployment guide. **v4.0 additions:** Unified multi-AI architecture — `TraitorAgent`/`LoyalAgent` classes replaced with standalone functions (`generate_dialog`, `select_night_target`, `select_vote`, `select_loyal_night_action`) and parallel trigger functions (`trigger_all_night_actions`, `trigger_all_votes`, `trigger_all_dialogs`) using `asyncio.gather()`. N-AI character support via `ai_characters[]` array in Firestore and frontend `GameContext`. AI bodyguard sacrifice handling, AI Seer investigation computation, polling vote wait loop, and `{fs_field}_night_{role}` event naming pattern. **v5.1 additions:** Ghost Council dead-player chat system (`ghost_message` WS type, GhostRealmPanel), Séance phase (conditional ghost testimony when dead >= 2 and dead >= total/2), haunt actions (dead player night accusations), concurrency guards (`_resolving_nights` set, alive check in resolve_night), AI auto-reply system (`_maybe_trigger_ai_reply` with name-match regex and 30s cooldown), discussion timer enforcement (rejects advance_phase without start_phase_timer), simplified win condition (parity: non_shapeshifter_alive <= 1), responsive roster architecture (RosterPanel with RosterSidebar/RosterIconStrip at 768px breakpoint), and phase change data sync (full roster + AI chars in phase_change messages). **v5.2 additions:** SPA catch-all routing (`SPAStaticFiles` subclass serves `index.html` for non-API/non-WS 404s, enabling React Router deep links in production), audio WebSocket reconnection architecture (mic stream lifecycle separated from WS lifecycle — MediaStream/AudioContext/AudioWorkletNode persist across WS reconnects; exponential backoff [500,1000,2000,4000,8000]ms with max 10 attempts; Page Visibility API proactive disconnect/reconnect), game WebSocket mobile resilience (CONNECTING state guard, Page Visibility API immediate reconnect on tab visible, 2s sync heartbeat with phase mismatch detection), vote tally data flow (individual votes captured before `tally_votes()` clears AI voted_for, `broadcast_elimination` includes `individualVotes` and `isTie`, new `VoteTallyOverlay` component), production WebSocket keep-alive tuning (`--ws-ping-interval=15 --ws-ping-timeout=20` in Dockerfile CMD), scene image prompt optimization (flat vector illustration with 5-6 color palette replacing dark painterly style for smaller file sizes), and Gemini Live API log cleanup (proper `continue` for `session_resumption_update`/`voice_activity` handlers, NON-STANDARD log demoted to `logger.debug`). **v5.3 additions:** Modular `ws/` package (8-module split from monolithic `ws_router.py`: `connection_manager`, `conversation`, `game_lifecycle`, `message_handlers`, `night_resolver`, `phase_timers`, `state_machine`, `vote_manager`), centralized `constants.py` (WSInbound/WSOutbound/ErrorCode/FSField classes, timeout constants, role sets), `utils/tasks.py` (safe_create_task with per-game/per-player tracking, cancel_game_tasks, cancel_player_tasks), `utils/game_utils.py` (shared helpers: all_ai_chars, alive_ai_names, get_alive_character_names, build_candidate_pool), phase transition state machine (`state_machine.py` with ALLOWED_TRANSITIONS dict and validate_transition enforcement), Firestore transactions for atomic resolution guards (`try_set_resolving`, `start_game_transactional`, `eliminate_character_transactional`), batch Firestore writes (`clear_votes` and `clear_night_actions` via `batch.commit()`), slowapi rate limiting on HTTP endpoints + in-memory chat rate limiting on WebSocket (10 msg/10s sliding window), CORS validation on WebSocket upgrade (Origin header check, code 4403 rejection), narrator watchdog (`_watchdog_loop` auto-restarts dead Gemini session tasks every 15s), narrator game state caching (5s TTL via `_cached_state`, invalidated on phase change events), per-player reliable delivery with seq/lastSeq replay (100-event buffer, `get_events_since` for reconnection), frontend state consolidation (window CustomEvents replaced with GameContext dispatch for audio, scene images, camera votes), scene image cache on backend (`_scene_cache` dict in `game_router.py`, 30-min TTL sweep, pre-generated during lobby via `_pregenerate_scene`), Gemini model upgrades (gemini-3-flash-preview for traitor/camera, gemini-3.1-flash-image-preview for scene), narrator voice updates (Gacrux for Classic, Sulafat for Campfire, Enceladus for Horror, Zubenelgenubi for Comedy), and 11-step guided tour with spotlight overlay and tab auto-switching. **v5.4 additions:** Audio jitter buffer (80ms scheduling offset on first chunk of utterance and underrun recovery), CustomEvent audio delivery bypassing React state (useWebSocket dispatches `narrator-audio` CustomEvent, useAudioPlayer listens directly via Web Audio API — reverts v5.3 GameContext dispatch for audio only), phase-aware audio suppression (`_narrator_speaking` flag on NarratorSession, player PTT suppressed during NIGHT/ELIMINATION/GAME_OVER phases, always forwarded during DAY_DISCUSSION/SEANCE, `narrator_status` WS message for frontend visual feedback), audio queue increased from 256 to 512 with drop logging, AI dialog feedback (auto-reply text sent back to narrator session as `[AI_DIALOG]` text annotation for narrative continuity), and `_current_phase` cache in ConnectionManager for phase-aware suppression.
 
 **Out of scope:** Multiple story genres (P3), persistent player profiles (P3), cross-device shared screen mode (P3). P3 features are additive and do not affect core architecture.
 
@@ -159,7 +159,9 @@ The server maintains a per-game speaker lock (`_current_speaker: Dict[str, Optio
 Rationale: Gemini Live API's speaker identification degrades when concurrent audio streams overlap. The lock ensures clean speaker attribution and prevents audio collision artifacts.
 
 **Decision 7: Per-Player Priority Queues in ConnectionManager**
-Each connected player has two outbound queues: a control queue (unbounded, for JSON game-state messages) and an audio queue (bounded 256 frames, for narrator PCM chunks). A dedicated `_player_sender` coroutine per connection drains the control queue first, then pulls from the audio queue, ensuring phase-change and elimination messages are never delayed behind a flood of audio chunks. Chat messages sent by a player appear instantly on their own screen (local echo) with server-echo deduplication to prevent double-display.
+Each connected player has two outbound queues: a control queue (unbounded, for JSON game-state messages) and an audio queue (bounded 512 frames, for narrator PCM chunks). A dedicated `_player_sender` coroutine per connection drains the control queue first, then pulls from the audio queue, ensuring phase-change and elimination messages are never delayed behind a flood of audio chunks. Chat messages sent by a player appear instantly on their own screen (local echo) with server-echo deduplication to prevent double-display.
+
+**Implementation Update (v5.4 — Audio Queue Sizing):** The audio queue was increased from 256 to 512 frames. Drop events are now logged (`logger.warning("audio queue full for %s — dropping chunk", player_id)`) to provide visibility into backpressure. The larger buffer accommodates bursty narrator output during theatrical narration segments where Gemini produces audio faster than the WebSocket can drain.
 
 Rationale: Under load, narrator audio chunks can fill a single shared queue and delay critical game-state messages (votes, phase changes). Priority separation guarantees control-plane latency regardless of audio volume.
 
@@ -289,9 +291,11 @@ live_config = types.LiveConnectConfig(
 - Player mic input: 16-bit PCM, 16 kHz, mono — transported as raw binary frames over `/ws/audio/{game_id}` (no base64, no JSON wrapper)
 - Narrator output: 24 kHz PCM audio (broadcast over game-state WS as base64 JSON `audio` message)
 - Latency target: 200–500ms (native audio model's natural latency). P0 hard requirement: < 2 seconds end-to-end from player message to first narrator audio chunk.
+- Jitter buffer: 80ms scheduling offset on first chunk of each utterance and on underrun recovery (v5.4)
 - VAD: Enabled (automatic interruption detection)
 - Thinking: Enabled with budget of 1024 tokens
 - WebSocket keepalive: ping interval 20s, timeout 30s (re-enabled in v5.0)
+- Phase-aware audio suppression: Player PTT input suppressed during NIGHT, ELIMINATION, GAME_OVER phases; always forwarded during DAY_DISCUSSION and SEANCE (v5.4)
 
 ## 3.2 AI Agent Functions (Unified — v4.0)
 
@@ -1201,6 +1205,7 @@ type ServerMessage =
   | { type: "seance_start"; duration: number }                                // v5.1: BROADCAST — séance phase begins (45s push-to-talk for dead)
   | { type: "seance_end" }                                                    // v5.1: BROADCAST — séance phase ends
   | { type: "haunt_result"; ghostCharacter: string; accusedCharacter: string } // v5.1: BROADCAST — ghost haunt accusation (narrator incorporates)
+  | { type: "narrator_status"; speaking: boolean }                             // v5.4: BROADCAST — narrator speaking state for frontend visual feedback
   | { type: "error"; message: string; code: string }
 
 // P1: Spectator clue — eliminated player sends one-word hint
@@ -1325,9 +1330,9 @@ class ConnectionManager:
     Each player has two outbound queues:
     - control_queue (asyncio.Queue, unbounded): game-state JSON messages.
       Phase changes, eliminations, votes, private role assignments — all go here.
-    - audio_queue (asyncio.Queue, maxsize=256): narrator PCM audio chunks.
-      If the audio queue is full (producer faster than consumer), oldest chunks
-      are dropped to prevent memory growth.
+    - audio_queue (asyncio.Queue, maxsize=512): narrator PCM audio chunks.
+      If the audio queue is full (producer faster than consumer), incoming chunks
+      are dropped and logged to prevent memory growth.
 
     A dedicated _player_sender coroutine per connection drains control first,
     then audio, ensuring control-plane latency is not affected by audio volume.
@@ -1347,7 +1352,7 @@ class ConnectionManager:
     async def connect(self, player_id: str, ws: WebSocket):
         self._websockets[player_id] = ws
         self._control_queues[player_id] = asyncio.Queue()
-        self._audio_queues[player_id] = asyncio.Queue(maxsize=256)
+        self._audio_queues[player_id] = asyncio.Queue(maxsize=512)
         self._sender_tasks[player_id] = asyncio.create_task(
             self._player_sender(player_id, ws)
         )
@@ -1406,7 +1411,7 @@ class ConnectionManager:
             try:
                 q.put_nowait(audio_bytes)
             except asyncio.QueueFull:
-                pass  # Drop oldest: discard incoming if queue full
+                logger.warning("audio queue full for %s — dropping chunk", player_id)
 
     async def broadcast(self, message: dict, exclude: str | None = None):
         for pid in list(self._control_queues):
@@ -1454,6 +1459,9 @@ class GameSession:
         # v5.0: Phase timer state
         self._phase_timer_task: Optional[asyncio.Task] = None
         self._phase_timer_safety_task: Optional[asyncio.Task] = None
+
+        # v5.4: Phase cache for phase-aware audio suppression
+        self._current_phase: Optional[str] = None  # Updated on every phase transition
 
         # v5.1: Concurrency guards — prevent double resolution
         self._resolving_votes: Set[str] = set()   # game_ids currently resolving votes
@@ -2154,47 +2162,52 @@ App (GameProvider wraps all routes)
 
 ## 8.2 Audio Playback
 
+**Implementation Update (v5.4 — CustomEvent + Jitter Buffer):** Audio delivery was moved out of React state management. The `useWebSocket` hook dispatches a `CustomEvent('narrator-audio')` on `window` for each incoming audio chunk. The `useAudioPlayer` hook listens for these events and schedules playback directly via the Web Audio API. This bypasses React's render cycle entirely, eliminating the dispatch/useEffect indirection that caused audible gaps between chunks on slower devices.
+
+An 80ms jitter buffer smooths playback: the first chunk of each utterance is scheduled at `audioContext.currentTime + 0.08` (rather than "now"), giving the network time to deliver the next chunk before the first one finishes. The same 80ms offset is applied on underrun recovery (when the playback queue drains and a new chunk arrives after a gap).
+
+**Audio flow:** `useWebSocket` → `CustomEvent('narrator-audio')` → `useAudioPlayer` event listener → base64 decode → PCM-to-Float32 → `AudioBufferSourceNode.start(scheduledTime)` via Web Audio API.
+
 ```typescript
-class NarratorAudioPlayer {
-  private audioContext: AudioContext;
-  private queue: ArrayBuffer[] = [];
-  private playing: boolean = false;
-  
-  constructor() {
-    this.audioContext = new AudioContext({ sampleRate: 24000 });
-  }
-  
-  enqueue(base64Audio: string) {
-    const binary = atob(base64Audio);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    // Convert 16-bit PCM to Float32
-    const float32 = new Float32Array(bytes.length / 2);
-    const view = new DataView(bytes.buffer);
-    for (let i = 0; i < float32.length; i++) {
-      float32[i] = view.getInt16(i * 2, true) / 32768;
-    }
-    this.queue.push(float32.buffer);
-    if (!this.playing) this.playNext();
-  }
-  
-  private async playNext() {
-    if (this.queue.length === 0) {
-      this.playing = false;
-      return;
-    }
-    this.playing = true;
-    const buffer = this.queue.shift()!;
-    const audioBuffer = this.audioContext.createBuffer(1, buffer.byteLength / 4, 24000);
-    audioBuffer.getChannelData(0).set(new Float32Array(buffer));
-    const source = this.audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.audioContext.destination);
-    source.onended = () => this.playNext();
-    source.start();
-  }
+// useAudioPlayer.js — CustomEvent-driven playback with jitter buffer (v5.4)
+// Hook registers a window event listener for 'narrator-audio' CustomEvents.
+// No React state is involved in the audio hot path.
+
+const JITTER_BUFFER_SEC = 0.08; // 80ms scheduling offset
+
+function useAudioPlayer() {
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const nextStartTimeRef = useRef<number>(0);
+
+  useEffect(() => {
+    const ctx = new AudioContext({ sampleRate: 24000 });
+    audioContextRef.current = ctx;
+
+    const handleAudio = (e: CustomEvent) => {
+      const { data } = e.detail;  // base64 PCM string
+      const float32 = decodeBase64ToFloat32(data);
+      const buffer = ctx.createBuffer(1, float32.length, 24000);
+      buffer.getChannelData(0).set(float32);
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+
+      const now = ctx.currentTime;
+      // If nextStartTime is in the past (first chunk or underrun), apply jitter offset
+      if (nextStartTimeRef.current <= now) {
+        nextStartTimeRef.current = now + JITTER_BUFFER_SEC;
+      }
+      source.start(nextStartTimeRef.current);
+      nextStartTimeRef.current += buffer.duration;
+    };
+
+    window.addEventListener('narrator-audio', handleAudio);
+    return () => {
+      window.removeEventListener('narrator-audio', handleAudio);
+      ctx.close();
+    };
+  }, []);
 }
 ```
 
@@ -4044,8 +4057,25 @@ class NarratorSession:
         self._transcript_buffer: str = ""
         self._transcript_flush_task: Optional[asyncio.Task] = None
 
+        # v5.4: Phase-aware audio suppression
+        self._narrator_speaking: bool = False  # True while narrator is producing audio output
+        self._current_phase: Optional[str] = None  # Cached from ConnectionManager
+
     async def send_audio(self, pcm_bytes: bytes, speaker: str):
-        """Send player mic audio to Gemini with speaker attribution."""
+        """Send player mic audio to Gemini with speaker attribution.
+
+        v5.4: Phase-aware suppression. During NIGHT, ELIMINATION, and
+        GAME_OVER phases, player PTT audio is silently dropped — the
+        narrator is performing scripted narration and should not be
+        interrupted. During DAY_DISCUSSION and SEANCE, audio is always
+        forwarded regardless of _narrator_speaking state.
+        """
+        # Phase-aware suppression (v5.4)
+        suppress_phases = {"NIGHT", "ELIMINATION", "GAME_OVER"}
+        if self._current_phase in suppress_phases:
+            return  # Silently drop — narrator is narrating
+        # Forward phases: DAY_DISCUSSION, SEANCE — always allow
+
         if speaker != self._current_voice_speaker:
             self._current_voice_speaker = speaker
             annotation = f"[VOICE] {speaker} is now speaking via microphone."
@@ -4271,9 +4301,9 @@ The `ConnectionManager` class (v5.0) gives each connected player two outbound qu
 | Queue | Type | Bound | Contents |
 |-------|------|-------|----------|
 | `control_queue` | `asyncio.Queue` | unbounded | Phase changes, eliminations, role messages, vote updates, errors |
-| `audio_queue` | `asyncio.Queue` | maxsize=256 | Narrator PCM audio chunks |
+| `audio_queue` | `asyncio.Queue` | maxsize=512 | Narrator PCM audio chunks (v5.4: increased from 256, drops logged) |
 
-A dedicated `_player_sender` coroutine per connection drains `control_queue` first (all available messages), then pulls one audio chunk. This guarantees control-plane messages are never delayed behind audio volume. If `audio_queue` is full, incoming audio chunks are dropped silently (older chunks are more stale; dropping is preferable to memory growth or stalling).
+A dedicated `_player_sender` coroutine per connection drains `control_queue` first (all available messages), then pulls one audio chunk. This guarantees control-plane messages are never delayed behind audio volume. If `audio_queue` is full, incoming audio chunks are dropped and the drop is logged with `logger.warning` (v5.4: previously silent; logging provides backpressure visibility).
 
 **Chat local echo:** When a player sends `{ type: "message" }`, the server immediately enqueues the transcript back to that player's `control_queue` with `echo: true`. Other players receive the same message without the flag. The frontend deduplicates by ignoring non-echo transcripts from the sender's own character name that match the last message sent.
 
@@ -4394,6 +4424,7 @@ AI characters can now respond organically when mentioned by name during discussi
 - **Cooldown:** 30-second cooldown per AI character. Only one AI reply is generated per transcript flush to prevent dialog flooding.
 - **Broadcast:** AI replies are broadcast as `{ type: "transcript", speaker: "<ai_character_name>", text: "..." }` with `source: "player"` in Firestore chat collection — indistinguishable from human player messages.
 - **Persistence:** Replies are written to the `games/{id}/chat` subcollection with `source: "player"` for consistency with the hide-AI-identity pattern.
+- **v5.4 — Narrator feedback:** After broadcasting, AI auto-reply text is sent back to the narrator session as a text annotation: `[AI_DIALOG] {character_name} says: "{dialog_text}"`. This uses `end_of_turn=False` so the narrator does not respond directly, but gains awareness of the AI character's contribution for narrative continuity. The narrator can then reference or react to AI dialog in subsequent narration.
 
 ## 12.7.5 Discussion Timer Enforcement
 
@@ -4756,16 +4787,18 @@ This eliminates state drift when players briefly disconnect (mobile tab switch, 
 
 **Files:** `frontend/src/hooks/useWebSocket.js`, `frontend/src/context/GameContext.jsx`
 
-Window `CustomEvent` dispatches for audio chunks, scene images, and camera vote results were replaced with `GameContext` dispatch actions:
+Window `CustomEvent` dispatches for scene images and camera vote results were replaced with `GameContext` dispatch actions. Audio was reverted to `CustomEvent` in v5.4 for jitter-free playback:
 
-| Message Type | Before (v5.2) | After (v5.3) |
-|-------------|---------------|-------------|
-| `audio` | `window.dispatchEvent(new CustomEvent('narrator-audio', ...))` | `dispatch({ type: 'ADD_AUDIO_CHUNK', data: msg.data })` |
-| `scene_image` | `window.dispatchEvent(new CustomEvent('scene-image', ...))` | `dispatch({ type: 'SET_SCENE_IMAGE', data: msg.data, sceneKey: msg.sceneKey })` |
-| `camera_vote_result` | `window.dispatchEvent(new CustomEvent('camera-vote', ...))` | `dispatch({ type: 'SET_CAMERA_VOTE_RESULT', ... })` |
-| `camera_vote_fallback` | `window.dispatchEvent(new CustomEvent('camera-vote', ...))` | `dispatch({ type: 'SET_CAMERA_VOTE_RESULT', fallback: true, ... })` |
+| Message Type | Before (v5.2) | After (v5.3) | After (v5.4) |
+|-------------|---------------|-------------|-------------|
+| `audio` | `window.dispatchEvent(new CustomEvent('narrator-audio', ...))` | `dispatch({ type: 'ADD_AUDIO_CHUNK', data: msg.data })` | `window.dispatchEvent(new CustomEvent('narrator-audio', ...))` **(reverted)** |
+| `scene_image` | `window.dispatchEvent(new CustomEvent('scene-image', ...))` | `dispatch({ type: 'SET_SCENE_IMAGE', data: msg.data, sceneKey: msg.sceneKey })` | *(unchanged)* |
+| `camera_vote_result` | `window.dispatchEvent(new CustomEvent('camera-vote', ...))` | `dispatch({ type: 'SET_CAMERA_VOTE_RESULT', ... })` | *(unchanged)* |
+| `camera_vote_fallback` | `window.dispatchEvent(new CustomEvent('camera-vote', ...))` | `dispatch({ type: 'SET_CAMERA_VOTE_RESULT', fallback: true, ... })` | *(unchanged)* |
 
-**Benefits:** All game state now flows through a single `useReducer` dispatch, eliminating the need for `addEventListener`/`removeEventListener` pairs on `window`. Components consume state via `useGame()` context hook instead of subscribing to global events. The `narrator_status` message is the only remaining `window.dispatchEvent` (for the NarratorBar "thinking" indicator).
+**v5.4 Audio Revert:** Audio delivery was moved back to `CustomEvent('narrator-audio')` dispatches because routing audio through React state (`dispatch` → reducer → `useEffect`) introduced audible playback gaps. The React render cycle adds 16-50ms of latency per chunk, which compounds into perceptible jitter. The `useAudioPlayer` hook now listens for `narrator-audio` CustomEvents directly and schedules playback via the Web Audio API, bypassing React entirely. This is the only message type using `CustomEvent`; all other game state flows through `useReducer` dispatch.
+
+**Benefits:** Scene images, camera votes, and all game-state messages flow through a single `useReducer` dispatch. Components consume state via `useGame()` context hook. Audio and `narrator_status` are the two remaining `window.dispatchEvent` cases — audio for latency-critical playback (v5.4), narrator_status for the NarratorBar "thinking" indicator.
 
 **Scene image cache in GameContext:** The reducer stores `sceneImageCache: { [sceneKey]: base64PNG }` — a map keyed by scene identifier. Stale entries are not actively evicted on the frontend since games are short-lived.
 

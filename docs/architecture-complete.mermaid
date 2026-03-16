@@ -4,6 +4,7 @@ graph TB
         P2["Player 2<br/>Mobile Browser<br/>AudioWorklet Mic Capture"]
         P3["Player N<br/>Mobile Browser"]
         FE_STATE["Frontend State<br/>aiCharacters: [] array<br/>lastVoteResult: individualVotes + isTie<br/>(variable-count AI chars)"]
+        CUSTEVT["CustomEvent Audio Delivery (v5.4)<br/>useWebSocket → CustomEvent('narrator-audio')<br/>→ useAudioPlayer listener → Web Audio API<br/>80ms jitter buffer (first chunk + underrun)"]
         PTT["Push-to-Talk<br/>Speaker Lock<br/>(one active speaker at a time)"]
 
         subgraph AudioCapture["Audio Capture (Separated Lifecycles v5.4)"]
@@ -37,7 +38,7 @@ graph TB
         end
 
         subgraph WSPackage["ws/ Package (8 Modules)"]
-            WS_CONN["connection_manager.py<br/>Per-player send queues<br/>Dual-queue: audio + control<br/>ConnectionManager singleton"]
+            WS_CONN["connection_manager.py<br/>Per-player send queues<br/>Dual-queue: audio (512) + control<br/>ConnectionManager singleton<br/>_current_phase cache (v5.4)"]
             WS_MSG["message_handlers.py<br/>WS message dispatch<br/>Speaker lock + timeout<br/>Ghost broadcast"]
             WS_CONV["conversation.py<br/>ConversationTracker<br/>AffectiveSignals<br/>HandRaiseQueue"]
             WS_STATE["state_machine.py<br/>ALLOWED_TRANSITIONS map<br/>Phase transition validation"]
@@ -58,7 +59,7 @@ graph TB
         end
 
         subgraph Agents["AI Agents"]
-            NA["Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy<br/>Dual-Mode: Theatrical + Moderator<br/>Watchdog: auto-restart dead sessions"]
+            NA["Narrator Agent<br/>Gemini Live API<br/>Voice + Affective Dialog<br/>4 Presets: Classic/Campfire/Horror/Comedy<br/>Dual-Mode: Theatrical + Moderator<br/>Watchdog: auto-restart dead sessions<br/>_narrator_speaking flag (v5.4)<br/>Phase-aware PTT suppression"]
             subgraph AIFuncs["traitor_agent.py — Unified AI Functions"]
                 TRIGGER["Trigger Functions<br/>trigger_all_night_actions()<br/>trigger_all_votes()<br/>trigger_all_dialogs()<br/>asyncio.gather parallel exec"]
                 INDIV["Individual AI Functions<br/>generate_dialog()<br/>select_night_target()<br/>select_vote()<br/>select_loyal_night_action()<br/>Loops via _ai_chars_with_fields()"]
@@ -211,6 +212,13 @@ graph TB
     TBUF -->|"transcript flush triggers"| AIREPLY
     AIREPLY -->|"generate dialog"| GFlash
     AIREPLY -->|"broadcast as source=player"| API
+    AIREPLY -->|"[AI_DIALOG] text annotation<br/>feedback to narrator (v5.4)"| NA
+
+    %% Phase-aware suppression (v5.4)
+    WS_CONN -->|"_current_phase cache<br/>phase-aware PTT suppression"| NA
+
+    %% Narrator status feedback (v5.4)
+    NA -->|"narrator_status WS msg<br/>speaking: true/false"| API
 
     %% Infrastructure provisions Cloud Run
     TF -.->|"provisions"| CloudRun
@@ -233,7 +241,7 @@ graph TB
     classDef cache fill:#78350f,stroke:#f59e0b,color:#fff
     classDef tabs fill:#312e81,stroke:#818cf8,color:#fff
 
-    class P1,P2,P3,FE_STATE,PTT player
+    class P1,P2,P3,FE_STATE,PTT,CUSTEVT player
     class API cloud
     class NA,TRIGGER,INDIV,GM,SA,CV,AR,SL,AIREPLY agent
     class FS gcp
