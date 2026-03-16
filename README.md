@@ -2,7 +2,7 @@
 
 **The AI is one of you. Trust no one.**
 
-🌐 **[Play Now](https://fireside-betrayal-seimyaykpa-uc.a.run.app)**
+**[Play Now](https://fireside-betrayal-seimyaykpa-uc.a.run.app)** | **[Demo Video](https://youtu.be/XRz9lHDvX1g)**
 
 A real-time, voice-first multiplayer social deduction game where an AI narrator leads players through an immersive story — and one of the characters is secretly controlled by AI.
 
@@ -136,10 +136,26 @@ Player Phones (2-8) ←WebSocket→ Cloud Run (FastAPI)
 | WS | `/ws/{gameId}?playerId={id}` | Real-time game connection |
 
 
+## How to Test
+
+1. Open **https://fireside-betrayal-seimyaykpa-uc.a.run.app** on your phone or laptop
+2. Check out the **Tutorial** on the landing page to learn how the game works
+3. Tap **Host a Game**, enter your name, pick a narrator voice (try Campfire), and create the game
+4. Share the **join code** or **share link** with a friend — they can join from any device
+5. Back on the host device, tap **Start Game**
+6. The narrator begins speaking immediately — play through Night → Discussion → Vote → Elimination
+7. After the game, check the post-game timeline to see what the AI was secretly doing
+
+You need at least **2 players**, but the more you have the better — up to **7 players** can join. AI characters fill out the remaining spots (2 players get 2 AI characters, 3+ players get 1 AI character).
+
+**Tips:**
+- Use headphones to avoid echo on push-to-talk
+- Works on any modern browser (Chrome, Safari, Firefox) — no app install needed
+- The AI character speaks during discussion — see if you can figure out which one it is
+
 ## Hackathon
 
 Built for the **Gemini Live Agent Challenge** hackathon ($80K prize pool, Google DeepMind / Devpost).
 
-- **Category:** 🗣️ Live Agents
+- **Category:** Live Agents
 - **Deadline:** March 16, 2026 at 5:00 PM PDT
-- **Prize Target:** $10K (category) + $25K (grand prize)

@@ -1,0 +1,104 @@
+graph TB
+    subgraph Players["Players (2-7 Devices)"]
+        P["Mobile/Desktop Browser<br/>React SPA + Push-to-Talk"]
+    end
+
+    subgraph Frontend["Frontend (React)"]
+        GWS["Game WebSocket<br/>State · Chat · Votes"]
+        AUDIOWS["Audio WebSocket<br/>PCM Mic Input · Keepalive"]
+        TABS["Three-Tab UI<br/>Story | Journal | Records"]
+    end
+
+    subgraph CloudRun["Google Cloud Run"]
+        API["FastAPI Backend<br/>REST + WebSocket + SPA Routing"]
+
+        subgraph WSPackage["ws/ Package (8 Modules)"]
+            CONN["Connection Manager<br/>Per-Player Send Queues"]
+            HANDLERS["Message Handlers<br/>Chat · Speaker · Ghost"]
+            TIMERS["Phase Timers<br/>Discussion · Vote · Night"]
+            SM["State Machine<br/>Phase Transitions"]
+            VOTES["Vote Manager"]
+            NIGHT["Night Resolver"]
+            LIFE["Game Lifecycle"]
+            CONV["Conversation Tracker<br/>Pacing · Affective Signals"]
+        end
+
+        subgraph Agents["6 AI Agents"]
+            NA["Narrator Agent<br/>Gemini Live API<br/>Real-time Voice · 4 Presets<br/>Watchdog Auto-Restart"]
+            TA["AI Character Agent<br/>Strategy · Dialog · Votes<br/>Difficulty: Easy/Normal/Hard"]
+            SA["Scene Agent<br/>Background Generation<br/>Pre-cached in Lobby"]
+            GM["Game Master<br/>Roles · Phases · Win Conditions"]
+            CV["Camera Vote<br/>Vision Hand-Count"]
+            MISC["Audio Recorder<br/>+ Strategy Logger"]
+        end
+    end
+
+    subgraph GCP["Google Cloud Platform"]
+        FS[("Cloud Firestore<br/>Game State · Events")]
+        CB["Cloud Build<br/>CI/CD Pipeline"]
+        AR["Artifact Registry<br/>Docker Images"]
+        TF["Terraform IaC"]
+    end
+
+    subgraph Gemini["Google Gemini API"]
+        GLive["Gemini Live API<br/>Bidirectional Voice"]
+        GFlash["gemini-3-flash-preview<br/>Text Strategy + Vision"]
+        GImage["gemini-3.1-flash-image-preview<br/>Scene Illustrations"]
+    end
+
+    %% Player connections
+    P <-->|"Game State"| GWS
+    P <-->|"Voice Audio"| AUDIOWS
+    P --- TABS
+
+    %% Frontend to Backend
+    GWS <-->|"JSON WebSocket"| API
+    AUDIOWS <-->|"Binary PCM + JSON"| API
+
+    %% Backend internal
+    API --> CONN
+    API --> HANDLERS
+    HANDLERS --> VOTES
+    HANDLERS --> NIGHT
+    HANDLERS --> CONV
+    SM -.->|"validates"| GM
+    TIMERS -->|"timeouts"| NA
+    LIFE --> FS
+
+    %% Agent connections
+    API --> NA
+    API --> GM
+    API --> SA
+    GM --> TA
+    NA --> TA
+
+    %% Gemini connections
+    NA <-->|"Voice Stream"| GLive
+    TA -->|"Strategy"| GFlash
+    SA -->|"Image Gen"| GImage
+    CV -->|"Vision"| GFlash
+
+    %% Data
+    GM --> FS
+    API --> FS
+
+    %% Infrastructure
+    TF -.->|"provisions"| CloudRun
+    CB -.->|"deploys"| CloudRun
+    AR -.->|"stores images"| CB
+
+    classDef player fill:#1a1a2e,stroke:#e94560,color:#fff
+    classDef frontend fill:#312e81,stroke:#818cf8,color:#fff
+    classDef cloud fill:#0f3460,stroke:#16213e,color:#fff
+    classDef wsmod fill:#1a3636,stroke:#40916c,color:#fff
+    classDef agent fill:#533483,stroke:#e94560,color:#fff
+    classDef gcp fill:#4285f4,stroke:#1a73e8,color:#fff
+    classDef gemini fill:#1e88e5,stroke:#1565c0,color:#fff
+
+    class P player
+    class GWS,AUDIOWS,TABS frontend
+    class API cloud
+    class CONN,HANDLERS,TIMERS,SM,VOTES,NIGHT,LIFE,CONV wsmod
+    class NA,TA,SA,GM,CV,MISC agent
+    class FS,CB,AR,TF gcp
+    class GLive,GFlash,GImage gemini
